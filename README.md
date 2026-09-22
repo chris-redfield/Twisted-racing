@@ -8,8 +8,9 @@ Two builds, each a single self-contained HTML file. No dependencies, no build st
 
 | File | What it is |
 | ---- | ---------- |
-| `scrapheap-circuit-alpha.html` | **the driving game** — BRAWL and RACE, you steer |
+| `scrapheap-circuit-alpha.html` | **the driving game** — BRAWL and RACE, one player, you steer |
 | `scrapheap-loop-alpha.html` | **SCRAPHEAP LOOP** — a Loop Hero–style auto-racer, you build the track instead of driving it |
+| `scrapheap-gunner-alpha.html` | **SCRAPHEAP GUNNER** — two players in one car on a split screen: P1 drives in 2D, P2 works the gun in a first-person raycast view |
 
 ---
 
@@ -58,6 +59,25 @@ You never steer. Everything is mouse-driven; the keys are shortcuts.
 | `T` | game speed 1× / 2× / 3× |
 | `Esc` | drop the held part, or cash out and end the run |
 | `R` `F` `M` | resolution / fps / mute, same as the other build |
+
+## Controls — scrapheap-gunner (two players, one keyboard)
+
+Race only, three laps, weapons live. One car, two jobs — P1 has no trigger, P2 has no wheel.
+
+| Player 1 — DRIVER (bottom pane, 2D) | |
+| --- | --- |
+| `W` `A` `S` `D` | drive |
+| `Shift` | handbrake |
+
+| Player 2 — GUNNER (top pane, first person) | |
+| --- | --- |
+| `←` `→` | traverse the gun (full 360°) |
+| `↑` | cannon |
+| `↓` | missile |
+| mouse | alternative aim — move left/right of centre to traverse, left click fires, right click launches |
+
+Pickup pads still feed the car, so P1 collecting them is what keeps P2 in ammo. P1 can see where
+P2 is looking: the gunner's line of fire is drawn into the driving pane as a dashed red ray.
 
 ## Modes and levels
 
@@ -216,10 +236,11 @@ is generated blips and filtered noise bursts.
 
 - **One file per build.** Each game is a single portable HTML file. Keep it that way unless we
   decide together to split it — the payoff is that any build is one attachment.
-- **The loop build is a fork of the circuit build's engine,** not a shared import, so that changes
-  to one can never break the other. Everything above the `LOOP MODE` banner in
-  `scrapheap-loop-alpha.html` is the race engine; everything below it is additive. If the mode
-  proves out, that is the moment to unify — not before.
+- **The experimental builds are forks of the circuit build's engine,** not shared imports, so
+  changes to one can never break the others. In both `scrapheap-loop-alpha.html` and
+  `scrapheap-gunner-alpha.html`, everything above the big banner (`LOOP MODE` / `TWO PLAYERS`) is
+  the race engine and everything below is additive. If one of them proves out, that is the moment
+  to unify — not before.
 - **No dependencies, no build step.**
 - Section banner comments (`// ---- name`) are the navigation system. Keep them.
 - Comments explain *why* a number or an ordering exists, not what the line does.
@@ -231,6 +252,40 @@ is generated blips and filtered noise bursts.
 - `assets/car-sprite-sheet.png` — 1040×520 generated reference sheet. **Not currently loaded by
   the game**; it exists as a starting point for replacing the runtime-baked sprites.
 
+## SCRAPHEAP GUNNER — how the two halves work
+
+Canvas is 640×360 virtual (16:9), split into two 640×180 panes. `LAYOUT` at the top of the
+gunner layer switches `'stack'` (gunner over driver, the default) for `'side'`.
+
+- **One car, two cameras.** Both panes follow car 0. The driving pane reuses the whole
+  axonometric renderer; `toScreen`/`camOx`/`camOy` were changed to centre on `VCX`/`VCY` (the
+  pane's centre) instead of the canvas centre, and `S = PX * ZOOM2D` keeps the world scale
+  separate from the resolution.
+- **The raycaster is segment-based, not grid-based.** The track is a smooth 72-segment
+  superellipse; voxelising it into tiles would turn a clean oval into a visible staircase. Each
+  column solves ray-vs-segment against three wall rings (inner barrier, outer barrier, and a tall
+  perimeter fence for the horizon) — 320 columns × 216 segments ≈ 69k tests, about 1 ms/frame.
+  Ring points are transformed into camera space once per frame, so the inner loop is pure 2D
+  arithmetic.
+- **Projection math is lifted from the survive2 reference** (`js/raycaster.js`, Andrew Lim's SDL2
+  port): `viewDist = (w/2)/tan(fov/2)`, `stripAngle = atan(screenX/viewDist)`, perpendicular
+  distance `= dist·cos(stripAngle)`, `projScale = viewDist/perp`, plus a per-column z-buffer so
+  sprites hide behind walls. The grid traversal, textures, doors and slopes are not used.
+- **The barrier is deliberately shorter than eye height** (22 vs 38), so the gunner can see over
+  it and read the corner ahead, while it still blocks sightlines across the infield. That gap
+  matters more than it looks: a wall's top edge tilts by `(EYE_Z - BARRIER_H)/lateralGap` and
+  pivots about the centre of the view, so too small a gap parks that edge on the horizon where it
+  reads as the camera rotating. `[` and `]` tune eye height live, `-` and `=` tune the FOV.
+- **The first-person cars are the same meshes as the 2D half**, re-baked. `rasterCar` now takes
+  `ky`/`kz`/`scale`, so the gunner's sheet is baked at `KY_FPS = 0.16` (eye level) instead of the
+  axonometric `KY = 0.62`. Same 32 yaw frames; the billboard picks one from the target's heading
+  relative to the line of sight.
+- **The floor is a real road.** A coarse 160×160 "is this point asphalt" mask is built once from
+  `trackProject`, then the floor is shaded per row (one perpendicular distance per scanline) and
+  sampled every 4th column. Per-pixel `trackProject` would be far too slow.
+- The gunner pane renders to a half-resolution offscreen canvas (320×90) and is blitted 2× with
+  smoothing off, which keeps it chunky on purpose and cheap.
+
 ## Testing without a browser
 
 `tools/headless.js` stubs out the canvas and runs a build in node, so a session can prove a change
@@ -240,7 +295,14 @@ that the code *runs*, not that it looks right.
 ```bash
 node tools/headless.js scrapheap-loop-alpha.html 60          # 60 simulated seconds
 node tools/headless.js scrapheap-circuit-alpha.html 20 arena 2
+node tools/headless.js scrapheap-gunner-alpha.html 30
 ```
+
+Draw calls being no-ops means this cannot check that anything *looks* right — so verify geometry
+numerically instead. The gunner build's raycaster is checked two ways: against an independent
+world-space caster (all 320 columns must agree), and against a case computable by hand — a flat
+wall 100 units ahead must report a perpendicular distance of exactly 100 in *every* column, which
+is precisely what fisheye correction is for.
 
 `require('./tools/headless.js').load(file)` returns `{ E, tick, run }`. `E('expr')` evaluates in
 the game's own scope — top-level `let`/`const` never reach the global object, so that hatch is the
@@ -251,7 +313,8 @@ only way to read or poke state. This is how the loop mode's balance was tuned.
 ```
 scrapheap-circuit-alpha.html   the driving game (BRAWL + RACE)
 scrapheap-loop-alpha.html      SCRAPHEAP LOOP, the auto-racer
-tools/headless.js              run either build in node, no browser
+scrapheap-gunner-alpha.html    SCRAPHEAP GUNNER, two-player split screen
+tools/headless.js              run any build in node, no browser
 assets/car-sprite-sheet.png    generated sprite reference (unused at runtime)
 README.md                      this file — stable project docs
 PROJECT.md                     rolling status and session log (read this first each session)
