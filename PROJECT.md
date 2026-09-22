@@ -168,6 +168,25 @@ Fixes, in order of how much they mattered:
 5. Road mask 160² → 384² (14.4 → 6.0 units/cell). The old quantisation stepped the distant road
    edge around as you moved, which was a second false bending cue.
 
+**Then the gun felt laggy.** Raising the eye created a second problem: bullets still spawned at
+`z=6`, down at the road, so a tracer seen from eye 38 projected `(38-6)·viewDist/dist` *below* the
+horizon — far under the bottom of the pane at close range. It only climbed into view at ~144 units,
+0.34 s after firing (it had been 0.17 s at eye 27). The new gun mount silhouette made it worse,
+hiding 17.5 of the 50 rows below the horizon in the exact centre column where the tracer emerges.
+
+Fix: the player's shots now spawn at the gunner's own sightline (`EYE_Z`) and ease down to the
+road-level travel height, so the tracer appears *on* the crosshair on the first frame. Mount
+trimmed back to hide 11.5 rows instead of 17.5. `z` is cosmetic here — hit tests are purely 2D —
+so none of this changes aiming or damage.
+
+**The instructive part:** the first attempt used gravity for the drop, and a frame-by-frame trace
+showed the tracer appearing correctly, then *blinking out* between ~64 and ~122 units before
+reappearing. The screen's visible band below the horizon grows **linearly** with distance
+(`usable·d/viewDist`), so an accelerating drop outruns it. The settle has to be linear in distance
+and gentler than that slope; `SHOT_SETTLE = 260` units keeps the tracer on screen for every eye
+height the tuning keys allow (verified at 24/38/52/70). Eyeballing "does it appear immediately"
+would have caught the first bug and missed the second.
+
 **Next time:** ask whether the eye height and FOV landed in the right place.
 
 ### 2026-09-10 — SCRAPHEAP LOOP: the auto-racer experiment

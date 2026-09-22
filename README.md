@@ -285,6 +285,13 @@ gunner layer switches `'stack'` (gunner over driver, the default) for `'side'`.
   sampled every 4th column. Per-pixel `trackProject` would be far too slow.
 - The gunner pane renders to a half-resolution offscreen canvas (320×90) and is blitted 2× with
   smoothing off, which keeps it chunky on purpose and cheap.
+- **The player's shots spawn at the gunner's sightline, not at the car.** A tracer at road height
+  seen from an elevated mount projects well below the horizon at close range — off the bottom of
+  the pane — so it appeared a third of a second late. Spawning at `EYE_Z` puts it on the crosshair
+  immediately; it then eases down to road height over `SHOT_SETTLE` units. That easing is linear
+  in distance on purpose: the visible band below the horizon also grows linearly with distance, so
+  an accelerating drop outruns it and the tracer blinks out mid-flight. `z` is cosmetic — hit tests
+  are purely 2D.
 
 ## Testing without a browser
 

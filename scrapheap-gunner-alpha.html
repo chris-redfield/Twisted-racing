@@ -586,19 +586,28 @@ function fireCannon(c){
   const fx0=Math.cos(aim), fy0=Math.sin(aim);
   const spread = c.isPlayer ? 0.02 : 0.05;
   const a = aim + rnd(-spread,spread);
-  shots.push({ kind:'bullet', x:c.x+fx0*18, y:c.y+fy0*18, z:6,
+  // The gunner's gun is up on the ring mount. Firing from z=6 started the tracer
+  // a third of a second's travel below the bottom of his pane, which read as a
+  // delay. Start it on his sightline instead and let it settle to the road, so
+  // it appears on the crosshair at once and still meets the cars it hits.
+  // z is cosmetic: hit tests in this engine are purely 2D.
+  const z0 = c.isPlayer ? EYE_Z : 6;
+  shots.push({ kind:'bullet', x:c.x+fx0*18, y:c.y+fy0*18,
+    z:z0, zt:6, zr:(z0-6)/SHOT_SETTLE,
     vx:Math.cos(a)*430 + c.vx*0.3, vy:Math.sin(a)*430 + c.vy*0.3,
     life:1.0, owner:c.id, dmg:7 });
   c.vx -= fx0*8; c.vy -= fy0*8;
   Snd.shot();
-  particles(c.x+fx0*20,c.y+fy0*20,6,2,{col:['#ffe9a8'],spd0:10,spd1:40,size:1,life0:0.05,life1:0.12,grav:0});
+  particles(c.x+fx0*20,c.y+fy0*20,z0,2,{col:['#ffe9a8'],spd0:10,spd1:40,size:1,life0:0.05,life1:0.12,grav:0});
 }
 function fireMissile(c){
   if(c.mcool>0 || c.missiles<=0) return;
   c.mcool = 0.85; c.missiles--;
   const aim = aimAngle(c);
   const fx0=Math.cos(aim), fy0=Math.sin(aim);
-  shots.push({ kind:'missile', x:c.x+fx0*18, y:c.y+fy0*18, z:7,
+  const mz0 = c.isPlayer ? EYE_Z : 7;
+  shots.push({ kind:'missile', x:c.x+fx0*18, y:c.y+fy0*18,
+    z:mz0, zt:7, zr:(mz0-7)/SHOT_SETTLE,
     vx:fx0*190, vy:fy0*190, angle:aim, life:2.6, owner:c.id, dmg:34, smoke:0 });
   Snd.missile();
 }
@@ -984,6 +993,13 @@ function updateShots(dt){
         particles(s.x,s.y,s.z,1,{col:['#6b5c72','#4a3f50'],spd0:2,spd1:14,size:2,life0:0.3,life1:0.6,grav:-8,up0:0,up1:6}); }
     }
     s.x+=s.vx*dt; s.y+=s.vy*dt;
+    // Anything fired from up on the mount eases down to its travel height,
+    // linearly in distance. Accelerating (gravity) outruns the screen's visible
+    // band, which grows linearly with distance, and the tracer blinks out.
+    if(s.zr && s.z>s.zt){
+      s.z -= s.zr*Math.hypot(s.vx,s.vy)*dt;
+      if(s.z<s.zt) s.z=s.zt;
+    }
 
     let gone = s.life<=0;
     if(!gone && blockHitPoint(s.x,s.y,3)){
@@ -1747,6 +1763,7 @@ let   RC_FOV = 95 * Math.PI/180;   // wide: a turret gunner wants peripheral vis
 let   EYE_Z  = 38;                 // gunner's eye height above the road ([ ] to tune)
 const BARRIER_H = 22;              // still low enough to see over into the corner
 const WALL_T = 9;                  // barrier thickness, for the visible top ribbon
+const SHOT_SETTLE = 260;           // units over which a mount-fired shot eases down
 const FENCE_H   = 96;
 const FENCE_OUT = 210;             // how far outside the barrier the perimeter fence sits
 
@@ -2199,20 +2216,20 @@ function drawGunnerHUD(){
   // also an honest reticle: only the column you point at matters, not elevation.
   const my=p.y+p.h;
   ctx.fillStyle='rgba(232,213,176,.10)';
-  ctx.fillRect(cx-0.5, cy+6, 1, my-30-cy-6);
+  ctx.fillRect(cx-0.5, cy+6, 1, my-20-cy-6);
   ctx.fillStyle='#16121c';
   ctx.beginPath();
-  ctx.moveTo(p.x, my); ctx.lineTo(p.x, my-10);
-  ctx.quadraticCurveTo(cx, my-32, p.x+p.w, my-10);
+  ctx.moveTo(p.x, my); ctx.lineTo(p.x, my-7);
+  ctx.quadraticCurveTo(cx, my-21, p.x+p.w, my-7);
   ctx.lineTo(p.x+p.w, my); ctx.closePath(); ctx.fill();
   ctx.fillStyle='#2a2333';
   ctx.beginPath();
-  ctx.moveTo(cx-16, my-12); ctx.lineTo(cx-5, my-31);
-  ctx.lineTo(cx+5, my-31); ctx.lineTo(cx+16, my-12); ctx.closePath(); ctx.fill();
-  ctx.fillStyle='#3d3448'; ctx.fillRect(cx-3, my-35, 6, 8);
+  ctx.moveTo(cx-13, my-9); ctx.lineTo(cx-4, my-20);
+  ctx.lineTo(cx+4, my-20); ctx.lineTo(cx+13, my-9); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#3d3448'; ctx.fillRect(cx-2.5, my-23, 5, 5);
   if(me.cool>0.09){
     ctx.fillStyle='#ffe9a8';
-    ctx.beginPath(); ctx.arc(cx, my-37, 3+Math.random()*2, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, my-25, 3+Math.random()*2, 0, Math.PI*2); ctx.fill();
   }
 
   const col = gunnerHit>0 ? '#ffffff' : onTarget ? '#f0503c' : 'rgba(232,213,176,.65)';
