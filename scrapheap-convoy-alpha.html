@@ -2202,38 +2202,51 @@ function drawGunnerView(){
 }
 
 // ---------------------------------------------------------------- the turret
-const TURRET_RATE = 2.3;           // rad/s traverse
+// Two aim models, one per mode:
+//  - 2P is first-person, so the mouse turns the gun by its *movement* (locked
+//    pointer, like Counter-Strike): move and it turns, stop and it holds. No drift.
+//  - 1P is top-down, so the mouse is twin-stick: the gun points straight at the
+//    cursor's world position. Keyboard arrows are the rate-based fallback for both.
+const TURRET_RATE = 2.3;           // rad/s, keyboard traverse
+const FPS_SENS = 0.0042;           // radians of gun traverse per unit of mouse movement (2P)
 function updateTurret(c, dt){
-  let t=0;
-  if(held('ArrowLeft'))  t-=1;
-  if(held('ArrowRight')) t+=1;
-  if(t===0 && mouseAim!==0) t = mouseAim;
-  c.turret = (c.turret||0) + t*TURRET_RATE*dt;
   const TAU=Math.PI*2;
+  if(numPlayers===1 && mouseIn && !c.dead){
+    // twin-stick: aim the gun at the world point under the cursor (z=0 ground)
+    const wx = (mouseSX - VCX)/S + cam.x;
+    const wy = (mouseSY - VCY)/(S*KY) + cam.y;
+    c.turret = Math.atan2(wy - c.y, wx - c.x) - c.angle;
+  } else {
+    let t=0;
+    if(held('ArrowLeft'))  t-=1;
+    if(held('ArrowRight')) t+=1;
+    c.turret = (c.turret||0) + t*TURRET_RATE*dt;
+    if(numPlayers===2){ c.turret += aimDX*FPS_SENS; aimDX=0; }   // locked-mouse traverse
+  }
   c.turret = ((c.turret%TAU)+TAU)%TAU;
   if(c.turret>Math.PI) c.turret -= TAU;
   if(held('ArrowUp') || mouseFire) fireCannon(c);
   if(held('ArrowDown') || mouseFire2) fireMissile(c);
 }
 
-let mouseAim=0, mouseFire=false, mouseFire2=false;
+let aimDX=0, mouseSX=0, mouseSY=0, mouseIn=false, mouseFire=false, mouseFire2=false;
+function pointerLocked(){ return typeof document!=='undefined' && document.pointerLockElement===cv; }
 function bindGunnerMouse(){
   cv.addEventListener('contextmenu', e=>e.preventDefault());
   cv.addEventListener('mousemove', e=>{
-    // the gun's pane is P2 in a convoy, the whole driving view in solo
-    const p = numPlayers===2 ? PANE_P2 : PANE_P1;
-    if(!p){ mouseAim=0; return; }
     const r=cv.getBoundingClientRect();
-    const px=(e.clientX-r.left)*(W/r.width), py=(e.clientY-r.top)*(H/r.height);
-    if(px<p.x*PX || px>(p.x+p.w)*PX || py<p.y*PX || py>(p.y+p.h)*PX){ mouseAim=0; return; }
-    // treat the pane like a joystick: distance from centre sets traverse speed
-    const k=((px - (p.x+p.w/2)*PX) / (p.w*PX/2));
-    mouseAim = Math.abs(k)<0.12 ? 0 : clamp(k*1.6,-1,1);
+    mouseSX=(e.clientX-r.left)*(W/r.width);
+    mouseSY=(e.clientY-r.top)*(H/r.height);
+    mouseIn=true;
+    // 2P: accumulate raw mouse movement while the pointer is locked (FPS aim)
+    if(numPlayers===2 && pointerLocked()) aimDX += e.movementX||0;
   });
-  cv.addEventListener('mouseleave', ()=>{ mouseAim=0; mouseFire=false; mouseFire2=false; });
+  cv.addEventListener('mouseleave', ()=>{ mouseIn=false; mouseFire=false; mouseFire2=false; });
   cv.addEventListener('mousedown', e=>{
     Snd.boot();
     if(state!=='play'){ if(state==='title') startMatch(numPlayers); else if(state==='over') state='title'; return; }
+    // 2P grabs the pointer on first click, then clicks fire; 1P keeps the cursor visible
+    if(numPlayers===2 && cv.requestPointerLock && !pointerLocked()){ cv.requestPointerLock(); }
     if(e.button===2) mouseFire2=true; else mouseFire=true;
   });
   cv.addEventListener('mouseup', e=>{ if(e.button===2) mouseFire2=false; else mouseFire=false; });
@@ -2273,6 +2286,13 @@ function drawGunnerHUD(){
     const d=Math.hypot(o.x-me.x,o.y-me.y);
     if(d>420) continue;
     if(Math.abs(angDiff(bearing, Math.atan2(o.y-me.y,o.x-me.x))) < 0.06 + 18/d) { onTarget=true; break; }
+  }
+
+  // FPS aim needs the pointer locked; prompt for the click that grabs it
+  if(!pointerLocked() && !me.dead){
+    ctx.font='8px monospace'; ctx.textAlign='center';
+    ctx.fillStyle='rgba(224,183,60,'+(0.55+0.35*Math.abs(Math.sin(matchTime*4)))+')';
+    ctx.fillText('CLICK TO AIM', cx, p.y+18); ctx.textAlign='left';
   }
 
   // The gun mount, fixed to the pane. A foreground that never moves is the
@@ -2426,22 +2446,22 @@ function drawTitle(){
       'you drive and you gun.',
       '',
       'W A S D          drive',
-      'ARROWS           aim / fire',
+      'MOUSE            aim the gun',
+      'CLICK            fire  (RMB missile)',
       'SHIFT            hard slew',
       '',
-      'one view, one pair of',
-      'hands. grab the ammo',
-      'drops and stay alive.' ]},
+      'the gun points where your',
+      'cursor is. grab ammo drops.' ]},
     { x:VW*0.74, tag:'2  CONVOY (2P)', col:'#f0503c', rows:[
       'a driver and a gunner.',
       '',
       'P1  WASD + SHIFT drive',
-      'P2  ARROWS traverse / fire',
-      '    (or aim with the mouse)',
+      'P2  MOUSE aims (click to lock),',
+      '    click fires, RMB missile',
+      '    - or ARROWS to traverse',
       '',
       'P1 grabs the ammo drops,',
-      'P2 works the ring gun.',
-      'stay ahead of the dust.' ]}
+      'P2 works the ring gun.' ]}
   ];
   for(const c of cols){
     ctx.textAlign='center';

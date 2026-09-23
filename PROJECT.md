@@ -187,6 +187,15 @@ world-anchored **barrier posts** on both the 2D walls (`drawWallPosts`, via `toS
 intervals) and the raycast walls (a world-x-phased darkening in `rcWalls`), so posts stream past.
 Also promoted the solo player from ramming-only to a full gun, per his ask.
 
+*Second follow-up (aim felt wrong):* the mouse was a **joystick** — cursor position set a turret
+*velocity*, so holding it off-centre spun the gun forever (2P "drift", 1P "turning around the
+vehicle"). Replaced with one model per mode, since the two views are different: **2P is
+first-person → Counter-Strike aim** (pointer lock + `movementX` turns the gun, holds when the
+mouse stops; click to grab the pointer, `Esc` releases it), **1P is top-down → twin-stick** (the
+gun points at the cursor's world position, `updateTurret` inverts `toScreen` for the ground point).
+Keyboard arrows stay as the rate-based fallback for both. Verified headless: twin-stick aims at the
+cursor, FPS holds-when-still (no drift), pointer-lock calls are guarded so the harness still runs.
+
 **Three engine fixes the fork forced, worth remembering:**
 - The race code indexed `cars[c.lastHitBy]` assuming `id === array index`. With a spawner the
   array is dynamic and that's false — kills would credit the wrong car or throw. Now every enemy
