@@ -19,8 +19,41 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
 - Audio is fully synthesised (WebAudio); there is no music.
 - `scrapheap-gunner-alpha.html` — SCRAPHEAP GUNNER, the two-player experiment (2026-09-21).
   Split screen, race only: P1 drives in the 2D view, P2 works a 360° gun in a first-person
-  raycast view out of the same car. Runs end to end. **Never been opened in a browser.**
+  raycast view out of the same car. Runs end to end. Camera/gun feel signed off in a browser.
+- `scrapheap-convoy-alpha.html` — SCRAPHEAP CONVOY, the Mad Max survival mode (2026-09-22).
+  Forked from the gunner build. Endless straight road, forced-scroll camera, waves of cars
+  from front and back. Two modes on the title card: **1 SOLO** (one full-screen driving view,
+  no gun — dodge and ram) and **2 CONVOY** (the split-screen gunner pane returns). Verified
+  headless; **never been opened in a browser** — balance is simulated, not played.
 - `tools/headless.js` runs any build in node with a stubbed canvas.
+
+## NEXT SESSION STARTS HERE — play SCRAPHEAP CONVOY in a browser
+
+The Mad Max mode is built (`scrapheap-convoy-alpha.html`, 2026-09-22 in the log). It has never
+been *looked at* — everything below the fold is simulated, not felt. First pass:
+
+- **Feel of the forced scroll.** Does auto-cruise + W/S trim within a band read as "manage your
+  speed", or does it feel like you're on rails? The tunables are a labelled block near the top:
+  `CAM_V0/CAM_VMAX/CAM_RAMP` (scroll pace), `CRUISE_BAND`, `FRONT_MAX`, `BACK_KILL`, `DUST_DPS`.
+- **Is it dodgeable?** Chargers now hold their spawn lane (they lean only ±0.16 rad toward you),
+  so oncoming traffic should be weave-able. If it feels unfair, that lean and the spawn rate
+  (`updateSpawner`, `enemyCap`) are the knobs. Headless can't judge this; a human must.
+- **Solo has no weapon** by design (his call: 1P = "only the car and the track"). Offense is
+  ramming. If it feels thin, flip `SOLO_CANNON = true` (one line) to give the lone driver a
+  forward cannon on SPACE, and see which is more fun.
+- **The dust wall** behind you is the "keep moving" spine. Check it reads as a threat and that
+  being shoved by it isn't a death spiral.
+
+**Deferred, agreed with him this session:** the **L-route** (left-to-right, then a corner, then
+"up") is a *later* experiment — "let's do straight for now, then in the future we experiment with
+the L route". The design notes for it are worth keeping, so here they are for whoever builds it:
+
+> A one-way L needs an **open** path that runs 0 → 1 once without wrapping, and almost certainly a
+> **waypoint polyline** (straight, corner, straight) rather than a parametric curve. The convoy
+> build already proved the open-corridor case — its `trackProject`/`trackPoint` are the straight-x
+> degenerate of exactly this. The axonometric view is fixed-angle, so the corner changes which
+> screen axis the action runs along; check the corner reads before committing to the whole route.
+> Verify any new path maths against a hand-computable case in `tools/headless.js` first.
 
 ## What's next (unordered backlog)
 
@@ -71,6 +104,17 @@ Nothing is committed to yet — pick from here or bring something new.
 
 ## Known rough edges
 
+- **Convoy balance is simulated, not played** (as with loop mode). The scroll pace, dust-wall
+  damage, spawn rate and enemy aggression are all first-guess numbers in the labelled tunables
+  block and `updateSpawner`. Nobody has felt them yet.
+- Convoy solo (1P) has **no weapon** — deliberately, per his "only the car and the track". If that
+  makes solo too passive, `SOLO_CANNON = true` is the one-line switch.
+- Convoy reuses the gunner build's raycaster verbatim, so it inherits the same rough edges below
+  (per-column occlusion, `EYE_Z`/`RC_FOV` being feel numbers). Its walls are straight open
+  polylines rebuilt each frame rather than a baked ring.
+- The convoy build is a **fork of the gunner build's engine**, which is itself a fork of the
+  circuit engine. That's now three copies of the core; an engine fix has to be applied to all
+  three until we decide to unify.
 - Gunner mode's first-person barrier height (22) is a cheat: the 2D half draws the same barrier at
   `TRK.WALL = 11`. It was raised so the wall reads as a wall without blocking the corner ahead.
 - **`EYE_Z` and `RC_FOV` are feel numbers, not derived ones.** Tune them live with `[` `]` and
@@ -105,6 +149,55 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-09-22 — SCRAPHEAP CONVOY: the Mad Max survival mode
+Fifth mode, its own file, forked from the **gunner** build (not the circuit build PROJECT.md had
+guessed): the two-player mode needs the gunner pane, so the build that already has both panes was
+the right base. The other three builds are untouched and still pass headless.
+
+**What we settled first** (two questions, in his words): road shape — *"let's do straight for now,
+then in the future we experiment with the L route"* → endless straight survival, no corner, no
+finish; the L-route is deferred (notes kept at the top of this file). Pace — *forced scroll*: the
+camera advances on its own and you steer/trim speed within a band.
+
+**The design.** The superellipse loop is gone. The road is an infinite straight band `|y| < ROAD_HW`
+along +x; you travel left→right (which the existing axonometric projection already maps to
+screen-right, so no camera rework). The camera force-scrolls at an escalating `camV`; the player
+auto-cruises to hold station and W/S trim ±`CRUISE_BAND` — your position in the frame *is* the
+speed you chose. Fall to the back edge and a **dust wall** grinds you (`DUST_DPS`); the front edge
+is a soft cap. Distance survived is the score. A rolling spawner (`updateSpawner`/`enemyCap`)
+injects **chargers** (oncoming, hold their lane, pass through and exit behind) and **pursuers**
+(spawn behind, chase and ram), scaling with `wave`, and culls anything off-frame so the car list
+stays bounded (headless: capped at 5 cars over a 60s run).
+
+**1P vs 2P** off the title card (`1` / `2`). Solo is one full-screen driving view, no gunner, no
+gun — offense is ramming (`SOLO_CANNON=false` flips a forward cannon on if it feels thin). Convoy
+brings the split-screen gunner pane back verbatim; P1 grabs ammo pads that drift down the road,
+P2 works the ring gun.
+
+**Three engine fixes the fork forced, worth remembering:**
+- The race code indexed `cars[c.lastHitBy]` assuming `id === array index`. With a spawner the
+  array is dynamic and that's false — kills would credit the wrong car or throw. Now every enemy
+  gets a fresh `nextId` and lookups go through `carById(id)`.
+- 2D sprite sheets were effectively re-baked per car; keyed them by **model+colour** in a `Map`
+  (cleared on rescale) so the many spawned enemies share bitmaps instead of baking 32 frames each.
+- The segment raycaster wrapped `(i+1)%n`, which on a straight open wall lays a spurious segment
+  back down its whole length. Added an `open` flag so `rcWalls` stops at `n-1`; the corridor walls
+  and fences are rebuilt each frame as short open polylines around the camera (`buildConvoyRings`),
+  and `onAsphalt` is now just `|y| < ROAD_HW` (no mask table needed).
+
+**Verified headless only.** No runtime errors in either mode; distance/waves accumulate, deaths
+end the run, resolution churn + mode-switching + restarts are clean. **Balance is simulated, not
+played** — same caveat as loop mode. Hands-off you last ~15s (you're meant to dodge); a real wheel
+is needed to judge the scroll feel, whether oncoming traffic is fair, and whether solo needs a gun.
+
+**Next time:** open it in a browser (see the block at the top of this file).
+
+### 2026-09-22 — handoff
+Gunner mode's camera and gun feel signed off after two rounds of browser feedback (see the
+2026-09-21 entry, which was extended with both). Docs and memory written; next build agreed — see
+**NEXT SESSION STARTS HERE** at the top of this file. All three builds, the docs and the headless
+harness are committed (`0c63058 improvements`); this entry is the only thing on top.
 
 ### 2026-09-21 — SCRAPHEAP GUNNER: two players, one car
 Fourth mode, again a separate file. `scrapheap-circuit-alpha.html` and `scrapheap-loop-alpha.html`
@@ -186,6 +279,22 @@ reappearing. The screen's visible band below the horizon grows **linearly** with
 and gentler than that slope; `SHOT_SETTLE = 260` units keeps the tracer on screen for every eye
 height the tuning keys allow (verified at 24/38/52/70). Eyeballing "does it appear immediately"
 would have caught the first bug and missed the second.
+
+**Then the fix broke the other view.** Raising the shot's world `z` fixed the gunner's pane and
+wrecked the driving pane: P1 saw bullets leaving the *roof* of the car instead of the front. That
+was the wrong move and should have been obvious — `z` is shared world state and the two panes
+render it with completely different cameras, so changing it to suit one view necessarily breaks the
+other. Reverted: bullets are back at `z=6` and missiles at `z=7`, exactly as they were, and the
+raised tracer is now a **render-only offset inside `rcSprites`**, applied only to shots owned by
+the player. Same visual result in the gunner's pane, zero change to world state.
+
+The linear-in-distance easing turns out to have a tidy property in that form: `EYE_Z − renderZ`
+grows in proportion to distance and the projection divides by distance, so the two cancel exactly.
+The tracer draws at a *constant* 18 rows below the horizon for its whole flight — a clean straight
+stream that cannot blink out, at every eye height the tuning keys allow.
+
+**Rule worth keeping:** in a split-screen build, anything that only affects how something *looks*
+belongs in that pane's renderer, not in the entity.
 
 **Next time:** ask whether the eye height and FOV landed in the right place.
 

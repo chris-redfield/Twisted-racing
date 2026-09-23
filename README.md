@@ -285,13 +285,15 @@ gunner layer switches `'stack'` (gunner over driver, the default) for `'side'`.
   sampled every 4th column. Per-pixel `trackProject` would be far too slow.
 - The gunner pane renders to a half-resolution offscreen canvas (320×90) and is blitted 2× with
   smoothing off, which keeps it chunky on purpose and cheap.
-- **The player's shots spawn at the gunner's sightline, not at the car.** A tracer at road height
-  seen from an elevated mount projects well below the horizon at close range — off the bottom of
-  the pane — so it appeared a third of a second late. Spawning at `EYE_Z` puts it on the crosshair
-  immediately; it then eases down to road height over `SHOT_SETTLE` units. That easing is linear
-  in distance on purpose: the visible band below the horizon also grows linearly with distance, so
-  an accelerating drop outruns it and the tracer blinks out mid-flight. `z` is cosmetic — hit tests
-  are purely 2D.
+- **The gunner's own tracer is raised in his view only, never in world state.** A shot at road
+  height seen from an elevated mount projects far below the horizon at close range — off the bottom
+  of the pane — so it appeared a third of a second late. The fix is a render offset in `rcSprites`
+  for shots owned by the player: draw height eases from `EYE_Z` down to the shot's real `z` over
+  `SHOT_SETTLE` units. The shot's actual `z` stays at 6, at the front of the car, which is where
+  the driving pane needs it. Easing *linearly in distance* is deliberate and has a neat
+  consequence: `EYE_Z − renderZ` grows in proportion to distance, the projection divides by
+  distance, and the two cancel — so the tracer draws as a straight line at a constant height below
+  the horizon, and can never outrun the visible band and blink out.
 
 ## Testing without a browser
 
