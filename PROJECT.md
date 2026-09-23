@@ -22,9 +22,10 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
   raycast view out of the same car. Runs end to end. Camera/gun feel signed off in a browser.
 - `scrapheap-convoy-alpha.html` — SCRAPHEAP CONVOY, the Mad Max survival mode (2026-09-22).
   Forked from the gunner build. Endless straight road, forced-scroll camera, waves of cars
-  from front and back. Two modes on the title card: **1 SOLO** (one full-screen driving view,
-  no gun — dodge and ram) and **2 CONVOY** (the split-screen gunner pane returns). Verified
-  headless; **never been opened in a browser** — balance is simulated, not played.
+  from front and back. Two modes on the title card: **1 SOLO** (one full-screen view, you drive
+  *and* work the gun — WASD + arrows/mouse) and **2 CONVOY** (the split-screen gunner pane
+  returns). The road markings and barrier posts scroll with the camera so the motion reads.
+  Verified headless; **never been opened in a browser** — balance is simulated, not played.
 - `tools/headless.js` runs any build in node with a stubbed canvas.
 
 ## NEXT SESSION STARTS HERE — play SCRAPHEAP CONVOY in a browser
@@ -38,9 +39,12 @@ been *looked at* — everything below the fold is simulated, not felt. First pas
 - **Is it dodgeable?** Chargers now hold their spawn lane (they lean only ±0.16 rad toward you),
   so oncoming traffic should be weave-able. If it feels unfair, that lean and the spawn rate
   (`updateSpawner`, `enemyCap`) are the knobs. Headless can't judge this; a human must.
-- **Solo has no weapon** by design (his call: 1P = "only the car and the track"). Offense is
-  ramming. If it feels thin, flip `SOLO_CANNON = true` (one line) to give the lone driver a
-  forward cannon on SPACE, and see which is more fun.
+- **Solo now drives and guns** (his follow-up). One person on WASD + arrows/mouse is busy by
+  design; check it's playable and not overwhelming, and whether the reticle-on-aim-line reads
+  well without the raycast pane.
+- **Does the road read as moving now?** Lane dashes + rumble strips scroll with `cam.x`; barrier
+  posts stream past on both the 2D and raycast walls. If the dashes appear to scroll the *wrong*
+  way, the `lineDashOffset = scroll % …` sign in `drawTrack` is the one-line flip.
 - **The dust wall** behind you is the "keep moving" spine. Check it reads as a threat and that
   being shoved by it isn't a death spiral.
 
@@ -107,8 +111,9 @@ Nothing is committed to yet — pick from here or bring something new.
 - **Convoy balance is simulated, not played** (as with loop mode). The scroll pace, dust-wall
   damage, spawn rate and enemy aggression are all first-guess numbers in the labelled tunables
   block and `updateSpawner`. Nobody has felt them yet.
-- Convoy solo (1P) has **no weapon** — deliberately, per his "only the car and the track". If that
-  makes solo too passive, `SOLO_CANNON = true` is the one-line switch.
+- Convoy solo (1P) now **drives and guns in one view** (his follow-up: "the car should be able to
+  shoot in 1 player mode… you only control the machine gun without the 2 player view"). WASD drives,
+  arrows/mouse aim and fire, a reticle rides the aim line. No raycast pane in solo.
 - Convoy reuses the gunner build's raycaster verbatim, so it inherits the same rough edges below
   (per-column occlusion, `EYE_Z`/`RC_FOV` being feel numbers). Its walls are straight open
   polylines rebuilt each frame rather than a baked ring.
@@ -170,10 +175,17 @@ injects **chargers** (oncoming, hold their lane, pass through and exit behind) a
 (spawn behind, chase and ram), scaling with `wave`, and culls anything off-frame so the car list
 stays bounded (headless: capped at 5 cars over a 60s run).
 
-**1P vs 2P** off the title card (`1` / `2`). Solo is one full-screen driving view, no gunner, no
-gun — offense is ramming (`SOLO_CANNON=false` flips a forward cannon on if it feels thin). Convoy
-brings the split-screen gunner pane back verbatim; P1 grabs ammo pads that drift down the road,
-P2 works the ring gun.
+**1P vs 2P** off the title card (`1` / `2`). Solo is one full-screen view where the same player
+drives *and* works the gun (WASD drive, arrows/mouse aim+fire, a reticle on the aim line); no
+raycast pane. Convoy brings the split-screen gunner pane back verbatim, driver and gunner split.
+Both modes grab ammo/repair pads that drift down the road.
+
+*Follow-up same day (his feedback on first look):* the road looked frozen because the lane dashes
+had a fixed dash phase and the walls were smooth bars — no motion cue even though the world moves.
+Fixed by scrolling `lineDashOffset` with `cam.x` (lane lines + rumble strips) and adding
+world-anchored **barrier posts** on both the 2D walls (`drawWallPosts`, via `toScreen` at world-x
+intervals) and the raycast walls (a world-x-phased darkening in `rcWalls`), so posts stream past.
+Also promoted the solo player from ramming-only to a full gun, per his ask.
 
 **Three engine fixes the fork forced, worth remembering:**
 - The race code indexed `cars[c.lastHitBy]` assuming `id === array index`. With a spawner the

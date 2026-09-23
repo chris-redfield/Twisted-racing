@@ -15,7 +15,7 @@
 </head>
 <body>
 <div id="wrap"><canvas id="cv"></canvas></div>
-<div id="hint">1 or 2 to pick players &middot; P1 WASD+SHIFT drives &middot; P2 ARROWS aim/fire (or mouse) &middot; R resolution &middot; F fps &middot; P pause &middot; ESC title</div>
+<div id="hint">1 or 2 to pick players &middot; WASD drive &middot; ARROWS aim/fire (or mouse) &middot; SHIFT slew &middot; R resolution &middot; F fps &middot; P pause &middot; ESC title</div>
 <script>
 "use strict";
 // ---------------------------------------------------------------- constants
@@ -45,8 +45,7 @@ const FRONT_MAX = 210;           // how far ahead of the camera you may push (so
 const BACK_KILL = 224;           // fall this far behind the camera and the dust wall grinds you
 const DUST_DPS  = 26;            // damage/second while pinned against the dust wall
 const FENCE_OUT_C = 210;         // perimeter fence, outside the barrier, for the horizon
-let   numPlayers = 2;            // 1 = solo driver only, 2 = split-screen with a gunner
-const SOLO_CANNON = false;       // flip true to give the lone driver a forward cannon (SPACE)
+let   numPlayers = 2;            // 1 = solo (drive + gun, one view), 2 = split-screen with a gunner
 
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d', { alpha:false });
@@ -310,11 +309,9 @@ function startMatch(np){
   me.invuln = 2.4; me.missiles = 2; me.minesLeft = 0; me.turret = 0;
   cars.push(me);
 
-  // the gunner's ammo pads drift down the road ahead of you; solo has no gun, no pads
-  if(numPlayers===2){
-    for(let i=0;i<4;i++)
-      pads.push({ x: (i+1)*260 + rnd(-40,40), y: rnd(-ROAD_HW+30, ROAD_HW-30), item:null, timer:rnd(0,3), bob:0 });
-  }
+  // ammo + repair pads drift down the road ahead of you (both modes now carry a gun)
+  for(let i=0;i<4;i++)
+    pads.push({ x: (i+1)*260 + rnd(-40,40), y: rnd(-ROAD_HW+30, ROAD_HW-30), item:null, timer:rnd(0,3), bob:0 });
 
   camV=CAM_V0; distance=0; wave=1; spawnT=0.8; nextId=1; dustHit=0; convoyKills=0;
   cam.x=0; cam.y=0; cam.shake=0;
@@ -654,8 +651,9 @@ function updateCar(c, dt){
     const boost = held('KeyW') ? 1 : held('KeyS') ? -1 : 0;
     const targetF = clamp(camV + boost*CRUISE_BAND, 60, 240);
     throttle = clamp((targetF - fwdNow)/40, -1, 1);
-    if(numPlayers===2) updateTurret(c, dt);
-    else if(SOLO_CANNON && (held('Space')||held('ArrowUp'))) fireCannon(c);
+    // the gun rides in both modes now. In 2P it's the second seat; in 1P the solo
+    // driver works it too (WASD to drive, arrows or mouse to aim and fire).
+    updateTurret(c, dt);
   } else {
     aiThink(c, dt);
     throttle=c.aiThrottle; steer=c.aiSteer; brake=c.aiBrake;
@@ -1259,17 +1257,23 @@ function drawTrack(){
   // asphalt band
   ctx.fillStyle=groundTile;
   ctx.fillRect(x0*S, -ROAD_HW*KY*S, (x1-x0)*S, 2*ROAD_HW*KY*S);
+
+  // The dash phase is tied to cam.x, so the markings stream toward you as you
+  // drive - without this they sit at fixed screen positions and the road looks
+  // frozen even though the world is moving.
+  const scroll = cam.x*S;
   // shoulder rumble strips just inside each barrier
   ctx.setLineDash([13*S,13*S]);
   for(const sy of [-(ROAD_HW-9), (ROAD_HW-9)]){
     ctx.lineWidth=5*S;
-    ctx.strokeStyle='#ddd3c6'; ctx.lineDashOffset=0;
+    ctx.strokeStyle='#ddd3c6'; ctx.lineDashOffset = scroll % (26*S);
     ctx.beginPath(); ctx.moveTo(x0*S, sy*KY*S); ctx.lineTo(x1*S, sy*KY*S); ctx.stroke();
-    ctx.strokeStyle='#a33a2a'; ctx.lineDashOffset=13*S;
+    ctx.strokeStyle='#a33a2a'; ctx.lineDashOffset = (scroll + 13*S) % (26*S);
     ctx.beginPath(); ctx.moveTo(x0*S, sy*KY*S); ctx.lineTo(x1*S, sy*KY*S); ctx.stroke();
   }
   // dashed lane markings, two lanes each side of centre
   ctx.setLineDash([26*S,22*S]); ctx.lineWidth=3*S; ctx.strokeStyle='rgba(221,211,198,.5)';
+  ctx.lineDashOffset = scroll % (48*S);
   for(const ly of [-ROAD_HW*0.5, 0, ROAD_HW*0.5]){
     ctx.beginPath(); ctx.moveTo(x0*S, ly*KY*S); ctx.lineTo(x1*S, ly*KY*S); ctx.stroke();
   }
@@ -1284,6 +1288,21 @@ function convoyWallPath(y){
   const x0 = cam.x - VHW - 120, x1 = cam.x + VHW + 120;
   p.moveTo(x0*S, y*KY*S); p.lineTo(x1*S, y*KY*S);
   return p;
+}
+
+// posts along a barrier at fixed WORLD-x intervals. Because they live at world
+// positions, they slide past as the camera advances - the wall's motion cue.
+const POST_STEP = 44;
+function drawWallPosts(y){
+  const x0 = cam.x - VHW - 120, x1 = cam.x + VHW + 120;
+  const w = 3*S;
+  for(let px = Math.ceil(x0/POST_STEP)*POST_STEP; px<=x1; px+=POST_STEP){
+    const b = toScreen(px, y, 0), t = toScreen(px, y, TRK.WALL+3);
+    ctx.fillStyle = '#3c2f44';
+    ctx.fillRect(Math.round(b.x - w/2), Math.round(t.y), Math.round(w), Math.round(b.y - t.y));
+    ctx.fillStyle = '#a894b0';
+    ctx.fillRect(Math.round(b.x - w/2), Math.round(t.y), Math.round(w), Math.max(1,Math.round(2*S)));
+  }
 }
 
 // walls are split into far/near halves each frame so cars draw between them
@@ -2008,6 +2027,11 @@ function rcWalls(camX, camY, bearing){
       const band = (rcHitU[k]*2.6)|0;
       let f = 1 - fog*0.72;
       if(band & 1) f *= 0.80;
+      // barrier posts anchored to WORLD x, so they visibly stream past as you drive
+      // forward (the along-wall coordinate maps back to a world position here).
+      const worldX = ringCenterX - RING_SPAN + rcHitU[k]*RING_STEP;
+      const postPhase = ((worldX % POST_STEP)+POST_STEP) % POST_STEP;
+      if(postPhase < 5) f *= 0.55;
       rcCtx.fillStyle = shade(r.col, f);
       rcCtx.fillRect(x, y0, 1, y1-y0);
 
@@ -2196,8 +2220,9 @@ let mouseAim=0, mouseFire=false, mouseFire2=false;
 function bindGunnerMouse(){
   cv.addEventListener('contextmenu', e=>e.preventDefault());
   cv.addEventListener('mousemove', e=>{
-    const p=PANE_P2;
-    if(!p || numPlayers!==2){ mouseAim=0; return; }
+    // the gun's pane is P2 in a convoy, the whole driving view in solo
+    const p = numPlayers===2 ? PANE_P2 : PANE_P1;
+    if(!p){ mouseAim=0; return; }
     const r=cv.getBoundingClientRect();
     const px=(e.clientX-r.left)*(W/r.width), py=(e.clientY-r.top)*(H/r.height);
     if(px<p.x*PX || px>(p.x+p.w)*PX || py<p.y*PX || py>(p.y+p.h)*PX){ mouseAim=0; return; }
@@ -2209,7 +2234,7 @@ function bindGunnerMouse(){
   cv.addEventListener('mousedown', e=>{
     Snd.boot();
     if(state!=='play'){ if(state==='title') startMatch(numPlayers); else if(state==='over') state='title'; return; }
-    if(numPlayers===2){ if(e.button===2) mouseFire2=true; else mouseFire=true; }
+    if(e.button===2) mouseFire2=true; else mouseFire=true;
   });
   cv.addEventListener('mouseup', e=>{ if(e.button===2) mouseFire2=false; else mouseFire=false; });
 }
@@ -2338,18 +2363,25 @@ function drawDriverHUD(){
 
   // hull + speed, bottom-left
   plate(p.x+6, p.y+p.h-42, 118, 36);
-  ctx.fillStyle='#9d8ea5'; ctx.fillText(numPlayers===2?'P1 DRIVER':'DRIVER', p.x+11, p.y+p.h-38);
+  ctx.fillStyle='#9d8ea5'; ctx.fillText(numPlayers===2?'P1 DRIVER':'DRIVER / GUNNER', p.x+11, p.y+p.h-38);
   bar(p.x+11, p.y+p.h-27, 100, 6, me.hp/me.maxHp,
       me.hp>me.maxHp*0.5?'#4ade80':me.hp>me.maxHp*0.25?'#e0b73c':'#f0503c');
   bar(p.x+11, p.y+p.h-17, 100, 4, clamp(Math.abs(me.speed||0)/232,0,1), '#57b7d6');
   if(dustHit>0){ ctx.fillStyle='#e0733c'; ctx.fillText('!! DUST WALL !!', p.x+11, p.y+p.h-52); }
+  // solo carries its own gun readout (in convoy this lives in the gunner pane)
+  if(numPlayers===1){
+    plate(p.x+p.w-70, p.y+p.h-42, 64, 36);
+    ctx.fillStyle='#9d8ea5'; ctx.fillText('GUN', p.x+p.w-64, p.y+p.h-38);
+    ctx.fillStyle= me.cool>0 ? '#5a4a5e' : '#e0b73c'; ctx.fillText('CANNON', p.x+p.w-64, p.y+p.h-27);
+    ctx.fillStyle='#f97362'; ctx.fillText('MSL '+me.missiles, p.x+p.w-64, p.y+p.h-16);
+  }
 
   // distance survived (the score) + wave, top-left
   plate(p.x+6, p.y+6, 96, 28);
   ctx.font='bold 14px monospace'; ctx.fillStyle='#e0b73c';
   ctx.fillText(Math.floor(distance)+'m', p.x+11, p.y+9);
   ctx.font='8px monospace'; ctx.fillStyle='#9d8ea5';
-  ctx.fillText('WAVE '+wave+(numPlayers===2?'   KILLS '+convoyKills:''), p.x+11, p.y+24);
+  ctx.fillText('WAVE '+wave+'   KILLS '+convoyKills, p.x+11, p.y+24);
 
   // low-hp vignette so you feel the danger
   if(me.hp < me.maxHp*0.3 && !me.dead){
@@ -2391,15 +2423,15 @@ function drawTitle(){
   ctx.font='8px monospace';
   const cols=[
     { x:VW*0.26, tag:'1  SOLO RUN', col:'#57b7d6', rows:[
-      'just you and the road.',
+      'you drive and you gun.',
       '',
-      'A / D            steer',
-      'W / S            speed up / drop back',
+      'W A S D          drive',
+      'ARROWS           aim / fire',
       'SHIFT            hard slew',
       '',
-      'no gun - ram them off',
-      'the road and survive the',
-      'oncoming wrecks.' ]},
+      'one view, one pair of',
+      'hands. grab the ammo',
+      'drops and stay alive.' ]},
     { x:VW*0.74, tag:'2  CONVOY (2P)', col:'#f0503c', rows:[
       'a driver and a gunner.',
       '',
@@ -2472,7 +2504,7 @@ function step(dt){
   for(const c of cars) updateCar(c,dt);
   carVsCar(dt);
   updateShots(dt);
-  if(numPlayers===2) updatePads(dt);
+  updatePads(dt);
   updateFx(dt);
   gunnerHit=Math.max(0,gunnerHit-dt);
   gunnerKill=Math.max(0,gunnerKill-dt);
@@ -2520,11 +2552,19 @@ function drawAimLine(){
   if(me.dead) return;
   const a=aimAngle(me);
   const p0=toScreen(me.x,me.y,7);
-  const p1=toScreen(me.x+Math.cos(a)*150, me.y+Math.sin(a)*150, 7);
+  const reach=numPlayers===1?170:150;
+  const p1=toScreen(me.x+Math.cos(a)*reach, me.y+Math.sin(a)*reach, 7);
   ctx.save();
   ctx.globalAlpha=0.35; ctx.strokeStyle='#f0503c'; ctx.lineWidth=Math.max(1,S);
   ctx.setLineDash([4*S,4*S]);
   ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y); ctx.stroke();
+  // a reticle at the tip so the solo player (who is also the gunner) can read the aim
+  ctx.setLineDash([]); ctx.globalAlpha=0.8;
+  const g=5*S;
+  ctx.beginPath();
+  ctx.moveTo(p1.x-g,p1.y); ctx.lineTo(p1.x+g,p1.y);
+  ctx.moveTo(p1.x,p1.y-g); ctx.lineTo(p1.x,p1.y+g);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -2558,8 +2598,10 @@ function render(){
   ctx.translate(Math.round(sx), Math.round(sy));
 
   drawTrack();
-  // left barrier draws behind the cars, right barrier in front, so cars sit between
+  // left barrier draws behind the cars, right barrier in front, so cars sit between.
+  // posts sit on each barrier at world-x intervals, so they stream past as you drive.
   strokeWall(convoyWallPath(-ROAD_HW), TRK.WALL, '#6a5570');
+  drawWallPosts(-ROAD_HW);
 
   for(const pd of pads) if(inView(pd.x,pd.y)) drawPad(pd);
   for(const m of mines) if(inView(m.x,m.y)) drawMine(m);
@@ -2572,7 +2614,8 @@ function render(){
   for(const d of drawables) d.f();
 
   strokeWall(convoyWallPath(ROAD_HW), TRK.WALL, '#6a5570');
-  if(numPlayers===2) drawAimLine();
+  drawWallPosts(ROAD_HW);
+  drawAimLine();                       // the gun exists in both modes now
   drawFx();
   drawDustWall();
   ctx.restore();
