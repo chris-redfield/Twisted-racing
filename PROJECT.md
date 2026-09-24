@@ -35,7 +35,7 @@ been *looked at* — everything below the fold is simulated, not felt. First pas
 
 - **Feel of the forced scroll.** Does auto-cruise + W/S trim within a band read as "manage your
   speed", or does it feel like you're on rails? The tunables are a labelled block near the top:
-  `CAM_V0/CAM_VMAX/CAM_RAMP` (scroll pace), `CRUISE_BAND`, `FRONT_MAX`, `BACK_KILL`, `DUST_DPS`.
+  `CAM_V0/CAM_VMAX/CAM_RAMP` (scroll pace), `CRUISE_BAND`, `FRONT_MAX`, `BACK_EDGE` (soft walls).
 - **Is it dodgeable?** Chargers now hold their spawn lane (they lean only ±0.16 rad toward you),
   so oncoming traffic should be weave-able. If it feels unfair, that lean and the spawn rate
   (`updateSpawner`, `enemyCap`) are the knobs. Headless can't judge this; a human must.
@@ -45,8 +45,9 @@ been *looked at* — everything below the fold is simulated, not felt. First pas
 - **Does the road read as moving now?** Lane dashes + rumble strips scroll with `cam.x`; barrier
   posts stream past on both the 2D and raycast walls. If the dashes appear to scroll the *wrong*
   way, the `lineDashOffset = scroll % …` sign in `drawTrack` is the one-line flip.
-- **The dust wall** behind you is the "keep moving" spine. Check it reads as a threat and that
-  being shoved by it isn't a death spiral.
+- **Is hanging back punished enough?** There is no back-edge damage anymore (the dust wall was
+  removed); pursuers from behind are the only thing stopping you from parking at the back wall. If
+  that's too safe, lean on the spawner (more/faster pursuers) rather than reinstating a hazard.
 
 **Deferred, agreed with him this session:** the **L-route** (left-to-right, then a corner, then
 "up") is a *later* experiment — "let's do straight for now, then in the future we experiment with
@@ -108,8 +109,8 @@ Nothing is committed to yet — pick from here or bring something new.
 
 ## Known rough edges
 
-- **Convoy balance is simulated, not played** (as with loop mode). The scroll pace, dust-wall
-  damage, spawn rate and enemy aggression are all first-guess numbers in the labelled tunables
+- **Convoy balance is simulated, not played** (as with loop mode). The scroll pace, spawn rate
+  and enemy aggression are all first-guess numbers in the labelled tunables
   block and `updateSpawner`. Nobody has felt them yet.
 - Convoy solo (1P) now **drives and guns in one view** (his follow-up: "the car should be able to
   shoot in 1 player mode… you only control the machine gun without the 2 player view"). WASD drives,
@@ -169,8 +170,9 @@ camera advances on its own and you steer/trim speed within a band.
 along +x; you travel left→right (which the existing axonometric projection already maps to
 screen-right, so no camera rework). The camera force-scrolls at an escalating `camV`; the player
 auto-cruises to hold station and W/S trim ±`CRUISE_BAND` — your position in the frame *is* the
-speed you chose. Fall to the back edge and a **dust wall** grinds you (`DUST_DPS`); the front edge
-is a soft cap. Distance survived is the score. A rolling spawner (`updateSpawner`/`enemyCap`)
+speed you chose. Soft walls front (`FRONT_MAX`) and back (`BACK_EDGE`) keep you in frame, with no
+damage on either (an earlier dust-wall hazard was tried and cut — see the log). Distance survived
+is the score. A rolling spawner (`updateSpawner`/`enemyCap`)
 injects **chargers** (oncoming, hold their lane, pass through and exit behind) and **pursuers**
 (spawn behind, chase and ram), scaling with `wave`, and culls anything off-frame so the car list
 stays bounded (headless: capped at 5 cars over a 60s run).
@@ -195,6 +197,13 @@ mouse stops; click to grab the pointer, `Esc` releases it), **1P is top-down →
 gun points at the cursor's world position, `updateTurret` inverts `toScreen` for the ground point).
 Keyboard arrows stay as the rate-based fallback for both. Verified headless: twin-stick aims at the
 cursor, FPS holds-when-still (no drift), pointer-lock calls are guarded so the harness still runs.
+
+*Third follow-up — the dust wall is gone.* First tried it as a flat bar, then as a churning
+sandstorm; he disliked both, so it was **removed entirely** — visual and damage. The back of the
+frame is now just a harmless **soft wall** (`BACK_EDGE`) that stops you sliding off-screen; there
+is no back-edge damage and no `dustHit`/`drawDustWall`/`DUST_DPS` anymore. The "keep moving"
+pressure now comes only from the enemies (pursuers ram you from behind if you hang back). If that
+ever feels too soft, the spawner is the knob, not a wall.
 
 **Three engine fixes the fork forced, worth remembering:**
 - The race code indexed `cars[c.lastHitBy]` assuming `id === array index`. With a spawner the

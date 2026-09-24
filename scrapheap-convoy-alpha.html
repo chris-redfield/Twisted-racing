@@ -42,8 +42,7 @@ const CAM_VMAX  = 214;           // top forced scroll speed
 const CAM_RAMP  = 0.5;           // how fast the scroll speeds up (units/s per s)
 const CRUISE_BAND = 74;          // W/S trims your speed +/- this around the scroll pace
 const FRONT_MAX = 210;           // how far ahead of the camera you may push (soft wall)
-const BACK_KILL = 224;           // fall this far behind the camera and the dust wall grinds you
-const DUST_DPS  = 26;            // damage/second while pinned against the dust wall
+const BACK_EDGE = 240;           // soft wall this far behind the camera, so you can't leave the frame
 const FENCE_OUT_C = 210;         // perimeter fence, outside the barrier, for the horizon
 let   numPlayers = 2;            // 1 = solo (drive + gun, one view), 2 = split-screen with a gunner
 
@@ -240,7 +239,6 @@ let bestDist = 0;                // best run this session
 let wave = 1;                    // difficulty tier, climbs with distance
 let spawnT = 0;                  // seconds until the next enemy is injected
 let nextId = 1;                  // player is 0; every spawned enemy gets a fresh id
-let dustHit = 0;                 // >0 while being ground by the dust wall (HUD/vignette)
 let convoyKills = 0;             // enemies wrecked this run
 function carById(id){ for(const c of cars) if(c.id===id) return c; return null; }
 
@@ -313,7 +311,7 @@ function startMatch(np){
   for(let i=0;i<4;i++)
     pads.push({ x: (i+1)*260 + rnd(-40,40), y: rnd(-ROAD_HW+30, ROAD_HW-30), item:null, timer:rnd(0,3), bob:0 });
 
-  camV=CAM_V0; distance=0; wave=1; spawnT=0.8; nextId=1; dustHit=0; convoyKills=0;
+  camV=CAM_V0; distance=0; wave=1; spawnT=0.8; nextId=1; convoyKills=0;
   cam.x=0; cam.y=0; cam.shake=0;
   matchTime=0; winner=null; paused=false;
   gunnerHit=0; gunnerKill=0;
@@ -2387,7 +2385,6 @@ function drawDriverHUD(){
   bar(p.x+11, p.y+p.h-27, 100, 6, me.hp/me.maxHp,
       me.hp>me.maxHp*0.5?'#4ade80':me.hp>me.maxHp*0.25?'#e0b73c':'#f0503c');
   bar(p.x+11, p.y+p.h-17, 100, 4, clamp(Math.abs(me.speed||0)/232,0,1), '#57b7d6');
-  if(dustHit>0){ ctx.fillStyle='#e0733c'; ctx.fillText('!! DUST WALL !!', p.x+11, p.y+p.h-52); }
   // solo carries its own gun readout (in convoy this lives in the gunner pane)
   if(numPlayers===1){
     plate(p.x+p.w-70, p.y+p.h-42, 64, 36);
@@ -2528,21 +2525,13 @@ function step(dt){
   updateFx(dt);
   gunnerHit=Math.max(0,gunnerHit-dt);
   gunnerKill=Math.max(0,gunnerKill-dt);
-  dustHit=Math.max(0,dustHit-dt*2);
 
-  // keep the player inside the frame: a soft wall ahead, the grinding dust wall behind
+  // keep the player inside the frame with soft walls front and back (no damage -
+  // the "keep moving" pressure comes from the enemies now)
   if(!me.dead){
     const rel = me.x - cam.x;
     if(rel > FRONT_MAX){ me.x = cam.x + FRONT_MAX; if(me.vx>camV) me.vx = camV; }
-    if(rel < -BACK_KILL){
-      me.x = cam.x - BACK_KILL;
-      if(me.vx < camV) me.vx = camV*0.6 + me.vx*0.4;         // shoved forward by the wall
-      damage(me, DUST_DPS*dt, null);
-      dustHit = 1;
-      if(Math.random()<0.5) particles(me.x-30, me.y+rnd(-20,20), 6, 3,
-        {col:['#6b5c72','#8a7a68','#4a3f50'],spd0:20,spd1:90,size:3,life0:0.2,life1:0.5,grav:-10});
-      cam.shake=Math.min(5,cam.shake+2*dt*10);
-    }
+    if(rel < -BACK_EDGE){ me.x = cam.x - BACK_EDGE; if(me.vx < camV) me.vx = camV*0.6 + me.vx*0.4; }
   }
 
   // camera tracks the player laterally, gently, and never leaves the corridor
@@ -2588,21 +2577,6 @@ function drawAimLine(){
   ctx.restore();
 }
 
-// the grinding dust wall behind you, drawn as a screen-height band at its world x
-function drawDustWall(){
-  const wx = cam.x - BACK_KILL;
-  const s0 = toScreen(wx, cam.y, 0).x;
-  if(s0 < -40) return;                            // off the left of the frame
-  const g = ctx.createLinearGradient(s0-60*S, 0, s0+8*S, 0);
-  g.addColorStop(0, 'rgba(58,47,42,0)');
-  g.addColorStop(0.7, 'rgba(74,60,52,.55)');
-  g.addColorStop(1, 'rgba(40,32,30,.85)');
-  ctx.fillStyle=g;
-  ctx.fillRect(s0-60*S, 0, 68*S, H);
-  ctx.fillStyle='rgba(20,15,14,.9)';
-  ctx.fillRect(s0, 0, 6*S, H);
-}
-
 function render(){
   ctx.fillStyle='#0b0810'; ctx.fillRect(0,0,W,H);
 
@@ -2637,7 +2611,6 @@ function render(){
   drawWallPosts(ROAD_HW);
   drawAimLine();                       // the gun exists in both modes now
   drawFx();
-  drawDustWall();
   ctx.restore();
 
   drawHUD();
