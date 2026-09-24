@@ -30,32 +30,33 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
   game, **not** merged; only the gunner build's loop map was reused for the LOOP stage.
 - Car sprites are baked at runtime from four low-poly meshes — no external art yet.
 - Audio is fully synthesised (WebAudio); there is no music.
+- **`scrapheap-madmax-ascii.html` — experimental fork** of SCRAPHEAP (2026-09-23): ASCII P2 view
+  (G cycles NORMAL / ASCII / ASCII SOLID, default SOLID) + roadside buildings in both views (B
+  toggles). The canonical file is untouched; fold this in only once it's played and approved.
 - `tools/headless.js` runs any build in node with a stubbed canvas.
+- `tools/shot.js` takes **real-browser screenshots** (Windows Chrome from WSL, `--screenshot` +
+  virtual time; the game file is never modified). Shots land in `.shots/` (git-ignored).
 
-## NEXT SESSION STARTS HERE — play SCRAPHEAP CONVOY in a browser
+## NEXT SESSION STARTS HERE — play-test the ASCII/buildings fork
 
-The Mad Max mode is built (`scrapheap-convoy-alpha.html`, 2026-09-22 in the log). It has never
-been *looked at* — everything below the fold is simulated, not felt. First pass:
+**Built 2026-09-23:** `scrapheap-madmax-ascii.html`. Open it, pick a stage, pick **2 CO-OP** (the
+ASCII view is P2's pane; solo has no raycast view). **G** cycles the P2 view, **B** toggles
+buildings — both work on the menu and mid-run. Decide: keep / tune / fold into the canonical file.
+Tuning knobs: `ASC_LO/ASC_HI/ASC_GAMMA` (tone curve), `ASC_CW/ASC_CH` (cell size),
+`BLD_TIERS`/`BLD_TIERS_LOOP` (placement), `FLOOR_H`/`WIN_STEP` (windows).
+Known soft spots: plain ASCII mode leaves dark building faces blank (SOLID fixes that, hence the
+default); in CONVOY's 2D pane the near-side buildings only peek in at the bottom edge, drawn
+see-through so they never hide the road.
 
-- **Feel of the forced scroll.** Does auto-cruise + W/S trim within a band read as "manage your
-  speed", or does it feel like you're on rails? The tunables are a labelled block near the top:
-  `CAM_V0/CAM_VMAX/CAM_RAMP` (scroll pace), `CRUISE_BAND`, `FRONT_MAX`, `BACK_EDGE` (soft walls).
-- **Is it dodgeable?** Chargers now hold their spawn lane (they lean only ±0.16 rad toward you),
-  so oncoming traffic should be weave-able. If it feels unfair, that lean and the spawn rate
-  (`updateSpawner`, `enemyCap`) are the knobs. Headless can't judge this; a human must.
-- **Solo now drives and guns** (his follow-up). One person on WASD + arrows/mouse is busy by
-  design; check it's playable and not overwhelming, and whether the reticle-on-aim-line reads
-  well without the raycast pane.
-- **Does the road read as moving now?** Lane dashes + rumble strips scroll with `cam.x`; barrier
-  posts stream past on both the 2D and raycast walls. If the dashes appear to scroll the *wrong*
-  way, the `lineDashOffset = scroll % …` sign in `drawTrack` is the one-line flip.
-- **Is hanging back punished enough?** There is no back-edge damage anymore (the dust wall was
-  removed); pursuers from behind are the only thing stopping you from parking at the back wall. If
-  that's too safe, lean on the spawner (more/faster pursuers) rather than reinstating a hazard.
+**First-pass browser check still owed** on `scrapheap-madmax-alpha.html` (nothing has been *looked
+at*; balance is simulated): does the forced scroll read as "manage your speed" not "on rails"
+(`CAM_V0/CAM_VMAX/CAM_RAMP`, `CRUISE_BAND`, `FRONT_MAX`/`BACK_EDGE`); are oncoming chargers
+dodgeable (`updateSpawner`/`enemyCap`); is solo drive+gun playable not overwhelming; does the road
+read as moving (dash `lineDashOffset` sign in `drawTrack` is a one-line flip if it streams the wrong
+way); and the **LOOP race has never been steered by a human** (AI laps fine headless).
 
-**Deferred, agreed with him this session:** the **L-route** (left-to-right, then a corner, then
-"up") is a *later* experiment — "let's do straight for now, then in the future we experiment with
-the L route". The design notes for it are worth keeping, so here they are for whoever builds it:
+**Deferred:** the **L-route** (left→right, then a corner, then up) — "straight for now, the L route
+later". Design notes kept for whoever builds it:
 
 > A one-way L needs an **open** path that runs 0 → 1 once without wrapping, and almost certainly a
 > **waypoint polyline** (straight, corner, straight) rather than a parametric curve. The convoy
@@ -163,6 +164,46 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-09-23 — ASCII gunner view + roadside buildings (fork)
+New file `scrapheap-madmax-ascii.html`, forked from the canonical game; the original is
+byte-identical.
+
+**ASCII.** Studied ascii-city first and corrected last session's notes: it is ASCII *always* (a char
+grid); `glyphsEnabled` is only its solid-background option; the reusable trick is `fn264`, which
+blits glyphs from a pre-rendered atlas instead of `fillText` per cell. Implemented as a post-process
+on our raycaster: read back the RC buffer, average 2x3 px cells, luminance picks a glyph from
+` .:-=+*%#@`, and colour comes from compositing — glyphs drawn white on black, then a cols x rows
+tint image scaled over them with `multiply`. So per cell it's one atlas `drawImage`, no per-cell
+colour state. **Tone curve fitted to a measured frame**: median luminance 37, p90 55, p99 83, lit
+windows ~150 — the first guess (14..150) put 80% of cells on the two faintest glyphs.
+
+**Buildings.** ascii-city is itself a 2D-ray-fan raycaster, so buildings are simply more wall
+segments: each is a quad (road face + two ends as an open 3-segment ring; the back face can't be
+hit from the road). Hash-generated per slot along the road, so nothing is stored. Two tiers: near
+street frontage (between barrier and fence, 32–76 tall) and far skyline (beyond the fence, 130–300,
+rising over it); fog turns the far tier into silhouettes. Lit windows per storey. In the 2D pane
+they're extruded boxes with windowed faces; camera-side ones draw after the cars, see-through.
+Cost (node, V8): `rcWalls` 0.8 → 2.6 ms convoy, 1.2 → 2.1 ms loop.
+
+**Tooling.** `tools/shot.js` — real screenshots. The Playwright headless shell here lacks system
+libs (`libnspr4`) and Windows Chrome's debug port isn't reachable from WSL, so it uses Chrome's
+one-shot `--screenshot`/`--dump-dom` with `--virtual-time-budget` on a temp copy with setup JS
+injected. Gotcha: under virtual time ~3 s budget ≈ 0.5 s of game (rAF is throttled), so fast-forward
+with `for(...) step(DT)` in the setup; and `performance.now()` is frozen during JS, so time code in
+node instead.
+
+### 2026-09-23 — lowered the gunner's gun; queued the ASCII/buildings challenge
+Two small things to close the session. **Gun height:** he felt the 2P gun sat too high on the car;
+lowered `EYE_Z` 38 → 26 (and `BARRIER_H` 22 → 16 with it, so the wall stays below the horizon and
+doesn't re-introduce the tilt, while staying taller than a car for the occlusion cheat). Global
+raycaster params → applies to all three stages' 2P view; the tracer follows `EYE_Z` down. Verified
+headless, no errors. `[` `]` still tune it live toward the road if he wants lower.
+
+**Next challenge queued (not built):** an **ASCII render mode for the P2 view** (reuse the technique
+from `C:\proj\ascii-city`, toggle on the menu) and **roadside buildings with near/far depth**. See
+the NEXT SESSION block at the top and memory `next-ascii-p2-and-roadside-buildings`. He explicitly
+wanted this only summarized for a clean handover.
 
 ### 2026-09-23 — added the LOOP race as a third stage; shelved the singles
 His ask: fold a loop race in as a third stage, **reuse its map, not its code** ("this is old code,
