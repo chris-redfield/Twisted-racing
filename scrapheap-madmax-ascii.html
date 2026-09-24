@@ -2646,7 +2646,9 @@ function rcSprites(camX, camY, bearing){
       rcCtx.fillStyle = (Math.floor(bb.ref.blink*6)%2 && bb.ref.arm<=0) ? '#f0503c' : '#3a3040';
       rcCtx.fillRect(sx-s2/2, ground-s2*0.6, s2, s2*0.6);
     } else if(bb.kind==='shot'){
-      const s2=Math.max(1, (bb.ref.kind==='missile'?8:3)*scale);
+      // cannon tracer halved (3 -> 1.5): leaving the gun, 8 units out, it was 55px
+      // of a 90px pane. Missiles keep their size.
+      const s2=Math.max(1, (bb.ref.kind==='missile'?8:1.5)*scale);
       // The player's own tracer is drawn leaving the gun rather than the
       // bodywork - the gun really is up on the ring mount, and at road height it
       // starts below the bottom of this pane and reads as a third of a second of
