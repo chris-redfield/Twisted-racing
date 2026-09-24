@@ -165,6 +165,24 @@ Nothing is committed to yet — pick from here or bring something new.
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
 
+### 2026-09-24 — ASCII fork polish: tracer, lights, skyline giants
+All in `scrapheap-madmax-ascii.html` (on top of `f065286`).
+- **Tracer** (committed in f065286): P2's cannon tracer drawn at half size (3 -> 1.5); 8 units
+  out it was 55px of a 90px pane. Render-only; P1 and hitboxes untouched.
+- **Tried and rejected:** smaller ASCII font (11px: no visible change; 5px: glyphs become dots)
+  and smaller cells (6x9: reads like a picture; its GPU downsample also made far windows uglier).
+  The original 8x12 cell / 12px bold font / exact 2x3 averaging stays.
+- **Window lights from any distance/angle.** Were cut off beyond ~880 units, point-sampled (missed
+  on angled faces), and averaged away in ASCII. Now: near/far LOD (near = real windows with
+  footprint overlap test; far = lit windows only, min 1px), lights resist fog, and in ASCII a warm
+  lit pixel wins its cell. Full strength was "too much noise", so it's all on **`LIGHTS_MIX`**
+  (0 = original, 1 = full; set **0.5**). Measured lit ASCII cells down the road: 49 -> 163 (345 at 1).
+- **Occlusion skip in `rcWalls`:** a farther wall whose top is below a nearer wall's top is fully
+  hidden and skipped. Paid for the lights (6.7 -> 2.9 ms); identical light counts with/without.
+- **Skyline giants** (`SKY_TIER`, `BLD_SKY`/`BLD_SKY_LOOP`): towers 380–850 tall, 900–1600 out,
+  generated +/-`SKY_REACH`=3500 along the road, `SKY_LIT`=0.45 of the usual lit share. **P2 only** —
+  skipped in the driving pane on purpose. rcWalls ~2.7 -> ~4.3 ms (node).
+
 ### 2026-09-23 — ASCII gunner view + roadside buildings (fork)
 New file `scrapheap-madmax-ascii.html`, forked from the canonical game; the original is
 byte-identical.
