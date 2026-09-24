@@ -2045,10 +2045,13 @@ let   RC_FOV = 95 * Math.PI/180;   // wide: a turret gunner wants peripheral vis
 // screen is (EYE_Z-BARRIER_H)/lateralGap, and that edge pivots about the centre
 // of the view - which the eye reads as the camera rotating. At eye 27 the gap
 // was 5, so the edge sat on the horizon and swung wildly when you closed in.
-// Standing the gunner up on his ring mount puts the barrier clearly below the
-// horizon instead, where it reads as a low wall rather than a tilting skyline.
-let   EYE_Z  = 38;                 // gunner's eye height above the road ([ ] to tune)
-const BARRIER_H = 22;              // still low enough to see over into the corner
+// The gun used to sit at 38 (up on a ring mount); he found that too elevated on
+// the car, so it now sits lower at 26. To keep the barrier clearly below the
+// horizon (and avoid that tilt) the FPS barrier came down with it, staying just
+// above car height (~13) so the cheap per-column occlusion still holds. `[` `]`
+// still tune EYE_Z live if you want it lower still, down toward the road.
+let   EYE_Z  = 26;                 // gunner's eye/gun height above the road ([ ] to tune)
+const BARRIER_H = 16;              // still see over it into the corner, still taller than a car
 const WALL_T = 9;                  // barrier thickness, for the visible top ribbon
 const SHOT_SETTLE = 260;           // units over which the gunner's tracer eases down
 const FENCE_H   = 96;

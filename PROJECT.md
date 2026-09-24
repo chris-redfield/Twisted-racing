@@ -125,14 +125,18 @@ Nothing is committed to yet — pick from here or bring something new.
 - The convoy build is a **fork of the gunner build's engine**, which is itself a fork of the
   circuit engine. That's now three copies of the core; an engine fix has to be applied to all
   three until we decide to unify.
-- Gunner mode's first-person barrier height (22) is a cheat: the 2D half draws the same barrier at
-  `TRK.WALL = 11`. It was raised so the wall reads as a wall without blocking the corner ahead.
+- The gunner's eye/gun height `EYE_Z` was lowered 38 → **26** (2026-09-23) because 38 read as the
+  gun sitting too high on the car. The FPS barrier `BARRIER_H` came down with it (22 → **16**) to
+  keep the wall clearly below the horizon (so it doesn't re-introduce the "tilting skyline" feel)
+  while staying just taller than a car (~13). The tracer follows `EYE_Z`, so it drops too. `[` `]`
+  tune `EYE_Z` live (12–70) if he wants it lower still, toward the road.
 - **`EYE_Z` and `RC_FOV` are feel numbers, not derived ones.** Tune them live with `[` `]` and
   `-` `=` (both shown in the `F` overlay) rather than reasoning about them. The projection stays
   exactly correct at any value — verified at eye 24/38/52 and FOV 70/95/115.
 - Sprite occlusion in the gunner view is per-column nearest-wall only, so a car is either fully
-  drawn or fully hidden. Fine while the barrier (22) is taller than a car (~13); it would need
+  drawn or fully hidden. Fine while the barrier (16) is taller than a car (~13); it would need
   per-pixel depth if anything shorter ever needs to partly hide something.
+- The FPS barrier (16) is a cheat: the 2D half draws the same barrier at `TRK.WALL = 11`.
 - **Loop mode has never been run in a real browser.** It is verified headless (loads, steps,
   renders, survives zoom/resolution churn, full run and restart) but nothing has been *looked at*.
   The HUD layout at 480×270 and mouse hit-testing are the likely suspects for a first pass.
