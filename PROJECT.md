@@ -10,27 +10,26 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
 
 **Status:** playable alpha, two builds.
 
-- `scrapheap-circuit-alpha.html` — the driving game. BRAWL (Scrapyard, Thunder Bowl) and
-  RACE (Dust Oval), four AI cars, complete and playable. **Unchanged since the web sessions.**
-- `scrapheap-loop-alpha.html` — SCRAPHEAP LOOP, the auto-racer experiment (2026-09-10). Runs end
-  to end: autopilot driver, 64-slot board, 9 parts, 4 upgrades, rivals, cash-out and death screens.
-  Never been opened in a browser yet — see *Known rough edges*.
-- Car sprites are baked at runtime from four low-poly meshes — no external art in the loop yet.
+- **`scrapheap-madmax-alpha.html` — SCRAPHEAP, the canonical game.** One file, **three stages**
+  picked from the title (then solo/co-op):
+  - **1 CONVOY** — horizontal Mad Max survival (forward +x, gunner stacks on top).
+  - **2 ASCENT** — vertical survival, bottom→top climb (forward −y, gunner to the right).
+  - **3 LOOP** — a three-lap circuit **race** round the **gunner build's 780×470 loop** map (four
+    cars, weapons hot, laps/positions). The gunner build was itself the split-screen race on this
+    loop, so the LOOP stage is its evolved form (now with a solo option too).
+  A `stage` flag (→ `vertical`/`race`) branches the axis- and mode-dependent code; each stage runs
+  its already-verified path. Verified headless; the survival stages are browser-iterated, the loop
+  race is headless-only so far.
+- `scrapheap-circuit-alpha.html` — the original driving game. BRAWL (Scrapyard, Thunder Bowl) and
+  RACE (Dust Oval), four AI cars. **Unchanged since the web sessions.** The only other .html left
+  in the main dir besides SCRAPHEAP.
+- `reference/` — older builds kept for reference. Three were folded into SCRAPHEAP:
+  `scrapheap-convoy-alpha.html` (→ CONVOY), `scrapheap-ascent-alpha.html` (→ ASCENT),
+  `scrapheap-gunner-alpha.html` (→ LOOP; its map + race are the loop stage). The fourth,
+  `scrapheap-loop-alpha.html`, is the old Loop-Hero auto-racer (board/parts/economy) — a distinct
+  game, **not** merged; only the gunner build's loop map was reused for the LOOP stage.
+- Car sprites are baked at runtime from four low-poly meshes — no external art yet.
 - Audio is fully synthesised (WebAudio); there is no music.
-- `scrapheap-gunner-alpha.html` — SCRAPHEAP GUNNER, the two-player experiment (2026-09-21).
-  Split screen, race only: P1 drives in the 2D view, P2 works a 360° gun in a first-person
-  raycast view out of the same car. Runs end to end. Camera/gun feel signed off in a browser.
-- `scrapheap-convoy-alpha.html` — SCRAPHEAP CONVOY, the Mad Max survival mode (2026-09-22).
-  Forked from the gunner build. Endless straight road, forced-scroll camera, waves of cars
-  from front and back. Two modes on the title card: **1 SOLO** (one full-screen view, you drive
-  *and* work the gun — WASD + arrows/mouse) and **2 CONVOY** (the split-screen gunner pane
-  returns). The road markings and barrier posts scroll with the camera so the motion reads.
-  Browser-tested and iterated: motion cues, twin-stick / FPS aim, dust wall cut. Playable.
-- `scrapheap-ascent-alpha.html` — SCRAPHEAP ASCENT, the **vertical** variant (2026-09-23). The
-  convoy build rotated 90° in world space: you climb **bottom→top** up a vertical road. Same two
-  modes, but 2P uses a **side-by-side** layout (driver on the tall left pane, gunner on the right)
-  because a vertical road wants vertical screen. Zoomed out ~10% and the vertical soft-walls size
-  to the visible height so the player roams the whole road. Browser-iterated (framing bug fixed).
 - `tools/headless.js` runs any build in node with a stubbed canvas.
 
 ## NEXT SESSION STARTS HERE — play SCRAPHEAP CONVOY in a browser
@@ -160,6 +159,57 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-09-23 — added the LOOP race as a third stage; shelved the singles
+His ask: fold a loop race in as a third stage, **reuse its map, not its code** ("this is old code,
+use our new code"), and move the merged stage singles into `reference/`. (He first named
+`scrapheap-loop-alpha.html`, then corrected it to the **gunner** build — both have a loop map, easy
+mix-up. The map was swapped to the gunner's 780×470 and `scrapheap-loop-alpha.html` stayed in the
+main dir, untouched.)
+
+**What the loop stage is.** A three-lap circuit race — the engine's own ancestor race mode (the
+gunner build) brought back on its reused **780×470** superellipse. Four cars (player + 3 `aiRace`
+bots), laps counted by progress-wrap, positions, weapons-hot, first-to-finish. Only the **map**
+(`makeTrack`, `LOOP` A/B/HW) was reused.
+
+**How it slotted in.** Added `stage` ('convoy'|'ascent'|'loop') → derives `vertical`/`race` in
+`applyStage`. `race` branches were added where the race genuinely differs from survival:
+trackProject/trackPoint (superellipse vs straight), blockHitPoint, startMatch (build loop + grid of
+4, no spawner), updateCar player control (real throttle, not cruise) + the lap/finish block (which
+had survived the fork), step (camera **chases** the player, no forced scroll, `updatePlaces`),
+drawTrack (loop road + `drawStartLine`), render walls (`buildWallPaths` far/near split), the
+raycaster (static loop `rings` via `buildRingsLoop`/`outwardSign`, `trackMask`/`buildTrackMask` for
+the floor, post-darkening skipped), pads (fixed round-the-loop, any car grabs them), and the HUD +
+over screen (place/lap/standings). `TRK.HW` is now per-stage (120 loop / 180 highway) and the loop
+paths re-bake in `rescale`. Menu got a third column and `Digit3`.
+
+**Verified headless:** all three stages × solo/co-op, the menu flow, resolution churn (loop re-bakes
+its paths), rapid 3-stage switching — clean. AI cars lap the circuit and the race finishes (winner +
+standings resolve); a real steering pass in a browser is still owed. `circuit` stays in the main dir;
+`reference/` holds the merged singles (convoy, ascent, gunner) plus the untouched Loop-Hero
+`scrapheap-loop-alpha.html` (he moved that one there too — it was never merged).
+
+### 2026-09-23 — merged the two stages into one file (SCRAPHEAP)
+His ask: put convoy + ascent into a single html file, two stages in one mini-game. Forked convoy →
+`scrapheap-madmax-alpha.html` (kept the two singles as references, per the don't-break-a-working-build
+rule; told him it's now the canonical game and offered to retire the singles).
+
+**How.** A single `let vertical` flag. The two stages are the same engine with the forward/lateral
+axes swapped (convoy: forward +x, lateral y, stack layout; ascent: forward -y, lateral x, side
+layout). Rather than a vector rewrite, each of the ~18 axis-dependent functions **branches on
+`vertical`** and runs the exact code already verified in the standalone — lowest-risk merge. The
+per-stage tunables (`ZOOM2D`, `LAYOUT`, `VCY_BIAS`, `CRUISE_BAND`, fixed-vs-dynamic `FRONT_MAX`/
+`BACK_EDGE`) are set in `applyStage()`, called from `startMatch` before `rescale()`; `rcInit()` is
+re-run there too so the raycaster resizes to the stage's gunner pane (stack 320×90 vs side 160×180).
+
+**Menu.** New two-step flow: `title` picks the stage (1/2), `setup` picks solo/co-op (1/2), ESC
+backs up. `over` adds T = switch stage. Branch points, for the next editor: trackProject/trackPoint,
+blockHitPoint, startMatch (facing + pads), spawnEnemy, updateSpawner cull, aiCharge/aiPursue,
+step (scroll + clamps + lateral follow), inView, updatePads/recycleAhead, drawTrack, convoyWallPath,
+drawWallPosts, render (wall order), buildConvoyRings, onAsphalt, drawGunnerView, and the menus.
+
+Verified headless: all four stage×player combos, the menu flow, resolution churn, rapid
+stage-switching — clean. Both singles still pass untouched. Balance still simulated, not played.
 
 ### 2026-09-23 — SCRAPHEAP ASCENT: the vertical variant
 Sixth build, its own file, forked from convoy. His ask: a stage that goes **bottom→top** (vertical
