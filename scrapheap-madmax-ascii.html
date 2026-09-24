@@ -15,7 +15,7 @@
 </head>
 <body>
 <div id="wrap"><canvas id="cv"></canvas></div>
-<div id="hint">pick a stage, then players &middot; WASD drive &middot; ARROWS aim/fire (or mouse) &middot; SHIFT slew &middot; G ascii gunner &middot; B buildings &middot; R resolution &middot; F fps &middot; P pause &middot; ESC title</div>
+<div id="hint">pick a stage, then players &middot; WASD drive &middot; ARROWS aim/fire (or mouse) &middot; SHIFT slew &middot; G ascii gunner &middot; B buildings &middot; I dev mode &middot; R resolution &middot; F fps &middot; P pause &middot; ESC title</div>
 <script>
 "use strict";
 // ---------------------------------------------------------------- constants
@@ -187,8 +187,15 @@ addEventListener('keyup', e=>{ keys[e.code]=false; });
 addEventListener('blur', ()=>{ for(const k in keys) keys[k]=false; });
 
 let showFps=false, paused=false;
+// DEV MODE: your car takes no damage and pits spit it back out, so a stage can be
+// sat in and looked at rather than survived. ON by default while this fork is
+// being built - it is meant to be loud about it (badge on the hull plate, line on
+// the menus), and `I` turns it off for a real run. Enemies are unaffected: they
+// still take fire, still die, still score.
+let devMode = true;
 function onPress(code){
   if(code==='KeyF') showFps=!showFps;
+  if(code==='KeyI') devMode=!devMode;
   if(code==='KeyR') setRes(SCALES[(SCALES.indexOf(PX)+1)%SCALES.length]);
   if(code==='KeyM') Snd.toggle();
   if(code==='KeyG') asciiMode = (asciiMode+1)%3;     // off -> ascii -> ascii on solid cells
@@ -200,6 +207,9 @@ function onPress(code){
   if(code==='BracketRight') EYE_Z = clamp(EYE_Z+2, 12, 70);
   if(code==='Minus')        setFov(Math.round(RC_FOV*180/Math.PI) - 5);
   if(code==='Equal')        setFov(Math.round(RC_FOV*180/Math.PI) + 5);
+  // how much bigger than perspective a far enemy is drawn in the gunner's pane
+  if(code==='Comma')        CAR_MAG_MAX = clamp(CAR_MAG_MAX-0.1, 1, 4);
+  if(code==='Period')       CAR_MAG_MAX = clamp(CAR_MAG_MAX+0.1, 1, 4);
 
   // title picks the STAGE, then 'setup' picks the player count
   if(state==='title'){
@@ -672,8 +682,13 @@ function popBarrel(b, owner){
   explode(b.x,b.y,0.8,owner,26,64);
 }
 
+// one predicate for "this car cannot be hurt right now": the post-spawn grace
+// window, or dev mode on the player's car. Hazards read it too, so a pit never
+// swallows a car that a shot could not scratch.
+function untouchable(c){ return c.invuln>0 || (devMode && c.isPlayer); }
+
 function damage(c, amount, ownerId){
-  if(c.dead || c.invuln>0) return;
+  if(c.dead || untouchable(c)) return;
   c.hp -= amount;
   c.hurtFlash = 0.12;
   if(ownerId!=null && ownerId!==c.id) c.lastHitBy = ownerId;
@@ -1214,7 +1229,7 @@ function updateHazards(dt){
   for(const h of hazards){
     if(h.type!=='pit') continue;
     for(const c of cars){
-      if(c.dead||c.pitT>0||c.invuln>0) continue;
+      if(c.dead||c.pitT>0||untouchable(c)) continue;
       if(Math.hypot(c.x-h.x,c.y-h.y) < h.r*0.7){
         c.pitT=0.75; c.pitX=h.x; c.pitY=h.y; c.pitR=h.r;
       }
@@ -2664,20 +2679,61 @@ function bakeFpsSprites(c){
   return sheet;
 }
 
+// ---- enemy cars in the gunner's pane
+// Two numbers tie P2's view of an enemy to P1's, because the gunner was losing
+// cars long before the driver did and ended up reading the bottom half of the
+// screen instead of his own:
+//
+//  - WHEN it vanishes. The raycaster used to carry a car out to 1500 units,
+//    far past the edge of the driving pane, so most of what P2 could see was
+//    too small to shoot and nothing P1 could see was worth calling out. A car
+//    now leaves the gunner's view at the frame edge of the driving pane, and
+//    fades out over the last sliver rather than popping.
+//  - HOW BIG it is until then. Angular size falls as 1/d and the ascii pass
+//    then averages 2x3 pixels into one glyph, so at the far edge of the frame
+//    a car was ~9 cells of mush. Distant cars are drawn larger than
+//    perspective says - the same exaggeration a gun sight makes - easing in
+//    from CAR_MAG_NEAR so nothing pops as a car closes. Nearer is still
+//    bigger, just on a compressed curve.
+const CAR_VIEW_M   = 28;    // half a car: P2 keeps it until P1 has fully lost it
+const CAR_FADE     = 0.12;  // share of the frame, at the edge, spent fading out
+const CAR_MAG_NEAR = 70;    // inside this, honest perspective
+let   CAR_MAG_MAX  = 2.2;   // exaggeration at the frame edge (`,` `.` to tune)
+
+// how far the driving pane sees, and where a point sits in it: 0 at the camera,
+// 1 at the edge of the frame. Same extents inView uses to cull the 2D half.
+function p1Reach(){ return Math.max(VHW, vertical ? VIEW_HH : VHH/KY); }
+function p1Edge(x, y){
+  const dx = Math.abs(x-cam.x), dy = Math.abs(y-cam.y);
+  return vertical
+    ? Math.max(dx/(VHW+CAR_VIEW_M), dy/(VIEW_HH+CAR_VIEW_M))
+    : Math.max(dx/(VHW+CAR_VIEW_M), dy*KY/(VHH+CAR_VIEW_M));
+}
+function carMag(perp){
+  const far = Math.max(CAR_MAG_NEAR+1, p1Reach());
+  const t = clamp((perp - CAR_MAG_NEAR)/(far - CAR_MAG_NEAR), 0, 1);
+  return 1 + (CAR_MAG_MAX - 1)*t*t*(3 - 2*t);      // smoothstep: no kink at either end
+}
+
 let bbList=[];
 function gatherBillboards(camX, camY, bearing){
   bbList.length=0;
   const lim = RC_FOV*0.5 + 0.30;
-  const add=(x,y,z,kind,ref)=>{
+  const add=(x,y,z,kind,ref,e)=>{
     const dx=x-camX, dy=y-camY;
     const d=Math.sqrt(dx*dx+dy*dy);
     if(d<6 || d>1500) return;
     let b=Math.atan2(dy,dx)-bearing;
     b=((b+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
     if(b<-lim || b>lim) return;
-    bbList.push({d,b,z,kind,ref});
+    bbList.push({d,b,z,kind,ref,e:e||0});
   };
-  for(let i=1;i<cars.length;i++){ const c=cars[i]; if(!c.dead) add(c.x,c.y,0,'car',c); }
+  for(let i=1;i<cars.length;i++){
+    const c=cars[i]; if(c.dead) continue;
+    const e = p1Edge(c.x, c.y);
+    if(e > 1) continue;                           // off the driving pane: off this one too
+    add(c.x, c.y, 0, 'car', c, e);
+  }
   for(const p of pads) if(p.item) add(p.x,p.y,4,'pad',p);
   for(const m of mines) add(m.x,m.y,2,'mine',m);
   for(const s of shots) add(s.x,s.y,s.z,'shot',s);
@@ -2710,10 +2766,14 @@ function rcSprites(camX, camY, bearing){
       yaw=((yaw%TAU)+TAU)%TAU;
       const f=Math.round(yaw/TAU*sp.n)%sp.n;
       const row=c.hurtFlash>0 ? sp.fh : 0;
-      const w=sp.fw*scale, h=sp.fh*scale;
-      rcCtx.globalAlpha=1-fog*0.55;
+      // magnified about the anchor (ax, 0.62*fh), which is the contact patch, so
+      // the wheels stay on the true ground line and the sprite still sits at the
+      // column the gun is actually pointing down
+      const s3=scale*carMag(perp);
+      const w=sp.fw*s3, h=sp.fh*s3;
+      rcCtx.globalAlpha=(1-fog*0.55) * clamp((1-bb.e)/CAR_FADE, 0, 1);
       rcCtx.drawImage(sp.cv, f*sp.fw, row, sp.fw, sp.fh,
-        sx-sp.ax*scale, ground-sp.ay*scale, w, h);
+        sx-sp.ax*s3, ground-sp.ay*s3, w, h);
       rcCtx.globalAlpha=1;
     } else if(bb.kind==='pad'){
       const s2=Math.max(1, 13*scale);
@@ -3070,6 +3130,9 @@ function drawDriverHUD(){
   // hull + speed, bottom-left
   plate(p.x+6, p.y+p.h-42, 118, 36);
   ctx.fillStyle='#9d8ea5'; ctx.fillText(numPlayers===2?'P1 DRIVER':'DRIVER / GUNNER', p.x+11, p.y+p.h-38);
+  // the hull bar never moves in dev mode, so say why rather than let it look broken
+  if(devMode){ ctx.textAlign='right'; ctx.fillStyle='#e0b73c';
+    ctx.fillText('DEV', p.x+119, p.y+p.h-38); ctx.textAlign='left'; }
   bar(p.x+11, p.y+p.h-27, 100, 6, me.hp/me.maxHp,
       me.hp>me.maxHp*0.5?'#4ade80':me.hp>me.maxHp*0.25?'#e0b73c':'#f0503c');
   bar(p.x+11, p.y+p.h-17, 100, 4, clamp(Math.abs(me.speed||0)/232,0,1), '#57b7d6');
@@ -3132,10 +3195,18 @@ function drawHUD(){
     ctx.fillStyle='#4ade80'; ctx.font='8px monospace';
     ctx.fillText(fpsVal+' fps  '+W+'x'+H+'  rc '+RC_W+'x'+RC_H+
       '  eye '+EYE_Z+'  fov '+Math.round(RC_FOV*180/Math.PI)+
+      '  carmag '+CAR_MAG_MAX.toFixed(1)+(devMode?'  DEV':'')+
       '  '+(cars.length+shots.length+fx.length)+' ent  '+bbList.length+' bb', 132, 8);
   }
   if(paused) centerText('PAUSED','#e8d5b0', VH/2+20, 12);
   ctx.restore();
+}
+
+// shown on both menus: dev mode is on by default, so it has to be impossible to
+// start a run without knowing the damage is switched off
+function devLine(y){
+  if(devMode) centerText('I  DEV MODE: your car takes no damage  .  press I for a real run','#e0b73c',y,8);
+  else        centerText('I  dev mode: off','#3f3448',y,8);
 }
 
 // ---- title: pick the STAGE
@@ -3191,6 +3262,7 @@ function drawTitle(){
   ctx.fillStyle='#3f3448'; ctx.font='8px monospace';
   centerText('G ascii gunner view: '+ASC_NAMES[asciiMode]+'  .  B buildings: '+(showBuildings?'ON':'OFF'),'#b48ad6',264,9);
   centerText('R resolution  .  F fps  .  M sound  .  P pause','#3f3448',280,8);
+  devLine(292);
   ctx.restore();
 }
 
@@ -3239,6 +3311,7 @@ function drawSetup(){
   ctx.fillStyle='#3f3448'; ctx.font='8px monospace';
   centerText('G  P2 view: '+ASC_NAMES[asciiMode]+'   .   B  buildings: '+(showBuildings?'ON':'OFF'),'#b48ad6',264,9);
   centerText('ESC to pick a different stage','#3f3448',280,8);
+  devLine(292);
   ctx.restore();
 }
 

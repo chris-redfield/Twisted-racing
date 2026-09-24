@@ -41,7 +41,8 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
 
 **Built 2026-09-23:** `scrapheap-madmax-ascii.html`. Open it, pick a stage, pick **2 CO-OP** (the
 ASCII view is P2's pane; solo has no raycast view). **G** cycles the P2 view, **B** toggles
-buildings — both work on the menu and mid-run. Decide: keep / tune / fold into the canonical file.
+buildings — both work on the menu and mid-run. **Dev mode (`I`) ships ON in this fork** so a stage
+can be looked at without dying; press `I` before judging anything about balance. Decide: keep / tune / fold into the canonical file.
 Tuning knobs: `ASC_LO/ASC_HI/ASC_GAMMA` (tone curve), `ASC_CW/ASC_CH` (cell size),
 `BLD_TIERS`/`BLD_TIERS_LOOP` (placement), `FLOOR_H`/`WIN_STEP` (windows).
 Known soft spots: plain ASCII mode leaves dark building faces blank (SOLID fixes that, hence the
@@ -134,6 +135,11 @@ Nothing is committed to yet — pick from here or bring something new.
 - **`EYE_Z` and `RC_FOV` are feel numbers, not derived ones.** Tune them live with `[` `]` and
   `-` `=` (both shown in the `F` overlay) rather than reasoning about them. The projection stays
   exactly correct at any value — verified at eye 24/38/52 and FOV 70/95/115.
+- **Enemy cars in the gunner's pane are deliberately drawn too big at range** (`CAR_MAG_MAX`,
+  2.2 at the edge of the frame) because the ASCII downsample makes an honestly-sized one
+  unreadable. The cost is that a magnified car covers columns the real car does not, so aiming at
+  its *edge* at long range can miss; aiming at its centre is always right. If that ever bites,
+  lower it with `,` rather than reworking the projection.
 - Sprite occlusion in the gunner view is per-column nearest-wall only, so a car is either fully
   drawn or fully hidden. Fine while the barrier (16) is taller than a car (~13); it would need
   per-pixel depth if anything shorter ever needs to partly hide something.
@@ -164,6 +170,44 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-09-24 — dev mode (`I`), on by default in the ASCII fork
+His follow-up to the change below: "I am having a hard time checking it, since the enemies kill me
+very fast". `devMode` in `scrapheap-madmax-ascii.html` — **default ON**, `I` toggles it, works on
+the menus and mid-run.
+
+One predicate, `untouchable(c)` = the existing post-spawn `invuln` grace **or** dev mode on the
+player's car, read by `damage()` (the single choke point every hit in the game already funnels
+through, including the pit's `damage(c,9999)`) and by the pit capture in `updateHazards` (which
+already skipped `invuln>0` cars, so a pit now spits the player back out rather than leaving a
+deathless car stuck at the bottom). Enemies are untouched: still take fire, still die, still score.
+
+It shouts: `DEV` on the hull plate (the hull bar never moves otherwise, which would just look
+broken), a line on both menus, `DEV` in the `F` overlay. **Balance means nothing with it on** —
+turn it off before judging the play-test that is still owed.
+
+Verified headless, 90s, all three stages: dev on = 130/130 hp, never dead, enemies still dying
+(1–3 kills); dev off = dead in convoy and ascent. The loop race still completes either way.
+
+### 2026-09-24 — the gunner can actually see the enemies now
+`scrapheap-madmax-ascii.html`. His report: enemy cars shrink to nothing in P2's pane long before
+they are far away, so the gunner ends up reading P1's half of the screen to know what to shoot.
+
+Two numbers now tie P2's view of a car to P1's (`CAR_VIEW_M`, `CAR_MAG_MAX`, both by
+`gatherBillboards`):
+- **It vanishes when the driver loses it.** `rcSprites` used to carry a car to 1500 units, ~4x
+  past the edge of the driving pane. Enemy billboards are now culled on `p1Edge()` > 1 — the same
+  extents `inView` uses for the 2D half, plus half a car (`CAR_VIEW_M` = 28) so P2 keeps it until
+  P1 has fully lost it — and fade over the last 12% of the frame so there is no pop.
+- **Until then it is drawn bigger than perspective says.** Angular size falls as 1/d and the ASCII
+  pass then averages 2x3 pixels into a glyph, so at the frame edge a car was ~9 cells of mush.
+  `carMag()` smoothsteps 1 -> `CAR_MAG_MAX` (2.2) between 70 units and `p1Reach()`, about the
+  sprite's contact-patch anchor, so the wheels stay on the true ground line and the centre column
+  (which is what the gun is pointing down) does not move. Convoy at the frame edge: **9.5 -> 21
+  cells wide, 6.4 -> 14 tall**. Nearer is still bigger, just on a compressed curve.
+
+`,` `.` tune `CAR_MAG_MAX` live (1–4), shown as `carmag` in the `F` overlay. Not play-tested in a
+browser yet — the number is a guess that the cell counts say should read.
 
 ### 2026-09-24 — ASCII fork polish: tracer, lights, skyline giants
 All in `scrapheap-madmax-ascii.html` (on top of `f065286`).

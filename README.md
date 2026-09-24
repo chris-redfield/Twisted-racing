@@ -79,6 +79,12 @@ Race only, three laps, weapons live. One car, two jobs — P1 has no trigger, P2
 Pickup pads still feed the car, so P1 collecting them is what keeps P2 in ammo. P1 can see where
 P2 is looking: the gunner's line of fire is drawn into the driving pane as a dashed red ray.
 
+**`I` toggles dev mode**, which in `scrapheap-madmax-ascii.html` is **on by default** while that
+fork is being built: the players' car takes no damage and pits spit it back out, so a stage can be
+sat in and looked at instead of survived. Enemies are unaffected — they still take fire and still
+die. It is deliberately loud about being on (a `DEV` badge on the hull plate, a line on both
+menus), because *nothing about the balance of a run means anything with it switched on*.
+
 ## Modes and levels
 
 **BRAWL** — four cars in a closed arena, first to `FRAG_LIMIT` (8) kills wins.
@@ -280,6 +286,14 @@ gunner layer switches `'stack'` (gunner over driver, the default) for `'side'`.
   `ky`/`kz`/`scale`, so the gunner's sheet is baked at `KY_FPS = 0.16` (eye level) instead of the
   axonometric `KY = 0.62`. Same 32 yaw frames; the billboard picks one from the target's heading
   relative to the line of sight.
+- **An enemy car leaves the gunner's pane exactly when it leaves the driver's**, and is drawn
+  bigger than perspective says until it does. Billboards for cars are culled on `p1Edge()` — the
+  extents `inView` uses for the 2D half, plus half a car — with a fade over the last sliver of the
+  frame; and `carMag()` smoothsteps a 1 -> `CAR_MAG_MAX` exaggeration in over distance, applied
+  about the sprite's contact-patch anchor so the wheels stay on the true ground line and the
+  sprite's centre column still marks where the gun points. Without it the 2x3 ASCII averaging
+  turns a car at the edge of the frame into ~9 character cells of mush and the gunner has to read
+  the driving pane to find a target. `,` and `.` tune it live.
 - **The floor is a real road.** A coarse 160×160 "is this point asphalt" mask is built once from
   `trackProject`, then the floor is shaded per row (one perpendicular distance per scanline) and
   sampled every 4th column. Per-pixel `trackProject` would be far too slow.
