@@ -269,8 +269,9 @@ gunner layer switches `'stack'` (gunner over driver, the default) for `'side'`.
   separate from the resolution.
 - **The raycaster is segment-based, not grid-based.** The track is a smooth 72-segment
   superellipse; voxelising it into tiles would turn a clean oval into a visible staircase. Each
-  column solves ray-vs-segment against three wall rings (inner barrier, outer barrier, and a tall
-  perimeter fence for the horizon) — 320 columns × 216 segments ≈ 69k tests, about 1 ms/frame.
+  column solves ray-vs-segment against the wall rings (inner and outer barrier, plus the roadside
+  buildings; a tall perimeter fence used to close the horizon, now off by default behind `H`) —
+  320 columns × 216 segments ≈ 69k tests, about 1 ms/frame.
   Ring points are transformed into camera space once per frame, so the inner loop is pure 2D
   arithmetic.
 - **Projection math is lifted from the survive2 reference** (`js/raycaster.js`, Andrew Lim's SDL2
@@ -294,6 +295,17 @@ gunner layer switches `'stack'` (gunner over driver, the default) for `'side'`.
   sprite's centre column still marks where the gun points. Without it the 2x3 ASCII averaging
   turns a car at the edge of the frame into ~9 character cells of mush and the gunner has to read
   the driving pane to find a target. `,` and `.` tune it live.
+- **The gunner's hit flash recolours a car, it does not whiten it.** The sheet's flash row is the
+  car baked all-white, which is right in a pixel view and wrong here: a cell's glyph is chosen by
+  its luminance, so a white car maxes every cell to `@` and the silhouette vanishes for the flash.
+  `hitFrame()` uses the `'color'` blend instead — hue and saturation from `HIT_TINT`, luminosity
+  from the car — so every cell keeps the glyph it had and only the tint moves, then masks back to
+  the sprite's outline with `'destination-in'`. `HIT_TINT` is **white**, the flash colour this
+  always had: white has no hue to hand over, so the car keeps its per-pixel brightness with the
+  colour taken out, and `ASC_LIFT` carries the grey tint back up towards white. Red is the one
+  thing it must not be — the ASCII pass reads a red-and-warm pixel as a lit window and forces a
+  bright glyph on its cell, which is the same `@` problem by another route. Non-ASCII mode keeps
+  the white sprite row.
 - **The floor is a real road.** A coarse 160×160 "is this point asphalt" mask is built once from
   `trackProject`, then the floor is shaded per row (one perpendicular distance per scanline) and
   sampled every 4th column. Per-pixel `trackProject` would be far too slow.

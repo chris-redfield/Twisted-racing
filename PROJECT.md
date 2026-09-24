@@ -171,6 +171,52 @@ Nothing is committed to yet — pick from here or bring something new.
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
 
+### 2026-09-24 — pulled the perimeter fence out (`H`)
+"between the first layers of buildings and the back layer of big tall buildings, there is this big
+wall, can you remove that wall? I want to see how it gets without it".
+
+That wall is the perimeter fence: a continuous 96-tall ring at `ROAD_HW + FENCE_OUT_C` = 390 out.
+It predates the buildings, and the tiers then grew up on either side of it — near frontage at
+212–238, far skyline at 440–540 — so it ended up ruled straight across the gap between them
+instead of closing a horizon. `showFence` now defaults **off**; `H` toggles it (both menus show
+the state, and the loop rebuilds its rings on the press, same as `B`). P2's view only — it was
+never drawn in the driving pane.
+
+Cheaper without it, which was not the guess: **8.89 → 7.44 ms/frame** for `drawGunnerView` in node
+(convoy, 300 frames). Two full-length rings and 122 points fewer to test beats whatever far
+geometry the fence was occluding. Open question for whoever looks at it: the far tier and the
+`SKY_TIER` giants now carry the horizon alone — if it reads as *empty* down at road level rather
+than *deep*, the fix is probably a much lower fence (a guard rail, not a wall) rather than this one
+back at 96.
+
+### 2026-09-24 — the hit flash recolours instead of whitening (ASCII pane only)
+His report: "when the enemy cars get hit in the player 2 screen, their characters are replaced by
+@ very clear... only change the color of the characters that are used to render the cars".
+
+Exactly right, and it falls out of how the pane is built: the sheet's flash row is the car baked
+all-white, and `asciiBlit` picks a cell's glyph by its **luminance**, so a white car maxes every
+cell to `@` and the silhouette you are aiming at disappears for the 0.12s of the flash.
+
+`hitFrame()` in `rcSprites` recolours rather than relights. Canvas' `'color'` blend takes hue and
+saturation from the fill and luminosity from the backdrop — the same split this renderer already
+draws from (glyph from luminance, tint from colour) — then `'destination-in'` masks the frame back
+to the car's outline, which is exact because `triangle()` writes alpha 0 or 255 with no AA. The
+pixel (non-ASCII) view keeps the white row, which is what it shares with the driving pane.
+
+**`HIT_TINT` is white `#ffffff`** — magenta `#ff3cff` was the first try and he asked for the
+colour it had always been back ("they are now flashing magenta / purple, not the same color as
+before"). White has no hue to hand the blend, so the car comes out at its own per-pixel brightness
+with the colour taken out, and `ASC_LIFT` carries that grey tint back up towards white: the same
+flash as before, minus the `@`s. Re-measured on the 28 sample pixels below, white is *better* than
+magenta — **glyph drift 0, not 1**, because the desaturated result sits exactly at the backdrop's
+luminance. **Red is the one thing it cannot be.** `asciiBlit` treats `pr > ASC_LIGHT_R
+&& pr - pb > ASC_LIGHT_WARM` as a lit window and forces a bright glyph on that cell, so a red
+flash trips the lit-window path and brings back the very `@`s this removes. Checked the blend
+against the ascii tone curve over 28 sampled body/glass/tyre/metal pixels at four lambert levels:
+**white flash = glyph 9 on all 28; magenta = the normal sprite's glyph on 27, max drift 1 step**
+(the blend's Lum weights are 0.3/0.59/0.11, the pane's are 0.299/0.587/0.114); lit-window rule
+tripped 0 times by magenta, **21 by red**. A cold `#3cf0ff` also passes if magenta reads too hot.
+
 ### 2026-09-24 — dev mode (`I`), on by default in the ASCII fork
 His follow-up to the change below: "I am having a hard time checking it, since the enemies kill me
 very fast". `devMode` in `scrapheap-madmax-ascii.html` — **default ON**, `I` toggles it, works on

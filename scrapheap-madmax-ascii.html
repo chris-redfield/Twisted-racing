@@ -15,7 +15,7 @@
 </head>
 <body>
 <div id="wrap"><canvas id="cv"></canvas></div>
-<div id="hint">pick a stage, then players &middot; WASD drive &middot; ARROWS aim/fire (or mouse) &middot; SHIFT slew &middot; G ascii gunner &middot; B buildings &middot; I dev mode &middot; R resolution &middot; F fps &middot; P pause &middot; ESC title</div>
+<div id="hint">pick a stage, then players &middot; WASD drive &middot; ARROWS aim/fire (or mouse) &middot; SHIFT slew &middot; G ascii gunner &middot; B buildings &middot; H fence &middot; I dev mode &middot; R resolution &middot; F fps &middot; P pause &middot; ESC title</div>
 <script>
 "use strict";
 // ---------------------------------------------------------------- constants
@@ -200,6 +200,7 @@ function onPress(code){
   if(code==='KeyM') Snd.toggle();
   if(code==='KeyG') asciiMode = (asciiMode+1)%3;     // off -> ascii -> ascii on solid cells
   if(code==='KeyB'){ showBuildings = !showBuildings; if(race && track) buildRingsLoop(); }
+  if(code==='KeyH'){ showFence = !showFence; if(race && track) buildRingsLoop(); }
   if(code==='KeyP' && state==='play') paused=!paused;
   // the gunner camera's feel hangs on two numbers that are hard to guess
   // without looking at them, so make them adjustable in place
@@ -2271,6 +2272,12 @@ const WALL_T = 9;                  // barrier thickness, for the visible top rib
 const SHOT_SETTLE = 260;           // units over which the gunner's tracer eases down
 const FENCE_H   = 96;
 const FENCE_OUT = 210;             // how far outside the barrier the perimeter fence sits
+// The perimeter fence is a continuous 96-tall wall at ROAD_HW+210 = 390 out, and
+// the building tiers grew up on either side of it (near 212-238, far 440-540) -
+// so it reads as a blank wall ruled between the street frontage and the skyline
+// rather than as a horizon. Off while we look at the city without it; `H` puts
+// it back. It is P2's view only - it was never drawn in the driving pane.
+let showFence = false;
 
 let rcCv=null, rcCtx=null, RC_W=0, RC_H=0, RC_VD=0, RC_HORIZON=0;
 let rcStripe=null;
@@ -2331,10 +2338,11 @@ function buildConvoyRings(center){
   const flat = ROAD_HW + FENCE_OUT_C;
   rings = [
     { pts:line(-ROAD_HW), h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true },
-    { pts:line( ROAD_HW), h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true },
-    { pts:line(-flat),    h:FENCE_H,   col:'#2e2536', top:'#463a50', open:true },
-    { pts:line( flat),    h:FENCE_H,   col:'#2e2536', top:'#463a50', open:true }
+    { pts:line( ROAD_HW), h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true }
   ];
+  if(showFence) rings.push(
+    { pts:line(-flat),    h:FENCE_H,   col:'#2e2536', top:'#463a50', open:true },
+    { pts:line( flat),    h:FENCE_H,   col:'#2e2536', top:'#463a50', open:true });
   if(showBuildings) buildingRings(survivalBuildingsRC(center, bldList), rings);
   let nn=0; for(const r of rings) nn += r.pts.length;
   if(!ringCX || ringCX.length < nn){ ringCX = new Float32Array(nn); ringCY = new Float32Array(nn); }
@@ -2354,9 +2362,9 @@ function buildRingsLoop(){
                                     y:p.y + p.ny*sg*(LOOP.HW+FENCE_OUT_C) }));
   rings = [
     { pts:track.outer, h:BARRIER_H, col:'#6a5570', top:'#a894b0' },
-    { pts:track.inner, h:BARRIER_H, col:'#6a5570', top:'#a894b0' },
-    { pts:fence,       h:FENCE_H,   col:'#2e2536', top:'#463a50' }
+    { pts:track.inner, h:BARRIER_H, col:'#6a5570', top:'#a894b0' }
   ];
+  if(showFence) rings.push({ pts:fence, h:FENCE_H, col:'#2e2536', top:'#463a50' });
   loopBuildings();
   if(showBuildings) buildingRings(loopBld, rings);
   let nn=0; for(const r of rings) nn += r.pts.length;
@@ -2742,6 +2750,47 @@ function gatherBillboards(camX, camY, bearing){
   return bbList;
 }
 
+// The hit flash, for the ASCII pane only. The sheet's flash row is the car baked
+// all-white, which is right in a pixel view and wrong in this one: the glyph a
+// cell gets is chosen by its LUMINANCE, so a white car maxes every cell to '@'
+// and the shape of the thing you are shooting disappears for the flash.
+//
+// So recolour instead of relighting. Canvas' 'color' blend takes hue+saturation
+// from the fill and luminosity from what is already there, which is exactly the
+// split this renderer draws from: every cell keeps the glyph it had, only the
+// tint moves. The blend paints the transparent margin too, so the frame is
+// masked back to the car's silhouette with 'destination-in' (the sprites are
+// hard-edged, alpha 0 or 255, so that mask is exact).
+//
+// HIT_TINT is WHITE, which is the flash colour this always had and the one the
+// driving pane still uses. White has no hue to hand over, so the blend leaves
+// the car at its own per-pixel brightness with the colour taken out of it: the
+// glyphs hold their shape and the tint goes grey, which ASC_LIFT then carries up
+// towards white. Same flash as before, without the '@'s.
+//
+// Any strongly coloured tint works here too (magenta `#ff3cff` was the first
+// try) - except a red one. asciiBlit reads a pixel with `pr > ASC_LIGHT_R` and
+// `pr - pb > ASC_LIGHT_WARM` as a lit window and forces a bright glyph on its
+// cell, so red trips that path and brings back the very '@'s this avoids. Grey
+// sits at `pr - pb` of nil and never does.
+const HIT_TINT = '#ffffff';
+let hitCv=null, hitCtx=null;
+function hitFrame(sp, f){
+  if(!hitCv){ hitCv=document.createElement('canvas'); hitCtx=hitCv.getContext('2d'); }
+  if(hitCv.width!==sp.fw || hitCv.height!==sp.fh){ hitCv.width=sp.fw; hitCv.height=sp.fh; }
+  const draw=()=>hitCtx.drawImage(sp.cv, f*sp.fw, 0, sp.fw, sp.fh, 0, 0, sp.fw, sp.fh);
+  hitCtx.globalCompositeOperation='source-over';
+  hitCtx.clearRect(0, 0, sp.fw, sp.fh);
+  draw();
+  hitCtx.globalCompositeOperation='color';            // its hue, the car's brightness
+  hitCtx.fillStyle=HIT_TINT;
+  hitCtx.fillRect(0, 0, sp.fw, sp.fh);
+  hitCtx.globalCompositeOperation='destination-in';   // back to the car's outline
+  draw();
+  hitCtx.globalCompositeOperation='source-over';
+  return hitCv;
+}
+
 function rcSprites(camX, camY, bearing){
   const list=gatherBillboards(camX, camY, bearing);
   for(const bb of list){
@@ -2765,15 +2814,19 @@ function rcSprites(camX, camY, bearing){
       let yaw=c.angle - look - Math.PI/2;
       yaw=((yaw%TAU)+TAU)%TAU;
       const f=Math.round(yaw/TAU*sp.n)%sp.n;
-      const row=c.hurtFlash>0 ? sp.fh : 0;
       // magnified about the anchor (ax, 0.62*fh), which is the contact patch, so
       // the wheels stay on the true ground line and the sprite still sits at the
       // column the gun is actually pointing down
       const s3=scale*carMag(perp);
       const w=sp.fw*s3, h=sp.fh*s3;
+      const dx=sx-sp.ax*s3, dy=ground-sp.ay*s3;
       rcCtx.globalAlpha=(1-fog*0.55) * clamp((1-bb.e)/CAR_FADE, 0, 1);
-      rcCtx.drawImage(sp.cv, f*sp.fw, row, sp.fw, sp.fh,
-        sx-sp.ax*s3, ground-sp.ay*s3, w, h);
+      // ascii recolours the hit; the pixel view keeps the white flash row, which
+      // is what it shares with the driving pane
+      if(c.hurtFlash>0 && asciiMode)
+        rcCtx.drawImage(hitFrame(sp, f), 0, 0, sp.fw, sp.fh, dx, dy, w, h);
+      else
+        rcCtx.drawImage(sp.cv, f*sp.fw, c.hurtFlash>0 ? sp.fh : 0, sp.fw, sp.fh, dx, dy, w, h);
       rcCtx.globalAlpha=1;
     } else if(bb.kind==='pad'){
       const s2=Math.max(1, 13*scale);
@@ -3260,7 +3313,8 @@ function drawTitle(){
   centerText('press 1 CONVOY  .  2 ASCENT  .  3 LOOP','#4ade80',238,10);
   if(bestDist>0) centerText('best survival run: '+bestDist+'m','#8a7a92',256,8);
   ctx.fillStyle='#3f3448'; ctx.font='8px monospace';
-  centerText('G ascii gunner view: '+ASC_NAMES[asciiMode]+'  .  B buildings: '+(showBuildings?'ON':'OFF'),'#b48ad6',264,9);
+  centerText('G ascii gunner view: '+ASC_NAMES[asciiMode]+'  .  B buildings: '+(showBuildings?'ON':'OFF')+
+             '  .  H fence: '+(showFence?'ON':'OFF'),'#b48ad6',264,9);
   centerText('R resolution  .  F fps  .  M sound  .  P pause','#3f3448',280,8);
   devLine(292);
   ctx.restore();
@@ -3309,7 +3363,8 @@ function drawSetup(){
   ctx.textAlign='left';
   centerText('press 1 for SOLO  or  2 for CO-OP','#4ade80',246,10);
   ctx.fillStyle='#3f3448'; ctx.font='8px monospace';
-  centerText('G  P2 view: '+ASC_NAMES[asciiMode]+'   .   B  buildings: '+(showBuildings?'ON':'OFF'),'#b48ad6',264,9);
+  centerText('G  P2 view: '+ASC_NAMES[asciiMode]+'   .   B  buildings: '+(showBuildings?'ON':'OFF')+
+             '   .   H  fence: '+(showFence?'ON':'OFF'),'#b48ad6',264,9);
   centerText('ESC to pick a different stage','#3f3448',280,8);
   devLine(292);
   ctx.restore();
