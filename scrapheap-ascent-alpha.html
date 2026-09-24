@@ -1,0 +1,2670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SCRAPHEAP ASCENT - alpha</title>
+<style>
+  html,body{margin:0;height:100%;background:#0d0a10;overflow:hidden;
+    font-family:ui-monospace,"DejaVu Sans Mono",monospace;color:#e8d5b0}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{image-rendering:pixelated;image-rendering:crisp-edges;
+    box-shadow:0 0 0 2px #241a26,0 24px 60px rgba(0,0,0,.7)}
+  #hint{position:fixed;left:10px;bottom:8px;font-size:11px;color:#5a4a5e;letter-spacing:.5px}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<div id="hint">vertical climb &middot; 1 or 2 to pick players &middot; WASD drive &middot; ARROWS aim/fire (or mouse) &middot; SHIFT slew &middot; R resolution &middot; F fps &middot; P pause &middot; ESC title</div>
+<script>
+"use strict";
+// ---------------------------------------------------------------- constants
+const VW = 640, VH = 360;        // 16:9, split into two panes of 640x180
+const SCALES = [1, 2, 3];
+let PX = 2;                      // canvas pixels per virtual unit (resolution)
+let S = 1.6;                     // world scale of the driving pane; rescale() fixes this
+let W = VW*PX, H = VH*PX;        // internal render resolution
+// centre and half-extents of the pane currently being drawn in world space
+let VCX = W/2, VCY = H*0.75, VHW = 400, VHH = 112;
+let VIEW_HH = 500;               // world-y cull half-extent, sized to the (biased) visible road
+const KY = 0.62;                 // vertical squash -> axonometric ground plane
+let ARENA_W = 1800, ARENA_H = 1400;
+let arenaShape = 'rect';               // 'rect' or 'oval' bowl
+const CAR_HP = 130;
+const FRAG_LIMIT = 1e9;
+const DT = 1/60;
+
+// ---- ascent (vertical Mad Max) tunables ---------------------------------
+// This is the convoy build rotated 90 degrees in WORLD space: the road runs
+// along the y axis and you travel UP the screen, i.e. toward -y (forward = -y).
+// The projection and sprites are untouched (every facing is baked), so only the
+// game logic swaps axes: forward is y, lateral is x, walls sit at x = +/-ROAD_HW.
+const FWD = -1;                  // forward is -y (up the screen)
+const ROAD_HW   = 180;           // half-width of the drivable band (walls at +/-ROAD_HW)
+const CAM_V0    = 150;           // starting forced scroll speed (world units/s)
+const CAM_VMAX  = 214;           // top forced scroll speed
+const CAM_RAMP  = 0.5;           // how fast the scroll speeds up (units/s per s)
+const CRUISE_BAND = 100;         // W/S trims your speed +/- this around the scroll pace
+// FRONT_MAX / BACK_EDGE are the soft walls ahead/behind the camera. They are set
+// from the actual visible height each rescale (see recalcVertLimits), so the
+// player can use the whole rendered road and they adapt to 1P vs 2P / resolution.
+let FRONT_MAX = 380;             // how far ahead (up) of the camera you may climb
+let BACK_EDGE = 240;             // how far behind (down) before the soft wall stops you
+const FENCE_OUT_C = 210;         // perimeter fence, outside the barrier, for the horizon
+let   numPlayers = 2;            // 1 = solo (drive + gun, one view), 2 = split-screen with a gunner
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d', { alpha:false });
+cv.width = W; cv.height = H;
+ctx.imageSmoothingEnabled = false;
+
+function setRes(scale){ PX = scale; rescale(); }
+
+// PX drives the canvas and both HUDs; S = PX*ZOOM2D drives every world-space
+// coordinate in the driving pane. The gunner pane does its own projection.
+function rescale(){
+  layoutPanes();
+  S = PX*ZOOM2D; W = VW*PX; H = VH*PX;
+  cv.width = W; cv.height = H;
+  ctx.imageSmoothingEnabled = false;
+  VCX = (PANE_P1.x + PANE_P1.w/2)*PX;
+  // the camera point (and the player, who rides near it) sits low in the pane so
+  // most of the screen shows the road climbing away ahead of you
+  VCY = (PANE_P1.y + PANE_P1.h*0.66)*PX;
+  VHW = PANE_P1.w/(2*ZOOM2D);
+  VHH = PANE_P1.h/(2*ZOOM2D);
+  // vertical soft walls follow the visible road: how far up (ahead) and down
+  // (behind) the driving pane actually shows, minus a small margin. Adapts to
+  // 1P full-height, the tall 2P left pane, and any resolution.
+  const aheadV  = (VCY - PANE_P1.y*PX)/(KY*S);
+  const behindV = ((PANE_P1.y+PANE_P1.h)*PX - VCY)/(KY*S);
+  FRONT_MAX = Math.max(140, aheadV - 60);
+  BACK_EDGE = Math.max(120, behindV - 40);
+  // cull half-extent covers the FURTHER of the two (the biased view sees more one
+  // way than the other), so nothing inside the play area is ever culled early
+  VIEW_HH = Math.max(aheadV, behindV) + 80;
+  makePatterns();
+  CAR2D.clear();                                // sheets bake S into their bitmaps
+  for(const c of cars) c.sprite = bakeCarSprites(c);
+  resize();
+}
+
+function resize(){
+  const s = Math.max(1, Math.floor(Math.min(innerWidth/W, innerHeight/H) * 100) / 100);
+  cv.style.width = (W*s)+'px'; cv.style.height = (H*s)+'px';
+}
+addEventListener('resize', resize); resize();
+
+// ---------------------------------------------------------------- utils
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const rnd=(a,b)=>a+Math.random()*(b-a);
+const pick=a=>a[(Math.random()*a.length)|0];
+function angDiff(a,b){ let d=(b-a)%(Math.PI*2); if(d>Math.PI)d-=Math.PI*2; if(d<-Math.PI)d+=Math.PI*2; return d; }
+function shade(hex,f){
+  const n=parseInt(hex.slice(1),16);
+  const r=clamp(((n>>16)&255)*f,0,255)|0, g=clamp(((n>>8)&255)*f,0,255)|0, b=clamp((n&255)*f,0,255)|0;
+  return 'rgb('+r+','+g+','+b+')';
+}
+function rrect(c,x,y,w,h,r){
+  c.beginPath();
+  c.moveTo(x+r,y); c.lineTo(x+w-r,y); c.quadraticCurveTo(x+w,y,x+w,y+r);
+  c.lineTo(x+w,y+h-r); c.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  c.lineTo(x+r,y+h); c.quadraticCurveTo(x,y+h,x,y+h-r);
+  c.lineTo(x,y+r); c.quadraticCurveTo(x,y,x+r,y); c.closePath();
+}
+
+// ---------------------------------------------------------------- audio
+const Snd = (function(){
+  let ac=null, master=null, engGain=null, engOsc=null, engOsc2=null, on=true, started=false;
+  function boot(){
+    if(started) return; started=true;
+    try{
+      ac = new (window.AudioContext||window.webkitAudioContext)();
+      master = ac.createGain(); master.gain.value=0.32; master.connect(ac.destination);
+      engGain = ac.createGain(); engGain.gain.value=0; engGain.connect(master);
+      engOsc = ac.createOscillator(); engOsc.type='sawtooth'; engOsc.frequency.value=60;
+      engOsc2 = ac.createOscillator(); engOsc2.type='square'; engOsc2.frequency.value=41;
+      const f = ac.createBiquadFilter(); f.type='lowpass'; f.frequency.value=700; f.Q.value=3;
+      engOsc.connect(f); engOsc2.connect(f); f.connect(engGain);
+      engOsc.start(); engOsc2.start();
+    }catch(e){ ac=null; }
+  }
+  function blip(freq, dur, type, vol, slide){
+    if(!ac||!on) return;
+    const o=ac.createOscillator(), g=ac.createGain();
+    o.type=type||'square'; o.frequency.setValueAtTime(freq, ac.currentTime);
+    if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(30,slide), ac.currentTime+dur);
+    g.gain.setValueAtTime(vol||0.25, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime+dur);
+    o.connect(g); g.connect(master); o.start(); o.stop(ac.currentTime+dur+0.02);
+  }
+  function noise(dur, vol, cutStart, cutEnd){
+    if(!ac||!on) return;
+    const n=(ac.sampleRate*dur)|0, buf=ac.createBuffer(1,n,ac.sampleRate), d=buf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*(1-i/n);
+    const src=ac.createBufferSource(); src.buffer=buf;
+    const f=ac.createBiquadFilter(); f.type='lowpass';
+    f.frequency.setValueAtTime(cutStart||1800, ac.currentTime);
+    f.frequency.exponentialRampToValueAtTime(cutEnd||120, ac.currentTime+dur);
+    const g=ac.createGain(); g.gain.value=vol||0.4;
+    src.connect(f); f.connect(g); g.connect(master); src.start();
+  }
+  return {
+    boot, toggle(){ on=!on; if(master) master.gain.value = on?0.32:0; return on; },
+    isOn(){ return on; },
+    shot(){ blip(560,0.06,'square',0.16,180); },
+    missile(){ noise(0.35,0.3,900,300); blip(180,0.3,'sawtooth',0.14,520); },
+    boom(){ noise(0.55,0.75,2200,60); blip(90,0.4,'sawtooth',0.22,32); },
+    hit(){ blip(200,0.05,'square',0.12,90); },
+    pickup(){ blip(660,0.07,'square',0.16); setTimeout(()=>blip(990,0.09,'square',0.16),60); },
+    crash(){ noise(0.18,0.4,1400,200); },
+    mine(){ blip(1200,0.04,'square',0.1); },
+    engine(rpm, load){
+      if(!ac||!engGain) return;
+      engGain.gain.value = 0.05 + load*0.05;
+      engOsc.frequency.value = 46 + rpm*118;
+      engOsc2.frequency.value = 31 + rpm*79;
+    },
+    engineOff(){ if(engGain) engGain.gain.value=0; }
+  };
+})();
+
+// ---------------------------------------------------------------- input
+const keys = Object.create(null);
+const held = k => !!keys[k];
+addEventListener('keydown', e=>{
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();  // arrows are P2's gun
+  Snd.boot();
+  if(!keys[e.code]) onPress(e.code);
+  keys[e.code]=true;
+});
+addEventListener('keyup', e=>{ keys[e.code]=false; });
+addEventListener('blur', ()=>{ for(const k in keys) keys[k]=false; });
+
+let showFps=false, paused=false;
+function onPress(code){
+  if(code==='KeyF') showFps=!showFps;
+  if(code==='KeyR') setRes(SCALES[(SCALES.indexOf(PX)+1)%SCALES.length]);
+  if(code==='KeyM') Snd.toggle();
+  if(code==='KeyP' && state==='play') paused=!paused;
+  // the gunner camera's feel hangs on two numbers that are hard to guess
+  // without looking at them, so make them adjustable in place
+  if(code==='BracketLeft')  EYE_Z = clamp(EYE_Z-2, 12, 70);
+  if(code==='BracketRight') EYE_Z = clamp(EYE_Z+2, 12, 70);
+  if(code==='Minus')        setFov(Math.round(RC_FOV*180/Math.PI) - 5);
+  if(code==='Equal')        setFov(Math.round(RC_FOV*180/Math.PI) + 5);
+
+  if(state==='title'){
+    if(code==='Digit1'||code==='Numpad1') startMatch(1);
+    else if(code==='Digit2'||code==='Numpad2') startMatch(2);
+    else if(code==='Enter'||code==='NumpadEnter'||code==='Space') startMatch(numPlayers);
+    return;
+  }
+  if(code==='Escape'){ state='title'; Snd.engineOff(); return; }
+  if(state==='over'){
+    if(code==='Digit1'||code==='Numpad1') startMatch(1);
+    else if(code==='Digit2'||code==='Numpad2') startMatch(2);
+    else if(code==='Enter'||code==='NumpadEnter') startMatch(numPlayers);
+  }
+}
+
+// ---------------------------------------------------------------- ground tile
+let groundTile=null, dirtTile=null;
+
+// tiles are built at the current render scale so they stay aligned to the world
+function makePatterns(){
+  const TW = Math.round(64*S), TH = Math.round(64*KY*S);
+
+  const g = document.createElement('canvas');
+  g.width=TW; g.height=TH;
+  const a = g.getContext('2d');
+  a.fillStyle='#2b2430'; a.fillRect(0,0,TW,TH);
+  for(let i=0;i<220*S*S;i++){
+    const x=Math.random()*TW, y=Math.random()*TH;
+    a.fillStyle = Math.random()<0.5 ? 'rgba(20,16,24,.55)' : 'rgba(74,63,80,.32)';
+    a.fillRect(x|0,y|0,1,1);
+  }
+  a.strokeStyle='rgba(16,12,20,.5)'; a.lineWidth=S;
+  a.beginPath(); a.moveTo(0,TH-S/2); a.lineTo(TW,TH-S/2);
+  a.moveTo(TW-S/2,0); a.lineTo(TW-S/2,TH); a.stroke();
+  a.strokeStyle='rgba(90,76,96,.16)'; a.lineWidth=S;
+  a.beginPath(); a.moveTo(6*S,3*S); a.lineTo(22*S,14*S); a.lineTo(19*S,29*S); a.stroke();
+  groundTile = ctx.createPattern(g,'repeat');
+
+  const d = document.createElement('canvas');
+  d.width=TW; d.height=TH;
+  const b = d.getContext('2d');
+  b.fillStyle='#3a2b26'; b.fillRect(0,0,TW,TH);
+  for(let i=0;i<260*S*S;i++){
+    const x=Math.random()*TW, y=Math.random()*TH;
+    b.fillStyle = Math.random()<0.5 ? 'rgba(28,20,18,.5)' : 'rgba(96,72,58,.3)';
+    b.fillRect(x|0,y|0, Math.random()<0.2?S:1, 1);
+  }
+  dirtTile = ctx.createPattern(d,'repeat');
+}
+makePatterns();
+
+// ---------------------------------------------------------------- world state
+let cars=[], shots=[], mines=[], fx=[], skids=[], pads=[], blocks=[];
+let cam={x:0,y:0,shake:0}, state='title', winner=null, matchTime=0;
+let mode='convoy', level=1, track=null, finishOrder=[], hazards=[], bowl=null;
+const LAPS = 3;
+
+// convoy runtime
+let camV = CAM_V0;               // current forced scroll speed
+let distance = 0;                // world units survived (the score)
+let bestDist = 0;                // best run this session
+let wave = 1;                    // difficulty tier, climbs with distance
+let spawnT = 0;                  // seconds until the next enemy is injected
+let nextId = 1;                  // player is 0; every spawned enemy gets a fresh id
+let convoyKills = 0;             // enemies wrecked this run
+function carById(id){ for(const c of cars) if(c.id===id) return c; return null; }
+
+const PALETTE = [
+  { name:'HOGG',   body:'#d94f2b' },
+  { name:'VULTURE',body:'#57b7d6' },
+  { name:'GRAVA',  body:'#8ad14a' },
+  { name:'MANDIOCA',body:'#e0b73c' }
+];
+
+// ---------------------------------------------------------------- corridor (ascent road)
+// The road is a straight band along the y axis (you climb along -y). TRK.HW is the
+// band half-width, measured on the LATERAL axis, which here is x. WALL is the 2D
+// barrier height.
+const TRK = { HW:ROAD_HW, WALL:11 };
+
+// Lateral offset is world x; the centreline is x=0 and its normal points along +x.
+// trackProject/trackPoint keep the shape the rest of the engine expects.
+function trackProject(x,y){
+  return { i:0, t:0, px:0, py:y, nx:1, ny:0, off:x, d:Math.abs(x), prog:y };
+}
+function trackPoint(prog, lat){
+  return { x:(lat||0), y:prog, ang:FWD<0?-Math.PI/2:Math.PI/2, curve:0 };
+}
+
+// anything the AI should steer around but bullets should pass over
+function hazardAt(x,y,r){
+  for(const h of hazards){
+    if(Math.hypot(x-h.x, y-h.y) < h.r + (r||0)) return h;
+  }
+  return null;
+}
+
+function makeCar(id, isPlayer, x, y, angle, model){
+  const pal = PALETTE[model % PALETTE.length];
+  return {
+    id, name:pal.name, isPlayer, model,
+    color:pal.body, dark:shade(pal.body,0.45), light:shade(pal.body,1.35),
+    x, y, vx:0, vy:0, angle,
+    hp:CAR_HP, maxHp:CAR_HP, frags:0, deaths:0,
+    cool:0, mcool:0, minecool:0, missiles:2, minesLeft:1,
+    dead:false, respawn:0, invuln:1.4,
+    aiTimer:0, aiSteer:0, aiThrottle:1, aiBrake:false, wander:rnd(0,6),
+    avoidDir:Math.random()<0.5?-1:1, orbitDir:Math.random()<0.5?-1:1, blockedT:0, closeT:0,
+    contact:false, contactT:0, reverseT:0, revDir:-1, escapeAng:0, lastX:0, lastY:0, moveCheck:0,
+    prog:x, lap:0, total:0, place:1, lineOff:0, finished:false, finishTime:0, offTrack:0,
+    pitT:0, pitX:0, pitY:0, pitR:0, deathZ:0, deathClip:null,
+    skidT:0, hurtFlash:0, lastHitBy:-1,
+    // convoy: role is 'player', 'charger' (barrels through from ahead) or 'pursuer' (chases from behind)
+    role:isPlayer?'player':'charger', tActive:0,
+    turret:0, fps:null
+  };
+}
+
+// np = 1 (solo) or 2 (driver + gunner). One shared function so ESC->title->pick works.
+function startMatch(np){
+  numPlayers = (np===1||np===2) ? np : numPlayers;
+  mode='convoy'; level=1; arenaShape='rect';
+  cars=[]; shots=[]; mines=[]; fx=[]; skids=[]; blocks=[]; hazards=[]; finishOrder=[]; pads=[];
+  // rescale (not just layoutPanes) so the projection globals VCX/VCY/VHW/VHH match
+  // the pane layout for THIS player count - otherwise 1P keeps the 2P half-height
+  // extent and only the bottom of the road is drawn.
+  rescale();
+
+  const me = makeCar(0, true, 0, 0, -Math.PI/2, 0);   // facing up the road (-y)
+  me.sprite = bakeCarSprites(me);
+  me.invuln = 2.4; me.missiles = 2; me.minesLeft = 0; me.turret = 0;
+  cars.push(me);
+
+  // ammo + repair pads sit up the road ahead of you (both modes now carry a gun)
+  for(let i=0;i<4;i++)
+    pads.push({ x: rnd(-ROAD_HW+30, ROAD_HW-30), y: -(i+1)*260 + rnd(-40,40), item:null, timer:rnd(0,3), bob:0 });
+
+  camV=CAM_V0; distance=0; wave=1; spawnT=0.8; nextId=1; convoyKills=0;
+  cam.x=0; cam.y=0; cam.shake=0;
+  matchTime=0; winner=null; paused=false;
+  gunnerHit=0; gunnerKill=0;
+  state='play';
+}
+// the headless harness prefers a no-arg entry point; drive the heavier 2P path
+function startRun(){ startMatch(2); }
+
+// ---------------------------------------------------------------- the wave spawner
+// A rolling population injected just off-screen: chargers appear ahead and barrel
+// back through the frame, pursuers appear behind and chase. Both are culled once
+// they fall well out of view, so the road always feels populated without an
+// ever-growing car list. Everything scales with `wave`, which climbs with distance.
+function enemyCap(){ return Math.min(9, 3 + Math.floor(wave*0.9)); }
+
+function spawnEnemy(){
+  const enemies = cars.length - 1;
+  if(enemies >= enemyCap()) return;
+  const aheadBias = clamp(0.72 - wave*0.03, 0.45, 0.72);   // more pursuers as it heats up
+  const charger = Math.random() < aheadBias;
+  const model = 1 + (Math.random()*3|0);                    // 1..3, never the player's orange
+  const x = rnd(-ROAD_HW+26, ROAD_HW-26);                   // lateral is x now
+  const fwd = VHH/KY;                                       // how far up the road you can see
+  let c;
+  if(charger){
+    const y = cam.y - fwd - rnd(70,280);                    // spawns above, off the top of the frame
+    c = makeCar(nextId++, false, x, y, Math.PI/2, model);   // faces +y (down), into the oncoming lane
+    c.role='charger';
+    c.vy = (150 + wave*6 + rnd(0,40));                      // barrels down toward you
+    c.missiles = 0;
+  } else {
+    const y = cam.y + fwd*0.7 + rnd(60,220);                // spawns below, chasing up
+    c = makeCar(nextId++, false, x, y, -Math.PI/2, model);  // faces -y (up), running you down
+    c.role='pursuer';
+    c.vy = -(camV + 40 + wave*3);
+    c.missiles = wave>3 && Math.random()<0.4 ? 1 : 0;
+  }
+  c.invuln = 0.3; c.minesLeft = 0;
+  c.sprite = bakeCarSprites(c);
+  cars.push(c);
+}
+
+function updateSpawner(dt){
+  wave = 1 + Math.floor(distance/1400);
+  spawnT -= dt;
+  if(spawnT<=0){
+    spawnEnemy();
+    spawnT = Math.max(0.5, 2.0 - wave*0.12) * rnd(0.7,1.3);
+  }
+  // cull anything well past the edges of the frame (never the player at index 0)
+  const fwd = VHH/KY;
+  for(let i=cars.length-1;i>=1;i--){
+    const c=cars[i];
+    const rel = c.y - cam.y;                                // forward axis is y
+    if((c.dead && c.respawn<=0) || rel < -(fwd+420) || rel > (fwd+420) || Math.abs(c.x) > ROAD_HW+400){
+      cars.splice(i,1);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- projection
+function toScreen(x,y,z){
+  return { x: (x - cam.x)*S + VCX, y: ((y - cam.y)*KY - (z||0))*S + VCY };
+}
+function camOx(){ return -cam.x*S + VCX; }
+function camOy(){ return -cam.y*KY*S + VCY; }
+
+// ---------------------------------------------------------------- collision helpers
+function trackCollide(e, radius, bounce){
+  const pr = trackProject(e.x, e.y);
+  e.proj = pr;
+  const limit = TRK.HW - radius;
+  if(pr.d > limit){
+    const s = pr.off>0 ? 1 : -1;
+    e.x = pr.px + pr.nx*s*limit;
+    e.y = pr.py + pr.ny*s*limit;
+    if(bounce){
+      const vn = e.vx*pr.nx + e.vy*pr.ny;
+      const sp = Math.abs(vn);
+      e.vx -= pr.nx*vn*1.35; e.vy -= pr.ny*vn*1.35;
+      e.vx*=0.9; e.vy*=0.9;
+      return sp;
+    }
+    return 1;
+  }
+  return 0;
+}
+
+function blockCollide(e, radius, bounce){
+  e.contact = false;
+  if(mode==='race' || mode==='convoy'){
+    const r = trackCollide(e, radius, bounce);
+    if(r>0) e.contact = true;
+    return r;
+  }
+  let hitSpeed = 0;
+  for(const b of blocks){
+    // barrels and dirt mounds are drawn round, so they collide round too
+    if(b.type==='barrel' || b.type==='mound'){
+      const R=b.w/2+radius;
+      let dx=e.x-b.x, dy=e.y-b.y, d=Math.hypot(dx,dy);
+      if(d<R){
+        if(d<1e-4){ dx=1; dy=0; d=1; }
+        const nx=dx/d, ny=dy/d;
+        e.x=b.x+nx*R; e.y=b.y+ny*R;
+        e.contact=true; e.hitBlock=b;
+        if(bounce){
+          const vn=e.vx*nx+e.vy*ny;
+          if(vn<0){
+            hitSpeed=Math.max(hitSpeed, Math.abs(vn));
+            e.vx-=nx*vn*1.35; e.vy-=ny*vn*1.35;
+            e.vx*=0.86; e.vy*=0.86;
+          }
+        }
+      }
+      continue;
+    }
+    const hw=b.w/2+radius, hh=b.h/2+radius;
+    const dx=e.x-b.x, dy=e.y-b.y;
+    if(Math.abs(dx)<hw && Math.abs(dy)<hh){
+      const px=hw-Math.abs(dx), py=hh-Math.abs(dy);
+      const sp=Math.hypot(e.vx,e.vy);
+      if(px<py){
+        e.x += dx>0?px:-px;
+        if(bounce){ hitSpeed=Math.max(hitSpeed,Math.abs(e.vx)); e.vx*=-0.35; }
+      } else {
+        e.y += dy>0?py:-py;
+        if(bounce){ hitSpeed=Math.max(hitSpeed,Math.abs(e.vy)); e.vy*=-0.35; }
+      }
+      if(bounce){ e.vx*=0.85; e.vy*=0.85; }
+      e.contact = true; e.hitBlock = b;
+      if(sp>0) hitSpeed=Math.max(hitSpeed, sp*0.5);
+    }
+  }
+  const R = radius;
+  if(arenaShape==='oval'){
+    const A=ARENA_W/2-R, B=ARENA_H/2-R;
+    const nx=e.x/A, ny=e.y/B, d=Math.hypot(nx,ny);
+    if(d>1){
+      e.x/=d; e.y/=d;
+      let gx=e.x/(A*A), gy=e.y/(B*B);
+      const gl=Math.hypot(gx,gy)||1; gx/=gl; gy/=gl;
+      e.contact=true;
+      if(bounce){
+        const vn=e.vx*gx+e.vy*gy;
+        hitSpeed=Math.max(hitSpeed,Math.abs(vn));
+        e.vx-=gx*vn*1.4; e.vy-=gy*vn*1.4;
+        e.vx*=0.88; e.vy*=0.88;
+      }
+    }
+    return hitSpeed;
+  }
+  if(e.x < -ARENA_W/2+R){ e.x=-ARENA_W/2+R; e.contact=true; if(bounce){hitSpeed=Math.max(hitSpeed,Math.abs(e.vx)); e.vx*=-0.4;} }
+  if(e.x >  ARENA_W/2-R){ e.x= ARENA_W/2-R; e.contact=true; if(bounce){hitSpeed=Math.max(hitSpeed,Math.abs(e.vx)); e.vx*=-0.4;} }
+  if(e.y < -ARENA_H/2+R){ e.y=-ARENA_H/2+R; e.contact=true; if(bounce){hitSpeed=Math.max(hitSpeed,Math.abs(e.vy)); e.vy*=-0.4;} }
+  if(e.y >  ARENA_H/2-R){ e.y= ARENA_H/2-R; e.contact=true; if(bounce){hitSpeed=Math.max(hitSpeed,Math.abs(e.vy)); e.vy*=-0.4;} }
+  return hitSpeed;
+}
+
+function blockHitPoint(x,y,r){
+  if(mode==='race' || mode==='convoy'){
+    return Math.abs(x) > TRK.HW - (r||0) ? true : null;   // lateral is x in the ascent build
+  }
+  for(const b of blocks){
+    if(b.type==='barrel' || b.type==='mound'){
+      if(Math.hypot(x-b.x, y-b.y) < b.w/2+(r||0)) return b;
+    } else if(Math.abs(x-b.x)<b.w/2+r && Math.abs(y-b.y)<b.h/2+r) return b;
+  }
+  if(arenaShape==='oval'){
+    const A=ARENA_W/2-(r||0), B=ARENA_H/2-(r||0);
+    if(Math.hypot(x/A, y/B) > 1) return true;
+    return null;
+  }
+  if(x<-ARENA_W/2||x>ARENA_W/2||y<-ARENA_H/2||y>ARENA_H/2) return true;
+  return null;
+}
+
+// ---------------------------------------------------------------- effects
+function particles(x,y,z,n,opt){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2, s=rnd(opt.spd0||20,opt.spd1||120);
+    fx.push({ x,y,z:z||2, vx:Math.cos(a)*s, vy:Math.sin(a)*s, vz:rnd(opt.up0||10,opt.up1||70),
+      life:rnd(opt.life0||0.3,opt.life1||0.8), t:0, col:opt.col, size:opt.size||2,
+      grav:opt.grav==null?140:opt.grav, floor:opt.floor||0, clip:opt.clip||null });
+  }
+}
+function explode(x,y,power,owner,dmg,radius,opt){
+  opt = opt || {};
+  const z = opt.z || 0;                 // height of the blast above the floor plane
+  const clip = opt.clip || null;        // confine the debris, e.g. to the mouth of a pit
+  const tight = clip ? 0.4 : 1;         // a blast in a hole cannot throw debris across the arena
+  Snd.boom();
+  cam.shake = Math.min(9, cam.shake + power*3);
+  fx.push({ ring:true, x, y, z:z+4, t:0, life:0.35, r0:6, r1:radius||58, clip });
+  particles(x,y,z+6,18,{col:['#ffe9a8','#ff9d3d','#e04a20'],spd0:40*tight,spd1:200*tight,
+    size:3,life0:0.25,life1:0.7,floor:z,clip,up1:70*tight});
+  particles(x,y,z+6,10,{col:['#4a3f50','#6b5c72'],spd0:10*tight,spd1:60*tight,
+    size:4,life0:0.5,life1:1.2,grav:20,floor:z,clip});
+  const R = radius||58;
+  for(const c of cars){
+    if(c.dead) continue;
+    const d=Math.hypot(c.x-x,c.y-y);
+    if(d<R){
+      const f=1-d/R;
+      damage(c, (dmg||30)*f, owner);
+      const a=Math.atan2(c.y-y,c.x-x);
+      c.vx += Math.cos(a)*220*f; c.vy += Math.sin(a)*220*f;
+    }
+  }
+  for(const b of blocks){
+    if(b.type==='barrel' && b.hp>0 && Math.hypot(b.x-x,b.y-y)<R+18){ b.hp-=40; if(b.hp<=0) popBarrel(b,owner); }
+  }
+}
+function popBarrel(b, owner){
+  b.hp=0;
+  const i=blocks.indexOf(b); if(i>=0) blocks.splice(i,1);
+  explode(b.x,b.y,0.8,owner,26,64);
+}
+
+function damage(c, amount, ownerId){
+  if(c.dead || c.invuln>0) return;
+  c.hp -= amount;
+  c.hurtFlash = 0.12;
+  if(ownerId!=null && ownerId!==c.id) c.lastHitBy = ownerId;
+  if(ownerId===0 && !c.isPlayer) gunnerHit = 0.18;      // crosshair hit marker
+  if(c.hp<=0){
+    c.hp=0; c.dead=true; c.respawn=2.6; c.deaths++;
+    const dz = c.deathZ || 0, dclip = c.deathClip || null, sp = dclip ? 0.45 : 1;
+    // down a hole the blast cannot spread outward, so it spreads across the
+    // lower plane instead and vents back up through the mouth
+    explode(c.x,c.y,1.2,null,0,dclip ? dclip.r*0.9 : 10,{z:dz, clip:dclip});
+    particles(c.x,c.y,dz+6,dclip?20:14,{col:[c.color,'#ffd27a','#3a3040'],
+      spd0:60*sp,spd1:220*sp,size:3,life0:0.4,life1:1.0,floor:dz,clip:dclip});
+    if(dclip){
+      fx.push({ ring:true, x:dclip.x, y:dclip.y, z:dz+3, t:0, life:0.5,
+                r0:dclip.r*0.25, r1:dclip.r*0.95, clip:dclip });
+      particles(dclip.x,dclip.y,4,16,{col:['#6b5c72','#4a3f50','#8a5a3a'],
+        spd0:6,spd1:44,size:4,life0:1.0,life1:1.9,grav:-34,up0:40,up1:96});
+      particles(dclip.x,dclip.y,6,7,{col:['#ffb648','#e0742a'],
+        spd0:8,spd1:38,size:3,life0:0.3,life1:0.6,grav:-90,up0:70,up1:150});
+    }
+    const killer = carById(c.lastHitBy);
+    if(killer && killer!==c){
+      killer.frags++;
+      if(killer.isPlayer){ gunnerKill = 1.1; convoyKills++; }
+    }
+    else if(!dclip){ c.frags = Math.max(0, c.frags-1); }   // no penalty for a pit
+  } else {
+    Snd.hit();
+  }
+}
+
+// ---------------------------------------------------------------- weapons
+// the player's guns follow the gunner's traverse, not the nose of the car
+function aimAngle(c){ return c.isPlayer ? c.angle + (c.turret||0) : c.angle; }
+
+function fireCannon(c){
+  if(c.cool>0) return;
+  c.cool = 0.14;
+  const aim = aimAngle(c);
+  const fx0=Math.cos(aim), fy0=Math.sin(aim);
+  const spread = c.isPlayer ? 0.02 : 0.05;
+  const a = aim + rnd(-spread,spread);
+  shots.push({ kind:'bullet', x:c.x+fx0*18, y:c.y+fy0*18, z:6,
+    vx:Math.cos(a)*430 + c.vx*0.3, vy:Math.sin(a)*430 + c.vy*0.3,
+    life:1.0, owner:c.id, dmg:7 });
+  c.vx -= fx0*8; c.vy -= fy0*8;
+  Snd.shot();
+  particles(c.x+fx0*20,c.y+fy0*20,6,2,{col:['#ffe9a8'],spd0:10,spd1:40,size:1,life0:0.05,life1:0.12,grav:0});
+}
+function fireMissile(c){
+  if(c.mcool>0 || c.missiles<=0) return;
+  c.mcool = 0.85; c.missiles--;
+  const aim = aimAngle(c);
+  const fx0=Math.cos(aim), fy0=Math.sin(aim);
+  shots.push({ kind:'missile', x:c.x+fx0*18, y:c.y+fy0*18, z:7,
+    vx:fx0*190, vy:fy0*190, angle:aim, life:2.6, owner:c.id, dmg:34, smoke:0 });
+  Snd.missile();
+}
+function dropMine(c){
+  if(c.minecool>0 || c.minesLeft<=0) return;
+  c.minecool=0.5; c.minesLeft--;
+  const fx0=Math.cos(c.angle), fy0=Math.sin(c.angle);
+  mines.push({ x:c.x-fx0*20, y:c.y-fy0*20, owner:c.id, arm:0.6, life:16, blink:0 });
+  Snd.mine();
+}
+
+// ---------------------------------------------------------------- car update
+function updateCar(c, dt){
+  c.cool=Math.max(0,c.cool-dt); c.mcool=Math.max(0,c.mcool-dt);
+  c.minecool=Math.max(0,c.minecool-dt); c.invuln=Math.max(0,c.invuln-dt);
+  c.hurtFlash=Math.max(0,c.hurtFlash-dt);
+
+  if(c.dead){
+    c.respawn-=dt;
+    // convoy is one life: enemies are culled once wrecked, the player ends the run
+    if(mode==='convoy') return;
+    if(c.respawn<=0){
+      if(mode==='race'){
+        const p=trackPoint(c.prog==null?0:c.prog, 0);
+        c.x=p.x; c.y=p.y; c.angle=p.ang;
+      } else {
+        c.x=0; c.y=0; c.angle=0;
+      }
+      c.vx=c.vy=0;
+      c.hp=c.maxHp; c.dead=false; c.invuln=1.6; c.missiles=Math.max(c.missiles,1); c.lastHitBy=-1;
+      c.reverseT=0; c.pitT=0; c.deathZ=0; c.deathClip=null;
+    }
+    return;
+  }
+
+  if(c.pitT>0){
+    c.pitT-=dt;
+    const k=1-Math.pow(0.015,dt);
+    c.x=lerp(c.x,c.pitX,k); c.y=lerp(c.y,c.pitY,k);
+    c.vx*=0.86; c.vy*=0.86;
+    c.angle+=2.6*dt;
+    if(c.pitT<=0){
+      c.pitT=0;
+      c.deathZ = -PIT_DEPTH;
+      c.deathClip = { x:c.pitX, y:c.pitY, r:c.pitR };
+      damage(c, 9999, null);
+      c.deathZ = 0; c.deathClip = null;
+    }
+    return;
+  }
+
+  let throttle=0, steer=0, brake=false;
+  if(c.isPlayer){
+    if(held('KeyA')) steer-=1;
+    if(held('KeyD')) steer+=1;
+    brake = held('ShiftLeft')||held('ShiftRight');
+    // convoy: you don't hold the throttle down; you sit at a cruise pace and trim
+    // it up or down within a band. W pushes you toward the front of the frame,
+    // S drops you toward the dust wall. Position in frame = speed you chose.
+    const fwdNow = c.vx*Math.cos(c.angle) + c.vy*Math.sin(c.angle);
+    const boost = held('KeyW') ? 1 : held('KeyS') ? -1 : 0;
+    const targetF = clamp(camV + boost*CRUISE_BAND, 60, 240);
+    throttle = clamp((targetF - fwdNow)/40, -1, 1);
+    // the gun rides in both modes now. In 2P it's the second seat; in 1P the solo
+    // driver works it too (WASD to drive, arrows or mouse to aim and fire).
+    updateTurret(c, dt);
+  } else {
+    aiThink(c, dt);
+    throttle=c.aiThrottle; steer=c.aiSteer; brake=c.aiBrake;
+  }
+
+  const fx0=Math.cos(c.angle), fy0=Math.sin(c.angle);
+  let fwd = c.vx*fx0 + c.vy*fy0;
+  let lat = -c.vx*fy0 + c.vy*fx0;
+
+  const MAXF=232, MAXR=95, ACC=330;
+  if(throttle>0) fwd += ACC*dt*throttle;
+  else if(throttle<0) fwd += (fwd>0 ? -520 : -260)*dt*Math.abs(throttle);
+  fwd -= fwd*0.7*dt;
+  fwd = clamp(fwd, -MAXR, MAXF);
+
+  const grip = brake ? 1.7 : 6.4;
+  lat -= lat*Math.min(1, grip*dt);
+
+  const turnAuth = clamp(Math.abs(fwd)/70, 0, 1);
+  c.angle += steer * 2.75 * dt * turnAuth * (fwd<0?-1:1) * (brake?1.25:1);
+
+  c.vx = fx0*fwd - fy0*lat;
+  c.vy = fy0*fwd + fx0*lat;
+  c.x += c.vx*dt; c.y += c.vy*dt;
+
+  const impact = blockCollide(c, 14, true);
+  if(impact>140){ Snd.crash(); damage(c, impact*0.035, null);
+    particles(c.x,c.y,6,4,{col:['#ffe9a8','#9a8aa0'],spd0:20,spd1:90,size:2,life0:0.1,life1:0.3}); }
+  if(c.hitBlock && c.hitBlock.type==='barrel'){ c.hitBlock.hp-=impact*0.2; if(c.hitBlock.hp<=0) popBarrel(c.hitBlock,c.id); c.hitBlock=null; }
+
+  // skid marks when sliding
+  const slide = Math.abs(lat);
+  c.skidT -= dt;
+  if(slide>55 && c.skidT<=0){
+    c.skidT=0.03;
+    skids.push({x:c.x,y:c.y,a:c.angle,t:0});
+    if(skids.length>260) skids.shift();
+  }
+  c.speed = fwd; c.slide = slide;
+
+  // stuck detector: if a bot has barely moved for half a second, back it out
+  c.contactT = c.contact ? 0.5 : Math.max(0, (c.contactT||0)-dt);
+
+  if(c.hp < c.maxHp*0.4){
+    c.smokeT=(c.smokeT||0)-dt;
+    if(c.smokeT<=0){
+      c.smokeT = 0.04 + (c.hp/c.maxHp)*0.14;
+      particles(c.x-Math.cos(c.angle)*12, c.y-Math.sin(c.angle)*12, 8, 1,
+        { col:c.hp<c.maxHp*0.2?['#3a3040','#6b5c72','#8a5a3a']:['#4a3f50','#6b5c72'],
+          spd0:2, spd1:16, size:2, life0:0.5, life1:1.1, grav:-14, up0:6, up1:22 });
+    }
+  }
+  if(!c.isPlayer){
+    c.moveCheck -= dt;
+    if(c.moveCheck<=0){
+      const moved=Math.hypot(c.x-c.lastX, c.y-c.lastY);
+      if(c.lastX!==0 && moved<24 && c.contactT>0 && c.reverseT<=0){
+        beginRecovery(c, 0.9);
+      }
+      c.lastX=c.x; c.lastY=c.y; c.moveCheck=0.5;
+    }
+  }
+
+  if(mode==='race' && c.proj){
+    const p=c.proj.prog;
+    if(c.prog!=null){
+      const d=p-c.prog;
+      if(d<-0.5) c.lap++;
+      else if(d>0.5) c.lap--;
+    }
+    c.prog=p; c.total=c.lap+p;
+    if(c.lap>=LAPS && !c.finished){
+      c.finished=true; c.finishTime=matchTime; finishOrder.push(c);
+      if(c.isPlayer || finishOrder.length>=3){ winner=finishOrder[0]; state='over'; }
+    }
+  }
+}
+
+function updatePlaces(){
+  const order=[...cars].sort((a,b)=>{
+    if(a.finished&&b.finished) return a.finishTime-b.finishTime;
+    if(a.finished) return -1;
+    if(b.finished) return 1;
+    return b.total-a.total;
+  });
+  order.forEach((c,i)=>c.place=i+1);
+}
+
+function carVsCar(dt){
+  for(let i=0;i<cars.length;i++) for(let j=i+1;j<cars.length;j++){
+    const a=cars[i], b=cars[j];
+    if(a.dead||b.dead) continue;
+    const dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
+    if(d<26 && d>0.01){
+      const nx=dx/d, ny=dy/d, push=(26-d)/2;
+      a.x-=nx*push; a.y-=ny*push; b.x+=nx*push; b.y+=ny*push;
+      const rel=(b.vx-a.vx)*nx + (b.vy-a.vy)*ny;
+      if(rel<0){
+        const imp=-rel*0.7;
+        a.vx-=nx*imp; a.vy-=ny*imp; b.vx+=nx*imp; b.vy+=ny*imp;
+        if(-rel>150){
+          Snd.crash(); cam.shake=Math.min(6,cam.shake+1.5);
+          // ramming damage favours whoever was moving into the hit
+          const aInto = (a.vx*nx+a.vy*ny), bInto = -(b.vx*nx+b.vy*ny);
+          damage(a, (-rel)*0.020*(bInto>aInto?1.5:0.6), b.id);
+          damage(b, (-rel)*0.020*(aInto>bInto?1.5:0.6), a.id);
+          particles((a.x+b.x)/2,(a.y+b.y)/2,7,6,{col:['#ffe9a8','#fff'],spd0:30,spd1:120,size:2,life0:0.1,life1:0.3});
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------- AI
+function aiThink(c, dt){
+  c.wander += dt;
+  if(c.reverseT>0){
+    c.reverseT -= dt;
+    // steer the nose toward open space; reversing inverts the steering sign
+    const diff = angDiff(c.angle, c.escapeAng);
+    const s = clamp(diff*2.0, -1, 1);
+    c.aiThrottle = c.revDir;
+    c.aiSteer = c.revDir<0 ? -s : s;
+    c.aiBrake = false;
+    return;
+  }
+  if(mode==='convoy'){
+    if(c.role==='charger') aiCharge(c, dt);
+    else aiPursue(c, dt);
+    return;
+  }
+  if(mode==='race') aiRace(c, dt);
+  else aiCombat(c, dt);
+}
+
+// charger: oncoming traffic. It holds the lane it spawned in and barrels straight
+// back down the road so you can weave between them, drifting only slightly toward
+// you. It is meant to pass through and exit behind, not to hunt you down.
+function aiCharge(c, dt){
+  const me = cars[0];
+  // straight down the road (+y), with a small lean toward the player's lane (dodgeable)
+  let want = Math.PI/2 + clamp(angDiff(Math.PI/2, Math.atan2(me.y-c.y, me.x-c.x)), -0.16, 0.16);
+  // peel away from the barriers (lateral is x)
+  if(c.x >  ROAD_HW*0.78) want = Math.PI/2 + 0.35;   // near the right wall -> veer left
+  if(c.x < -ROAD_HW*0.78) want = Math.PI/2 - 0.35;
+  c.aiSteer = clamp(angDiff(c.angle, want)*2.0, -1, 1);
+  c.aiThrottle = 1;
+  c.aiBrake = false;
+  const aim = angDiff(c.angle, Math.atan2(me.y-c.y, me.x-c.x));
+  const dist = Math.hypot(me.x-c.x, me.y-c.y);
+  if(Math.abs(aim)<0.14 && dist<320 && Math.random()<0.25) fireCannon(c);
+}
+
+// pursuer: run the player down from behind and ram or shoot. Reuses the arena
+// hunter's ramming arc, but locked onto the player and always driving forward.
+function aiPursue(c, dt){
+  const me = cars[0];
+  const dx=me.x-c.x, dy=me.y-c.y, dist=Math.hypot(dx,dy);
+  const lead=clamp(dist/430,0,1);
+  let want=Math.atan2(me.y+me.vy*0.3*lead - c.y, me.x+me.vx*0.3*lead - c.x);
+  if(dist<130){
+    c.closeT=(c.closeT||0)+dt;
+    if(c.closeT>3.0){ c.closeT=0; c.orbitDir=-(c.orbitDir||1); }
+    if(c.closeT>1.7) want += (c.orbitDir||1)*1.2;
+  } else c.closeT=0;
+  // steer away from the barriers (lateral is x; pursuers face roughly up)
+  if(c.x >  ROAD_HW*0.8) want -= 0.5;
+  if(c.x < -ROAD_HW*0.8) want += 0.5;
+  let diff=angDiff(c.angle, want) + Math.sin(c.wander*1.7)*0.08;
+  c.aiSteer=clamp(diff*2.2,-1,1);
+  c.aiThrottle=1;                                   // a pursuer never coasts; it must keep up
+  c.aiBrake = Math.abs(diff)>1.3 && Math.abs(c.speed||0)>160;
+  const aim=angDiff(c.angle, Math.atan2(dy,dx));
+  if(Math.abs(aim)<0.22 && dist<340 && Math.random()<0.5) fireCannon(c);
+  if(Math.abs(aim)<0.3 && dist<380 && c.missiles>0 && c.mcool<=0 && Math.random()<0.02) fireMissile(c);
+}
+
+function beginRecovery(c, secs){
+  const push = openDirection(c);
+  c.escapeAng = push.mag>0.05 ? Math.atan2(push.py, push.px) : Math.atan2(-c.y, -c.x);
+  const backClear = !blockHitPoint(c.x-Math.cos(c.angle)*76, c.y-Math.sin(c.angle)*76, 16);
+  const frontClear = !blockHitPoint(c.x+Math.cos(c.angle)*76, c.y+Math.sin(c.angle)*76, 16);
+  // reverse only if there is room behind, otherwise claw forward
+  c.revDir = (backClear && !frontClear) ? -1 : (frontClear ? 1 : (backClear ? -1 : 1));
+  c.reverseT = secs;
+}
+
+// unit vector pointing away from nearby walls and blocks
+function openDirection(c){
+  let px=0, py=0;
+  if(mode!=='race'){
+    if(arenaShape==='oval'){
+      const A=ARENA_W/2, B=ARENA_H/2;
+      const k=Math.hypot(c.x/A, c.y/B);
+      if(k>0.76){
+        const f=(k-0.76)/0.24, L=Math.hypot(c.x,c.y)||1;
+        px -= c.x/L*f*1.6; py -= c.y/L*f*1.6;
+      }
+    } else {
+      const m=150;
+      const dL=c.x+ARENA_W/2, dR=ARENA_W/2-c.x, dT=c.y+ARENA_H/2, dB=ARENA_H/2-c.y;
+      if(dL<m) px += (m-dL)/m;
+      if(dR<m) px -= (m-dR)/m;
+      if(dT<m) py += (m-dT)/m;
+      if(dB<m) py -= (m-dB)/m;
+    }
+    for(const b of blocks){
+      const dx=c.x-b.x, dy=c.y-b.y;
+      let d;
+      if(b.type==='barrel' || b.type==='mound'){
+        d=Math.max(0, Math.hypot(dx,dy)-b.w/2);
+      } else {
+        const ex=Math.max(0,Math.abs(dx)-b.w/2), ey=Math.max(0,Math.abs(dy)-b.h/2);
+        d=Math.hypot(ex,ey);
+      }
+      if(d<100){ const f=(100-d)/100, L=Math.hypot(dx,dy)||1; px+=dx/L*f*1.1; py+=dy/L*f*1.1; }
+    }
+    for(const h of hazards){
+      const dx=c.x-h.x, dy=c.y-h.y, L=Math.hypot(dx,dy)||1;
+      const reach=h.r+110;
+      if(L<reach){ const f=(reach-L)/reach*2.6; px+=dx/L*f; py+=dy/L*f; }
+    }
+  }
+  return { px, py, mag:Math.hypot(px,py) };
+}
+
+// five feelers ahead of the car; reach grows with speed so it commits earlier
+function whiskers(c){
+  const spd = Math.abs(c.speed||0);
+  const reach = 48 + spd*0.36;
+  const probes = [[0,reach,1.0],[0.40,reach*0.82,0.65],[-0.40,reach*0.82,0.65],[0.85,reach*0.55,0.35],[-0.85,reach*0.55,0.35]];
+  let left=0, right=0, front=0;
+  for(const p of probes){
+    const a=c.angle+p[0];
+    const hx=c.x+Math.cos(a)*p[1], hy=c.y+Math.sin(a)*p[1];
+    if(blockHitPoint(hx, hy, 15) || hazardAt(hx, hy, 12)){
+      if(p[0]>0.05) right+=p[2];
+      else if(p[0]<-0.05) left+=p[2];
+      else front+=p[2];
+    }
+  }
+  return { left, right, front, total:left+right+front };
+}
+
+function aiCombat(c, dt){
+  let target=null, bd=1e9;
+  for(const o of cars){
+    if(o===c||o.dead) continue;
+    let d=Math.hypot(o.x-c.x,o.y-c.y);
+    if(o.isPlayer) d*=0.72;              // mild aggro bias toward the player
+    if(d<bd){ bd=d; target=o; }
+  }
+  if(!target){ c.aiThrottle=0; c.aiSteer=0; c.aiBrake=false; return; }
+
+  const dist=Math.hypot(target.x-c.x, target.y-c.y);
+  const lead=clamp(dist/430,0,1);
+  const straight=Math.atan2(target.y+target.vy*0.35*lead - c.y, target.x+target.vx*0.35*lead - c.x);
+  let want=straight, throttle=1;
+
+  // inside knife range, alternate a ramming run with an arc back out.
+  // keeps them moving, which is both better looking and far harder to wedge.
+  if(dist<135){
+    c.closeT=(c.closeT||0)+dt;
+    if(c.closeT>3.4){ c.closeT=0; c.orbitDir=-(c.orbitDir||1); }
+    if(c.closeT>1.9) want = straight + (c.orbitDir||1)*1.35;
+  } else {
+    c.closeT=0;
+  }
+
+  // steer out of corners before they become a problem
+  const push=openDirection(c);
+  if(push.mag>0.12){
+    const wx=Math.cos(want)+push.px*1.7, wy=Math.sin(want)+push.py*1.7;
+    want=Math.atan2(wy,wx);
+  }
+
+  let diff=angDiff(c.angle, want) + Math.sin(c.wander*1.7)*0.10;
+  let steer=clamp(diff*2.2,-1,1);
+  if(Math.abs(diff)>1.9 && Math.abs(c.speed||0)<70) throttle=-0.8;   // three-point turn
+  c.aiBrake = Math.abs(diff)>1.3 && Math.abs(c.speed||0)>150;
+
+  // obstacle avoidance overrides the pursuit heading
+  const w=whiskers(c);
+  if(w.total>0){
+    if(w.left>w.right+0.01) c.avoidDir=1;
+    else if(w.right>w.left+0.01) c.avoidDir=-1;
+    steer = c.avoidDir*clamp(0.55+w.total*0.55, 0, 1);
+    if(w.front>0) throttle=Math.min(throttle,0.55);
+    if(w.front>0.9 && Math.abs(c.speed||0)<55){ beginRecovery(c, 0.7); }
+    c.blockedT=(c.blockedT||0)+dt;
+    if(c.blockedT>1.2){ c.blockedT=0; beginRecovery(c, 0.85); }
+  } else c.blockedT=0;
+
+  c.aiSteer=steer; c.aiThrottle=throttle;
+
+  const aimDiff=angDiff(c.angle, straight);
+  const aligned=Math.abs(aimDiff)<0.22 && w.front===0;
+  if(aligned && dist<330 && !blockHitPoint(c.x+Math.cos(c.angle)*Math.min(dist,120), c.y+Math.sin(c.angle)*Math.min(dist,120), 6)){
+    if(Math.random()<0.55) fireCannon(c);
+  }
+  if(aligned && dist<420 && c.missiles>0 && c.mcool<=0 && Math.random()<0.02) fireMissile(c);
+  if(dist<90 && c.minesLeft>0 && Math.random()<0.01) dropMine(c);
+}
+
+function aiRace(c, dt){
+  const pr = c.proj || trackProject(c.x,c.y);
+  const spd = Math.abs(c.speed||0);
+  const look = 0.014 + (spd/232)*0.030;
+  const aim = trackPoint(pr.prog+look, c.lineOff);
+  let want = Math.atan2(aim.y-c.y, aim.x-c.x);
+
+  // nudge around whoever is right in front
+  for(const o of cars){
+    if(o===c||o.dead) continue;
+    const d=Math.hypot(o.x-c.x,o.y-c.y);
+    if(d<62 && Math.abs(angDiff(c.angle, Math.atan2(o.y-c.y,o.x-c.x)))<0.65){
+      const oo = o.proj ? o.proj.off : 0;
+      want += (oo>pr.off ? -0.55 : 0.55);
+    }
+  }
+
+  let diff=angDiff(c.angle, want);
+  let steer=clamp(diff*2.4,-1,1);
+  // scraping a wall, pull back toward the racing line
+  if(Math.abs(pr.off) > TRK.HW*0.7) steer=clamp(steer + (pr.off>0?-0.55:0.55), -1, 1);
+  c.aiSteer=steer;
+
+  const bend = trackPoint(pr.prog+look*2.0, 0);
+  const corner = clamp((bend.curve||0)*3.4, 0, 1);
+  c.aiThrottle = c.finished ? 0.3 : clamp(1 - corner*0.34 - Math.abs(diff)*0.5, 0.3, 1);
+  c.aiBrake = Math.abs(diff)>0.9 && spd>170;
+
+  // combat while racing: shoot forward, mine whoever is on your bumper
+  let front=null, back=null, fd=1e9, bkd=1e9;
+  for(const o of cars){
+    if(o===c||o.dead) continue;
+    const d=Math.hypot(o.x-c.x,o.y-c.y);
+    const rel=Math.abs(angDiff(c.angle, Math.atan2(o.y-c.y,o.x-c.x)));
+    if(rel<0.42 && d<fd){ fd=d; front=o; }
+    if(rel>2.4 && d<bkd){ bkd=d; back=o; }
+  }
+  if(front && fd<330){
+    if(Math.random()<0.35) fireCannon(c);
+    if(c.missiles>0 && c.mcool<=0 && fd<300 && Math.random()<0.03) fireMissile(c);
+  }
+  if(back && bkd<115 && c.minesLeft>0 && Math.random()<0.02) dropMine(c);
+}
+
+// ---------------------------------------------------------------- projectiles
+function updateShots(dt){
+  for(let i=shots.length-1;i>=0;i--){
+    const s=shots[i];
+    s.life-=dt;
+    if(s.kind==='missile'){
+      // soft homing on nearest enemy in a forward cone
+      let best=null,bd=1e9;
+      for(const c of cars){
+        if(c.dead||c.id===s.owner) continue;
+        const d=Math.hypot(c.x-s.x,c.y-s.y);
+        const a=Math.atan2(c.y-s.y,c.x-s.x);
+        if(d<bd && Math.abs(angDiff(s.angle,a))<0.9){ bd=d; best=c; }
+      }
+      if(best){
+        const want=Math.atan2(best.y-s.y,best.x-s.x);
+        s.angle += clamp(angDiff(s.angle,want), -2.2*dt, 2.2*dt);
+      }
+      const sp=Math.min(400, Math.hypot(s.vx,s.vy)+260*dt);
+      s.vx=Math.cos(s.angle)*sp; s.vy=Math.sin(s.angle)*sp;
+      s.smoke-=dt;
+      if(s.smoke<=0){ s.smoke=0.02;
+        particles(s.x,s.y,s.z,1,{col:['#6b5c72','#4a3f50'],spd0:2,spd1:14,size:2,life0:0.3,life1:0.6,grav:-8,up0:0,up1:6}); }
+    }
+    s.x+=s.vx*dt; s.y+=s.vy*dt;
+    let gone = s.life<=0;
+    if(!gone && blockHitPoint(s.x,s.y,3)){
+      if(s.kind==='missile') explode(s.x,s.y,1,s.owner,s.dmg,62);
+      else particles(s.x,s.y,s.z,3,{col:['#ffe9a8','#9a8aa0'],spd0:20,spd1:70,size:1,life0:0.08,life1:0.2});
+      gone=true;
+    }
+    if(!gone) for(const c of cars){
+      if(c.dead||c.id===s.owner||c.invuln>0) continue;
+      if(Math.hypot(c.x-s.x,c.y-s.y)<15){
+        if(s.kind==='missile') explode(s.x,s.y,1,s.owner,s.dmg,62);
+        else {
+          damage(c,s.dmg,s.owner);
+          c.vx+=s.vx*0.03; c.vy+=s.vy*0.03;
+          particles(s.x,s.y,7,3,{col:['#ffe9a8','#ff8a4a'],spd0:20,spd1:80,size:1,life0:0.08,life1:0.22});
+        }
+        gone=true; break;
+      }
+    }
+    if(gone) shots.splice(i,1);
+  }
+
+  for(let i=mines.length-1;i>=0;i--){
+    const m=mines[i];
+    m.arm-=dt; m.life-=dt; m.blink+=dt;
+    let boom = m.life<=0;
+    if(m.arm<=0) for(const c of cars){
+      if(c.dead) continue;
+      if(c.id===m.owner && m.life>14) continue;
+      if(Math.hypot(c.x-m.x,c.y-m.y)<22){ boom=true; break; }
+    }
+    if(boom){ explode(m.x,m.y,1.1,m.owner,40,72); mines.splice(i,1); }
+  }
+}
+
+// ---------------------------------------------------------------- hazards
+function updateHazards(dt){
+  for(const h of hazards){
+    if(h.type!=='pit') continue;
+    for(const c of cars){
+      if(c.dead||c.pitT>0||c.invuln>0) continue;
+      if(Math.hypot(c.x-h.x,c.y-h.y) < h.r*0.7){
+        c.pitT=0.75; c.pitX=h.x; c.pitY=h.y; c.pitR=h.r;
+      }
+    }
+    for(let i=shots.length-1;i>=0;i--){
+      const sh=shots[i];
+      if(Math.hypot(sh.x-h.x,sh.y-h.y) < h.r*0.55 && sh.z<5) shots.splice(i,1);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- pickups
+const ITEMS = {
+  health:  { col:'#4ade80', label:'+' },
+  missile: { col:'#f97362', label:'M' },
+  mine:    { col:'#e0b73c', label:'*' }
+};
+// pads sit up the road; when one falls behind (below), it re-seeds ahead (above)
+// with a fresh item, so ammo drops keep coming toward you as you climb.
+function recycleAhead(p){
+  p.y = cam.y - (VHH/KY) - rnd(80,360);
+  p.x = rnd(-ROAD_HW+30, ROAD_HW-30);
+  p.item = pick(['health','missile','missile','mine']);
+  p.bob = 0;
+}
+function updatePads(dt){
+  const me=cars[0];
+  for(const p of pads){
+    if(p.y > cam.y + (VHH/KY) + 120){ recycleAhead(p); continue; }
+    if(!p.item){ p.timer-=dt; if(p.timer<=0) recycleAhead(p); continue; }
+    p.bob=(p.bob||0)+dt;
+    if(!me.dead && Math.hypot(me.x-p.x, me.y-p.y)<24){
+      if(p.item==='health') me.hp=Math.min(me.maxHp,me.hp+35);
+      if(p.item==='missile') me.missiles=Math.min(5,me.missiles+2);
+      if(p.item==='mine') me.minesLeft=Math.min(3,me.minesLeft+1);
+      p.item=null; p.timer=rnd(0.5,1.5);
+      Snd.pickup();
+      particles(p.x,p.y,8,8,{col:['#fff','#9be7c4'],spd0:20,spd1:70,size:1,life0:0.2,life1:0.4});
+    }
+  }
+}
+
+// ---------------------------------------------------------------- fx update
+function updateFx(dt){
+  for(let i=fx.length-1;i>=0;i--){
+    const p=fx[i]; p.t+=dt;
+    if(p.t>=p.life){ fx.splice(i,1); continue; }
+    if(p.ring) continue;
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.z+=p.vz*dt; p.vz-=p.grav*dt;
+    const fl=p.floor||0;
+    if(p.z<fl){ p.z=fl; p.vz*=-0.35; p.vx*=0.7; p.vy*=0.7; }
+  }
+  for(let i=skids.length-1;i>=0;i--){ skids[i].t+=dt; if(skids[i].t>4) skids.splice(i,1); }
+  cam.shake=Math.max(0, cam.shake - dt*14);
+}
+
+// ---------------------------------------------------------------- drawing
+function drawBowlGround(){
+  const ox=camOx(), oy=camOy();
+  ctx.fillStyle='#120e14'; ctx.fillRect(0,0,W,H);
+  ctx.save();
+  ctx.translate(ox,oy);
+  ctx.fillStyle=dirtTile; ctx.fillRect(-ox,-oy,W,H);
+  // the groove the field has been worn into
+  ctx.globalAlpha=0.16;
+  ctx.strokeStyle='#6b4c38'; ctx.lineWidth=120*S;
+  ctx.beginPath();
+  ctx.ellipse(0,0,(ARENA_W/2-190)*S,(ARENA_H/2-170)*KY*S,0,0,Math.PI*2);
+  ctx.stroke();
+  ctx.globalAlpha=0.18;
+  ctx.strokeStyle='#5a4136'; ctx.lineWidth=5*S;
+  ctx.beginPath();
+  ctx.ellipse(0,0,(ARENA_W/2-150)*S,(ARENA_H/2-136)*KY*S,0,0,Math.PI*2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(0,0,(ARENA_W/2-238)*S,(ARENA_H/2-208)*KY*S,0,0,Math.PI*2);
+  ctx.stroke();
+  ctx.globalAlpha=1;
+  ctx.restore();
+  drawHazards();
+  drawSkids();
+}
+
+// A pit is a real hole cut through the floor plane. A second plane sits
+// PIT_DEPTH below it; because the projection maps height to -z*KZ on screen,
+// that lower plane simply draws PIT_DEPTH*KZ further down. Clipping to the
+// opening means the far shaft wall and the lower floor are what you see
+// through it, which is what the camera would actually show.
+const PIT_DEPTH = 58;
+
+function drawPit(h){
+  const p = toScreen(h.x, h.y, 0);
+  const rx = h.r*S, ry = h.r*KY*S;
+  const drop = PIT_DEPTH*KZ*S;
+
+  ctx.save();
+  ctx.beginPath(); ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI*2); ctx.clip();
+
+  // shaft wall, lit just under the cut edge and falling into shadow
+  const g = ctx.createLinearGradient(0, p.y-ry, 0, p.y+drop);
+  g.addColorStop(0,    '#583c2a');
+  g.addColorStop(0.18, '#33231f');
+  g.addColorStop(0.60, '#150f18');
+  g.addColorStop(1,    '#0b0810');
+  ctx.fillStyle = g;
+  ctx.fillRect(p.x-rx-2, p.y-ry-2, rx*2+4, ry*2+drop+4);
+
+  // the lower plane
+  ctx.fillStyle = '#39384a';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y+drop, rx, ry, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(102,104,132,.28)';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y+drop-ry*0.16, rx*0.74, ry*0.62, 0, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(12,9,18,.34)';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y+drop+ry*0.30, rx*0.96, ry*0.55, 0, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // cut edge of the upper plane
+  ctx.save();
+  ctx.lineWidth = 2*S;
+  ctx.strokeStyle = 'rgba(168,124,86,.6)';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y, rx, ry, 0, Math.PI, Math.PI*2); ctx.stroke();
+  ctx.strokeStyle = 'rgba(16,11,16,.55)';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI); ctx.stroke();
+  ctx.restore();
+}
+
+function drawHazards(){
+  for(const h of hazards){
+    if(!inView(h.x, h.y, h.r+PIT_DEPTH+40)) continue;
+    if(h.type==='pit') drawPit(h);
+  }
+}
+
+function drawGround(){
+  if(level===2){ drawBowlGround(); return; }
+  ctx.save();
+  ctx.fillStyle='#171320'; ctx.fillRect(0,0,W,H);
+  const ox = camOx(), oy = camOy();
+  ctx.translate(ox, oy);
+  ctx.fillStyle = groundTile;
+  const x0 = -ox, y0 = -oy;
+  ctx.fillRect(x0, y0, W, H);
+  ctx.restore();
+
+  // arena floor boundary glow
+  const tl=toScreen(-ARENA_W/2,-ARENA_H/2,0), br=toScreen(ARENA_W/2,ARENA_H/2,0);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(tl.x,tl.y,br.x-tl.x,br.y-tl.y);
+  ctx.strokeStyle='#3f3448'; ctx.lineWidth=2; ctx.stroke();
+  ctx.restore();
+
+  // hazard stripes at the centre
+  const c0=toScreen(-140,-16,0);
+  ctx.save(); ctx.globalAlpha=0.25;
+  for(let i=0;i<14;i++){
+    ctx.fillStyle = i%2 ? '#e0b73c' : '#241a26';
+    ctx.fillRect(c0.x+i*20*S, c0.y, 20*S, 20*KY*S);
+  }
+  ctx.restore();
+
+  drawSkids();
+}
+
+function drawSkids(){
+  ctx.save();
+  for(const s of skids){
+    const p=toScreen(s.x,s.y,0);
+    ctx.globalAlpha=0.35*(1-s.t/4);
+    ctx.fillStyle='#120f18';
+    ctx.translate(p.x,p.y); ctx.scale(S,S*KY); ctx.rotate(s.a);
+    ctx.fillRect(-7,-7,10,2); ctx.fillRect(-7,5,10,2);
+    ctx.setTransform(1,0,0,1,0,0);
+  }
+  ctx.restore();
+  ctx.globalAlpha=1;
+}
+
+// the vertical road: dirt wasteland, an asphalt band running up the screen, and
+// lane lines that stream downward past you as you climb.
+function drawTrack(){
+  const ox=camOx(), oy=camOy();
+  ctx.fillStyle='#141020'; ctx.fillRect(0,0,W,H);
+  ctx.save();
+  ctx.translate(ox,oy);
+  ctx.fillStyle=dirtTile; ctx.fillRect(-ox,-oy,W,H);
+
+  const fwd = VHH/KY;
+  const y0 = cam.y - fwd - 120, y1 = cam.y + fwd + 120;
+  // asphalt band: full width in x (lateral), spanning the visible road in y
+  ctx.fillStyle=groundTile;
+  ctx.fillRect(-ROAD_HW*S, y0*KY*S, 2*ROAD_HW*S, (y1-y0)*KY*S);
+
+  // The dash phase is tied to cam.y (in screen px, so times KY), so the markings
+  // stream past as you climb instead of sitting frozen while the world moves.
+  const scroll = cam.y*KY*S;
+  // shoulder rumble strips just inside each barrier (vertical lines at +/-x)
+  ctx.setLineDash([13*S,13*S]);
+  for(const sx of [-(ROAD_HW-9), (ROAD_HW-9)]){
+    ctx.lineWidth=5*S;
+    ctx.strokeStyle='#ddd3c6'; ctx.lineDashOffset = scroll % (26*S);
+    ctx.beginPath(); ctx.moveTo(sx*S, y0*KY*S); ctx.lineTo(sx*S, y1*KY*S); ctx.stroke();
+    ctx.strokeStyle='#a33a2a'; ctx.lineDashOffset = (scroll + 13*S) % (26*S);
+    ctx.beginPath(); ctx.moveTo(sx*S, y0*KY*S); ctx.lineTo(sx*S, y1*KY*S); ctx.stroke();
+  }
+  // dashed lane markings, two lanes each side of centre (vertical)
+  ctx.setLineDash([26*S,22*S]); ctx.lineWidth=3*S; ctx.strokeStyle='rgba(221,211,198,.5)';
+  ctx.lineDashOffset = scroll % (48*S);
+  for(const lx of [-ROAD_HW*0.5, 0, ROAD_HW*0.5]){
+    ctx.beginPath(); ctx.moveTo(lx*S, y0*KY*S); ctx.lineTo(lx*S, y1*KY*S); ctx.stroke();
+  }
+  ctx.setLineDash([]); ctx.lineDashOffset=0;
+  ctx.restore();
+  drawSkids();
+}
+
+// a straight barrier at world x (a left/right wall), spanning the visible road in
+// y, as a strokeable path
+function convoyWallPath(x){
+  const p=new Path2D();
+  const fwd = VHH/KY;
+  const y0 = cam.y - fwd - 120, y1 = cam.y + fwd + 120;
+  p.moveTo(x*S, y0*KY*S); p.lineTo(x*S, y1*KY*S);
+  return p;
+}
+
+// posts along a barrier at fixed WORLD-y intervals. Because they live at world
+// positions, they slide past as you climb - the wall's motion cue.
+const POST_STEP = 44;
+function drawWallPosts(x){
+  const fwd = VHH/KY;
+  const y0 = cam.y - fwd - 120, y1 = cam.y + fwd + 120;
+  const w = 3*S;
+  for(let py = Math.ceil(y0/POST_STEP)*POST_STEP; py<=y1; py+=POST_STEP){
+    const b = toScreen(x, py, 0), t = toScreen(x, py, TRK.WALL+3);
+    ctx.fillStyle = '#3c2f44';
+    ctx.fillRect(Math.round(b.x - w/2), Math.round(t.y), Math.round(w), Math.round(b.y - t.y));
+    ctx.fillStyle = '#a894b0';
+    ctx.fillRect(Math.round(b.x - w/2), Math.round(t.y), Math.round(w), Math.max(1,Math.round(2*S)));
+  }
+}
+
+// walls are split into far/near halves each frame so cars draw between them
+function buildWallPaths(arr){
+  const far=new Path2D(), near=new Path2D(), N=arr.length;
+  for(let i=0;i<N;i++){
+    const a=arr[i], b=arr[(i+1)%N];
+    const mx=(a.x+b.x)/2, my=(a.y+b.y)/2;
+    if(!inView(mx,my,140)) continue;
+    const t = my<cam.y ? far : near;
+    t.moveTo(a.x*S, a.y*KY*S); t.lineTo(b.x*S, b.y*KY*S);
+  }
+  return { far, near };
+}
+
+function strokeWall(path, h, col){
+  ctx.save(); ctx.translate(camOx(), camOy());
+  ctx.lineJoin='round'; ctx.lineCap='round';
+  ctx.lineWidth=8*S;
+  const layers=Math.round(h*S);
+  for(let i=0;i<layers;i++){
+    ctx.strokeStyle = i<2*S ? shade(col,0.5) : shade(col,0.78);
+    ctx.stroke(path);
+    ctx.translate(0,-1);
+  }
+  ctx.lineWidth=7*S; ctx.strokeStyle=col; ctx.stroke(path);
+  ctx.lineWidth=2*S; ctx.strokeStyle=shade(col,1.45); ctx.stroke(path);
+  ctx.restore();
+}
+
+function extrude(sx, sy, h, angle, shapeFn, sideCol, topFn){
+  const layers=Math.round(h*S);
+  for(let i=0;i<layers;i++){
+    ctx.save();
+    ctx.translate(sx, sy-i); ctx.scale(S,S*KY); if(angle) ctx.rotate(angle);
+    ctx.fillStyle = i<2*S ? shade(sideCol,0.6) : sideCol;
+    shapeFn(ctx); ctx.fill();
+    ctx.restore();
+  }
+  ctx.save();
+  ctx.translate(sx, sy-layers); ctx.scale(S,S*KY); if(angle) ctx.rotate(angle);
+  topFn(ctx);
+  ctx.restore();
+}
+
+function drawShadow(x,y,w,h,angle,alpha,round){
+  const p=toScreen(x,y,0);
+  ctx.save();
+  ctx.translate(p.x+3*S,p.y+2*S); ctx.scale(S,S*KY); if(angle) ctx.rotate(angle);
+  ctx.fillStyle='rgba(8,5,12,'+(alpha||0.4)+')';
+  if(round){ ctx.beginPath(); ctx.ellipse(0,0,w/2,h/2,0,0,Math.PI*2); ctx.fill(); }
+  else { rrect(ctx,-w/2,-h/2,w,h,3); ctx.fill(); }
+  ctx.restore();
+}
+
+// dirt mounds get a dome profile rather than a flat-topped cylinder
+function drawMound(b){
+  drawShadow(b.x,b.y,b.w+4,b.h+4,0,0.42,true);
+  const p=toScreen(b.x,b.y,0);
+  const base='#6b4c33';
+  const H=Math.round(15*S);
+  for(let i=0;i<=H;i++){
+    const t=i/H, k=Math.sqrt(Math.max(0.04, 1-t*t*0.88));
+    ctx.save();
+    ctx.translate(p.x, p.y-i); ctx.scale(S,S*KY);
+    ctx.fillStyle = shade(base, 0.58 + 0.62*t);
+    ctx.beginPath(); ctx.ellipse(0,0,b.w/2*k,b.h/2*k,0,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+  ctx.save();
+  ctx.translate(p.x-b.w*0.10*S, p.y-H-b.h*0.10*KY*S); ctx.scale(S,S*KY);
+  ctx.fillStyle='rgba(230,196,150,.16)';
+  ctx.beginPath(); ctx.ellipse(0,0,b.w*0.17,b.h*0.17,0,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+const BLOCK_H = { barrel:13, core:22, mound:15, wreck:14, crate:16 };
+const BLOCK_C = { barrel:'#b8532f', core:'#4a3f58', mound:'#7a5a3e', wreck:'#4e4a52', crate:'#6b5a48' };
+
+function drawBlock(b){
+  if(b.type==='mound'){ drawMound(b); return; }
+  const h = BLOCK_H[b.type] || 16;
+  const round = b.type==='barrel';
+  drawShadow(b.x,b.y,b.w+3,b.h+3,0,0.45,round);
+  const p=toScreen(b.x,b.y,0);
+  const base = BLOCK_C[b.type] || '#6b5a48';
+  const shape = c=>{
+    if(round){ c.beginPath(); c.ellipse(0,0,b.w/2,b.h/2,0,0,Math.PI*2); c.closePath(); }
+    else rrect(c,-b.w/2,-b.h/2,b.w,b.h,2);
+  };
+  extrude(p.x,p.y,h,0,shape,shade(base,0.55), c=>{
+    c.fillStyle=base; shape(c); c.fill();
+    if(b.type==='barrel'){
+      c.fillStyle=shade(base,1.25);
+      c.beginPath(); c.arc(0,0,b.w/2-4,0,Math.PI*2); c.fill();
+    } else if(b.type==='mound'){
+      c.fillStyle=shade(base,1.2);
+      c.beginPath(); c.ellipse(-b.w*0.08,-b.h*0.1,b.w/2-7,b.h/2-7,0,0,Math.PI*2); c.fill();
+      c.fillStyle=shade(base,1.35);
+      c.beginPath(); c.ellipse(-b.w*0.14,-b.h*0.18,b.w/2-15,b.h/2-15,0,0,Math.PI*2); c.fill();
+    } else if(b.type==='wreck'){
+      c.fillStyle=shade(base,1.3); c.fillRect(-b.w/2+3,-b.h/2+3,b.w-6,3);
+      c.fillStyle='rgba(0,0,0,.34)';
+      c.fillRect(-b.w/2+5,-b.h/2+8,b.w-10,b.h*0.3);
+      c.fillStyle=shade('#8a3a2a',1.0);
+      c.fillRect(-b.w/2+4,b.h/2-9,b.w-8,4);
+    } else {
+      c.fillStyle=shade(base,1.25);
+      c.fillRect(-b.w/2+3,-b.h/2+3,b.w-6,2);
+      c.fillStyle='rgba(0,0,0,.22)';
+      c.fillRect(-b.w/2+3,-b.h/2+7,b.w-6,b.h-10);
+    }
+  });
+}
+
+// ---------------------------------------------------------------- car models
+// Low-poly meshes in car space: +x nose, +y right flank, +z up.
+// Rendered offline into sprite strips at startup (see bakeCarSprites).
+const KZ = Math.sqrt(1 - KY*KY);        // height foreshortening, 0.785 at 38.3 deg
+const LIGHT = (function(){ const v=[-0.42,-0.58,0.70], L=Math.hypot(v[0],v[1],v[2]); return [v[0]/L,v[1]/L,v[2]/L]; })();
+
+function hexShade(hex,f){
+  const n=parseInt(hex.slice(1),16);
+  const r=clamp(((n>>16)&255)*f,0,255)|0, g=clamp(((n>>8)&255)*f,0,255)|0, b=clamp((n&255)*f,0,255)|0;
+  return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);
+}
+
+// extrude a ground-plane outline between two heights, optionally tapering the top
+function prism(outline, z0, z1, role, inset){
+  inset = inset||0;
+  let o = outline.map(p=>p.slice());
+  let area=0;
+  for(let i=0;i<o.length;i++){ const a=o[i], b=o[(i+1)%o.length]; area += a[0]*b[1]-b[0]*a[1]; }
+  if(area<0) o.reverse();                       // force counter-clockwise
+  let cx=0, cy=0;
+  for(const p of o){ cx+=p[0]; cy+=p[1]; }
+  cx/=o.length; cy/=o.length;
+  const top = o.map(([x,y])=>{
+    const dx=x-cx, dy=y-cy, L=Math.hypot(dx,dy)||1, k=Math.max(0.05, L-inset)/L;
+    return [cx+dx*k, cy+dy*k];
+  });
+  const faces=[];
+  faces.push({ v: top.map(([x,y])=>[x,y,z1]), c:role });
+  for(let i=0;i<o.length;i++){
+    const j=(i+1)%o.length;
+    faces.push({ v:[ [o[i][0],o[i][1],z0], [o[j][0],o[j][1],z0],
+                     [top[j][0],top[j][1],z1], [top[i][0],top[i][1],z1] ], c:role });
+  }
+  return faces;
+}
+
+// wheel: cylinder lying on its side, axis along y
+function wheelMesh(cx, cy, r, halfW, role, seg){
+  seg = seg||9;
+  const faces=[], ring=[];
+  for(let i=0;i<seg;i++){
+    const a=i/seg*Math.PI*2;
+    ring.push([cx+Math.cos(a)*r, r+Math.sin(a)*r]);   // sits on the ground
+  }
+  for(let i=0;i<seg;i++){
+    const p=ring[i], q=ring[(i+1)%seg];
+    faces.push({ v:[[p[0],cy-halfW,p[1]],[q[0],cy-halfW,q[1]],[q[0],cy+halfW,q[1]],[p[0],cy+halfW,p[1]]], c:role, noCull:true });
+  }
+  faces.push({ v: ring.map(p=>[p[0],cy+halfW,p[1]]), c:role, noCull:true });
+  faces.push({ v: ring.map(p=>[p[0],cy-halfW,p[1]]), c:role, noCull:true });
+  return faces;
+}
+
+function buildModels(){
+  const M=[];
+
+  // 1. muscle
+  M.push([].concat(
+    wheelMesh(-9.5, -7.6, 3.4, 1.5,'tyre'), wheelMesh(-9.5, 7.6, 3.4, 1.5,'tyre'),
+    wheelMesh( 8.0, -7.4, 3.0, 1.4,'tyre'), wheelMesh( 8.0, 7.4, 3.0, 1.4,'tyre'),
+    prism([[-15,-7],[8,-8],[14,-5.5],[15,0],[14,5.5],[8,8],[-15,7]], 1.6, 6.4,'body',0.9),
+    prism([[3,-6.5],[13,-4.5],[13,4.5],[3,6.5]], 6.2, 7.4,'body',0.4),
+    prism([[6,-2.6],[11.5,-2.6],[11.5,2.6],[6,2.6]], 7.4, 8.8,'shadowed',0.3),
+    prism([[-7.5,-6],[3,-5],[3,5],[-7.5,6]], 6.2, 10.4,'glass',1.8),
+    prism([[-6.5,-4.4],[0.5,-3.6],[0.5,3.6],[-6.5,4.4]], 10.4, 11.0,'body',0.3),
+    prism([[-16,-7.5],[-13.6,-7.5],[-13.6,7.5],[-16,7.5]], 6.2, 10.0,'accent',0.2),
+    prism([[13,-1.5],[19,-1.5],[19,1.5],[13,1.5]], 5.6, 7.6,'metal',0.2)
+  ));
+
+  // 2. interceptor
+  M.push([].concat(
+    wheelMesh(-9.0, -7.2, 3.2, 1.4,'tyre'), wheelMesh(-9.0, 7.2, 3.2, 1.4,'tyre'),
+    wheelMesh( 6.5, -6.8, 2.7, 1.2,'tyre'), wheelMesh( 6.5, 6.8, 2.7, 1.2,'tyre'),
+    prism([[-13,-6.5],[5,-7.5],[16,-2.6],[16,2.6],[5,7.5],[-13,6.5]], 1.4, 5.6,'body',0.8),
+    prism([[7,-4.2],[15.5,-1.8],[15.5,1.8],[7,4.2]], 5.8, 7.0,'accent',0.3),
+    prism([[-5,-5.2],[6,-3.6],[6,3.6],[-5,5.2]], 5.8, 9.0,'glass',1.5),
+    prism([[-14.8,-6.4],[-12.6,-6.4],[-12.6,-4.4],[-14.8,-4.4]], 5.4, 8.8,'shadowed',0),
+    prism([[-14.8,4.4],[-12.6,4.4],[-12.6,6.4],[-14.8,6.4]], 5.4, 8.8,'shadowed',0),
+    prism([[-16,-8.6],[-11.6,-8.6],[-11.6,8.6],[-16,8.6]], 8.8, 10.2,'accent',0.4),
+    prism([[14,-1.4],[19.5,-1.4],[19.5,1.4],[14,1.4]], 5.2, 6.8,'metal',0.2)
+  ));
+
+  // 3. buggy. Narrow central tub with lower side pods, so the top face is
+  // broken into steps instead of one flat slab, plus a metal hoop for contrast.
+  M.push([].concat(
+    wheelMesh(-8.8, -7.0, 3.9, 2.0,'tyre'), wheelMesh(-8.8, 7.0, 3.9, 2.0,'tyre'),
+    wheelMesh( 7.6, -6.8, 3.0, 1.5,'tyre'), wheelMesh( 7.6, 6.8, 3.0, 1.5,'tyre'),
+    prism([[-10.5,-6.8],[3,-6.8],[3,-3.6],[-10.5,-3.6]], 2.4, 5.0,'shadowed',0.4),
+    prism([[-10.5,3.6],[3,3.6],[3,6.8],[-10.5,6.8]], 2.4, 5.0,'shadowed',0.4),
+    prism([[-10.5,-4.4],[8,-4],[11.5,-2],[11.5,2],[8,4],[-10.5,4.4]], 2.0, 6.2,'body',0.6),
+    prism([[-3.2,-3.6],[5.4,-3.2],[5.4,3.2],[-3.2,3.6]], 5.2, 6.5,'dark',0.25),
+    prism([[-4.9,-3.7],[-3.4,-3.7],[-3.4,3.7],[-4.9,3.7]], 6.2, 8.6,'dark',0.2),
+    prism([[-10.2,-4.2],[-5.6,-4.2],[-5.6,4.2],[-10.2,4.2]], 6.2, 9.2,'metal',0.6),
+    prism([[-9.2,-2],[-6.6,-2],[-6.6,2],[-9.2,2]], 9.2, 10.3,'shadowed',0.3),
+    prism([[-5.4,-4.8],[-3.9,-4.8],[-3.9,-3.3],[-5.4,-3.3]], 6.2, 11.0,'metal',0),
+    prism([[-5.4,3.3],[-3.9,3.3],[-3.9,4.8],[-5.4,4.8]], 6.2, 11.0,'metal',0),
+    prism([[-5.4,-4.8],[-3.9,-4.8],[-3.9,4.8],[-5.4,4.8]], 11.0, 12.4,'metal',0.25),
+    prism([[6.5,-3.6],[11.8,-1.8],[11.8,1.8],[6.5,3.6]], 6.2, 7.0,'accent',0.35),
+    prism([[9,-1.4],[15.5,-1.4],[15.5,1.4],[9,1.4]], 5.4, 7.0,'metal',0.2)
+  ));
+
+  // 4. gun truck
+  M.push([].concat(
+    wheelMesh(-9.5, -7.8, 3.7, 1.8,'tyre'), wheelMesh(-9.5, 7.8, 3.7, 1.8,'tyre'),
+    wheelMesh( 8.0, -7.8, 3.7, 1.8,'tyre'), wheelMesh( 8.0, 7.8, 3.7, 1.8,'tyre'),
+    prism([[-15,-7.6],[15,-7.6],[15,7.6],[-15,7.6]], 2.2, 6.6,'shadowed',0.5),
+    prism([[-15,-7.6],[-13,-7.6],[-13,7.6],[-15,7.6]], 6.4, 9.4,'dark',0.3),
+    prism([[-15,-7.6],[1,-7.6],[1,-5.6],[-15,-5.6]], 6.4, 9.4,'dark',0.3),
+    prism([[-15,5.6],[1,5.6],[1,7.6],[-15,7.6]], 6.4, 9.4,'dark',0.3),
+    prism([[1.5,-7.4],[12,-6.8],[12,6.8],[1.5,7.4]], 6.4, 13.2,'body',1.6),
+    prism([[8.4,-6.2],[11.6,-5.6],[11.6,5.6],[8.4,6.2]], 8.0, 12.4,'glass',0.5),
+    prism([[10,-6],[15.5,-5],[15.5,5],[10,6]], 6.4, 8.0,'body',0.5),
+    prism([[-11,-3.8],[-4.6,-3.8],[-4.6,3.8],[-11,3.8]], 9.4, 12.4,'metal',0.8),
+    prism([[-9,-1.5],[9,-1.5],[9,1.5],[-9,1.5]], 11.2, 13.4,'metal',0.3)
+  ));
+  return M;
+}
+const MODELS = buildModels();
+
+// rasterise one rotation frame. A depth buffer rather than a painter's sort:
+// average-depth sorting puts a car's large flat body top in front of small
+// raised faces like the windshield, whatever order the model is authored in.
+const SS = 2;                       // supersample, downscaled on composite
+let ZBUF = null;
+
+function shadeRGB(hex, f){
+  const n=parseInt(hex.slice(1),16);
+  return [ clamp(((n>>16)&255)*f,0,255)|0, clamp(((n>>8)&255)*f,0,255)|0, clamp((n&255)*f,0,255)|0 ];
+}
+
+function triangle(px, zb, w, h, a, b, c, r, g, bl){
+  const den = (b[1]-c[1])*(a[0]-c[0]) + (c[0]-b[0])*(a[1]-c[1]);
+  if(Math.abs(den) < 1e-9) return;
+  const inv = 1/den;
+  let x0=Math.max(0, Math.floor(Math.min(a[0],b[0],c[0]))),
+      x1=Math.min(w-1, Math.ceil (Math.max(a[0],b[0],c[0]))),
+      y0=Math.max(0, Math.floor(Math.min(a[1],b[1],c[1]))),
+      y1=Math.min(h-1, Math.ceil (Math.max(a[1],b[1],c[1])));
+  for(let y=y0;y<=y1;y++){
+    const cy=y+0.5;
+    for(let x=x0;x<=x1;x++){
+      const cx=x+0.5;
+      const l0 = ((b[1]-c[1])*(cx-c[0]) + (c[0]-b[0])*(cy-c[1])) * inv;
+      if(l0<0) continue;
+      const l1 = ((c[1]-a[1])*(cx-c[0]) + (a[0]-c[0])*(cy-c[1])) * inv;
+      if(l1<0) continue;
+      const l2 = 1-l0-l1;
+      if(l2<0) continue;
+      const d = l0*a[2] + l1*b[2] + l2*c[2];
+      const i = y*w+x;
+      if(d <= zb[i]) continue;
+      zb[i]=d;
+      const p=i*4;
+      px[p]=r; px[p+1]=g; px[p+2]=bl; px[p+3]=255;
+    }
+  }
+}
+
+// ky/kz pick the viewing angle: the 2D half bakes at the axonometric KY, the
+// gunner's first-person half re-bakes the same meshes at eye level.
+function rasterCar(sctx, mesh, yaw, col, flash, fw, fh, ax, ay, ky, kz, vsc){
+  ky = ky==null ? KY : ky;
+  kz = kz==null ? KZ : kz;
+  vsc = vsc==null ? S : vsc;
+  const w=fw*SS, h=fh*SS;
+  if(!ZBUF || ZBUF.length!==w*h) ZBUF = new Float32Array(w*h);
+  ZBUF.fill(-1e9);
+  const img = sctx.createImageData(w,h);
+  const px = img.data;
+
+  const cy=Math.cos(yaw), sy=Math.sin(yaw);
+  const roles = flash ? null : {
+    body: col,
+    accent: hexShade(col,1.32),
+    shadowed: hexShade(col,0.62),
+    dark: '#241d2c',
+    glass: '#241d38',
+    tyre: '#14111a',
+    metal: '#585265'
+  };
+  const ox = ax*SS, oy = ay*SS, scl = vsc*SS;
+
+  for(const f of mesh){
+    const v=f.v.map(p=>[p[0]*cy - p[1]*sy, p[0]*sy + p[1]*cy, p[2]]);
+    const ax1=v[1][0]-v[0][0], ay1=v[1][1]-v[0][1], az1=v[1][2]-v[0][2];
+    const bx1=v[2][0]-v[0][0], by1=v[2][1]-v[0][1], bz1=v[2][2]-v[0][2];
+    let nx=ay1*bz1-az1*by1, ny=az1*bx1-ax1*bz1, nz=ax1*by1-ay1*bx1;
+    const nl=Math.hypot(nx,ny,nz)||1; nx/=nl; ny/=nl; nz/=nl;
+    if(!f.noCull && (ny*kz + nz*ky) <= 0.001) continue;
+    const lam = Math.max(0, nx*LIGHT[0] + ny*LIGHT[1] + nz*LIGHT[2]);
+    const rgb = shadeRGB(flash ? '#ffffff' : roles[f.c], 0.44 + 0.72*lam);
+    // project: x across, y foreshortened, z raised; depth grows toward the camera
+    const s = v.map(p=>[ ox + p[0]*scl, oy + (p[1]*ky - p[2]*kz)*scl, p[1]*kz + p[2]*ky ]);
+    for(let i=1;i+1<s.length;i++) triangle(px, ZBUF, w, h, s[0], s[i], s[i+1], rgb[0], rgb[1], rgb[2]);
+  }
+  return img;
+}
+
+// 32 rotation frames per car, plus a white damage-flash row. Sheets are cached by
+// model+colour (not id) so the many enemies a convoy spawns share bitmaps and the
+// bake happens once per look; the cache is cleared on rescale so it re-bakes at S.
+let CAR2D = new Map();
+function bakeCarSprites(c){
+  const n = 32;
+  const fw = Math.ceil(52*S), fh = Math.ceil(52*S);
+  const ax = Math.round(fw/2), ay = Math.round(fh*0.62);
+  const key = (c.model||0)+'|'+c.color;
+  const cached = CAR2D.get(key);
+  if(cached) return cached;
+  const mesh = MODELS[(c.model||0) % MODELS.length];
+
+  const cvs = document.createElement('canvas');
+  cvs.width = fw*n; cvs.height = fh*2;
+  const g = cvs.getContext('2d');
+  g.imageSmoothingEnabled = true;
+
+  const scratch = document.createElement('canvas');
+  scratch.width = fw*SS; scratch.height = fh*SS;
+  const sctx = scratch.getContext('2d');
+
+  for(let f=0;f<n;f++){
+    const yaw = f/n*Math.PI*2;
+    for(let row=0;row<2;row++){
+      g.save();
+      g.translate(f*fw+ax+3*S, row*fh+ay+2*S); g.scale(S,S*KY);
+      g.fillStyle='rgba(8,5,12,.40)';
+      g.beginPath(); g.ellipse(0,0,15,8,yaw,0,Math.PI*2); g.fill();
+      g.restore();
+      sctx.putImageData(rasterCar(sctx, mesh, yaw, c.color, row===1, fw, fh, ax, ay), 0, 0);
+      g.drawImage(scratch, 0,0,scratch.width,scratch.height, f*fw, row*fh, fw, fh);
+    }
+  }
+  const sheet = { cv:cvs, n, fw, fh, ax, ay };
+  CAR2D.set(key, sheet);
+  return sheet;
+}
+
+function drawCar(c){
+  if(c.dead) return;
+  if(c.invuln>0 && Math.floor(c.invuln*14)%2===0) return;
+  const sp=c.sprite;
+  if(!sp) return;
+  const p=toScreen(c.x,c.y,0);
+  const TAU=Math.PI*2;
+  const a=((c.angle%TAU)+TAU)%TAU;
+  const f=Math.round(a/TAU*sp.n)%sp.n;
+  const row = c.hurtFlash>0 ? sp.fh : 0;
+  if(c.pitT>0){
+    // ride the car down to the lower plane, clipped by the mouth of the hole
+    const fall = 1-clamp(c.pitT/0.75,0,1);
+    const q = toScreen(c.x, c.y, -fall*PIT_DEPTH);
+    const k = 1-0.22*fall;
+    const rp = toScreen(c.pitX, c.pitY, 0);
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(rp.x, rp.y, c.pitR*S, c.pitR*KY*S, 0, 0, Math.PI*2);
+    ctx.clip();
+    ctx.globalAlpha = 1-0.45*fall;
+    ctx.drawImage(sp.cv, f*sp.fw, row, sp.fw, sp.fh,
+      Math.round(q.x-sp.ax*k), Math.round(q.y-sp.ay*k), sp.fw*k, sp.fh*k);
+    ctx.restore();
+    return;
+  }
+  ctx.drawImage(sp.cv, f*sp.fw, row, sp.fw, sp.fh,
+    Math.round(p.x-sp.ax), Math.round(p.y-sp.ay), sp.fw, sp.fh);
+
+  // health pip above the car
+  const w=20*S, hpw=Math.round(w*(c.hp/c.maxHp));
+  ctx.fillStyle='rgba(10,7,14,.75)'; ctx.fillRect(p.x-w/2-S, p.y-24*S, w+2*S, 4*S);
+  ctx.fillStyle = c.hp>50?'#4ade80':c.hp>25?'#e0b73c':'#f0503c';
+  ctx.fillRect(p.x-w/2, p.y-23*S, hpw, 2*S);
+  if(c.isPlayer){
+    ctx.fillStyle='#fff';
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y-27*S); ctx.lineTo(p.x-3*S, p.y-32*S); ctx.lineTo(p.x+3*S, p.y-32*S);
+    ctx.closePath(); ctx.fill();
+  }
+}
+
+function drawPad(p){
+  const s=toScreen(p.x,p.y,0);
+  ctx.save();
+  ctx.translate(s.x,s.y); ctx.scale(S,S*KY);
+  ctx.strokeStyle= p.item? '#5d6b84' : '#3a3448'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(0,0,16,0,Math.PI*2); ctx.stroke();
+  ctx.restore();
+  if(!p.item) return;
+  const it=ITEMS[p.item];
+  const bob = Math.sin(p.bob*3)*3;
+  const q=toScreen(p.x,p.y,10+bob);
+  ctx.save();
+  ctx.translate(q.x,q.y); ctx.scale(S,S);
+  ctx.fillStyle=shade(it.col,0.4); ctx.fillRect(-6,-6,12,12);
+  ctx.fillStyle=it.col; ctx.fillRect(-5,-5,10,10);
+  ctx.fillStyle=shade(it.col,1.4); ctx.fillRect(-5,-5,10,1.5);
+  ctx.fillStyle='#12101a'; ctx.font='bold 8px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(it.label,0,0.5);
+  ctx.restore();
+}
+
+function drawShot(s){
+  const p=toScreen(s.x,s.y,s.z);
+  if(s.kind==='missile'){
+    drawShadow(s.x,s.y,8,5,Math.atan2(s.vy,s.vx),0.3);
+    ctx.save(); ctx.translate(p.x,p.y); ctx.scale(S,S*KY); ctx.rotate(s.angle);
+    ctx.fillStyle='#d8d2dc'; ctx.fillRect(-5,-2,10,4);
+    ctx.fillStyle='#8f8898'; ctx.fillRect(-5,0.6,10,1.4);
+    ctx.fillStyle='#f0503c'; ctx.fillRect(3,-2,3,4);
+    ctx.fillStyle='#ffcf6a'; ctx.fillRect(-8,-1,3,2);
+    ctx.restore();
+  } else {
+    ctx.fillStyle='#ffe9a8'; ctx.fillRect(p.x-S, p.y-S, 3*S, 2*S);
+    ctx.fillStyle='rgba(255,180,90,.5)'; ctx.fillRect(p.x-3*S, p.y, 2*S, S);
+  }
+}
+
+function drawMine(m){
+  const p=toScreen(m.x,m.y,2);
+  ctx.save(); ctx.translate(p.x,p.y); ctx.scale(S,S*KY);
+  ctx.fillStyle='#3a3040'; ctx.beginPath(); ctx.arc(0,0,6,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#4a4050'; ctx.beginPath(); ctx.arc(0,-1,4,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle = (Math.floor(m.blink*6)%2 && m.arm<=0) ? '#f0503c' : '#7a2a20';
+  ctx.beginPath(); ctx.arc(0,0,2.5,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawFx(){
+  let clipOn=null;
+  const setClip = c=>{
+    if(c===clipOn) return;
+    if(clipOn){ ctx.restore(); clipOn=null; }
+    if(c){
+      ctx.save();
+      const cp=toScreen(c.x,c.y,0);
+      ctx.beginPath();
+      ctx.ellipse(cp.x,cp.y,c.r*S,c.r*KY*S,0,0,Math.PI*2);
+      ctx.clip();
+      clipOn=c;
+    }
+  };
+  for(const p of fx){
+    setClip(p.clip||null);
+    const k=p.t/p.life;
+    if(p.ring){
+      const s=toScreen(p.x,p.y,p.z);
+      const r=lerp(p.r0,p.r1,k);
+      ctx.save(); ctx.translate(s.x,s.y); ctx.scale(S,S*KY);
+      ctx.globalAlpha=1-k; ctx.strokeStyle='#ffd88a'; ctx.lineWidth=(3-2*k)/KY;
+      ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.stroke();
+      ctx.globalAlpha=(1-k)*0.35; ctx.fillStyle='#ff8a3d';
+      ctx.beginPath(); ctx.arc(0,0,r*0.7,0,Math.PI*2); ctx.fill();
+      ctx.restore(); ctx.globalAlpha=1;
+      continue;
+    }
+    const s=toScreen(p.x,p.y,p.z);
+    ctx.globalAlpha=clamp(1-k,0,1);
+    ctx.fillStyle = Array.isArray(p.col) ? p.col[(p.x*7+p.y*3|0)%p.col.length] : p.col;
+    const sz=Math.max(1, p.size*(1-k*0.5))*S;
+    ctx.fillRect(s.x-sz/2, s.y-sz/2, sz, sz);
+    ctx.globalAlpha=1;
+  }
+  setClip(null);
+}
+
+// ================================================================ TWO PLAYERS
+// Player 1 drives in the axonometric view. Player 2 rides shotgun behind a
+// ring-mounted gun and sees a first-person raycast view out of the same car.
+// One car, two jobs: P1 has no trigger, P2 has no steering wheel.
+//
+// The raycaster is segment-based, not grid-based. The track is a smooth
+// 72-segment superellipse, and voxelising it into tiles would turn a clean oval
+// into a staircase. Projection follows the usual Wolfenstein formulas, lifted
+// from the survive2 reference (js/raycaster.js, Andrew Lim's SDL2 port):
+//   viewDist = (w/2)/tan(fov/2),  stripAngle = atan(screenX/viewDist),
+//   perpendicular distance = dist*cos(stripAngle),  projScale = viewDist/perp.
+
+// the vertical road wants a tall pane, so 2P puts the driver on the LEFT and the
+// gunner on the RIGHT (each a full-height half) rather than stacking them
+const LAYOUT = 'side';             // 'stack' = gunner over driver, 'side' = side by side
+const ZOOM2D = 0.72;               // world scale of the driving pane (zoomed out ~10% vs convoy,
+                                   // so more of the vertical road fits the screen)
+
+let PANE_P1 = null, PANE_P2 = null;
+function layoutPanes(){
+  if(numPlayers===1){
+    // solo: one full-screen driving view, no gunner pane
+    PANE_P1 = { x:0, y:0, w:VW, h:VH };
+    PANE_P2 = null;
+  } else if(LAYOUT==='side'){
+    PANE_P1 = { x:0,      y:0, w:VW/2, h:VH };
+    PANE_P2 = { x:VW/2,   y:0, w:VW/2, h:VH };
+  } else {
+    PANE_P2 = { x:0, y:0,      w:VW, h:VH/2 };
+    PANE_P1 = { x:0, y:VH/2,   w:VW, h:VH/2 };
+  }
+}
+
+// ---------------------------------------------------------------- raycast view
+let   RC_FOV = 95 * Math.PI/180;   // wide: a turret gunner wants peripheral vision (- = to tune)
+// EYE_Z matters more than it looks. The tilt of a wall's top edge across the
+// screen is (EYE_Z-BARRIER_H)/lateralGap, and that edge pivots about the centre
+// of the view - which the eye reads as the camera rotating. At eye 27 the gap
+// was 5, so the edge sat on the horizon and swung wildly when you closed in.
+// Standing the gunner up on his ring mount puts the barrier clearly below the
+// horizon instead, where it reads as a low wall rather than a tilting skyline.
+let   EYE_Z  = 38;                 // gunner's eye height above the road ([ ] to tune)
+const BARRIER_H = 22;              // still low enough to see over into the corner
+const WALL_T = 9;                  // barrier thickness, for the visible top ribbon
+const SHOT_SETTLE = 260;           // units over which the gunner's tracer eases down
+const FENCE_H   = 96;
+const FENCE_OUT = 210;             // how far outside the barrier the perimeter fence sits
+
+let rcCv=null, rcCtx=null, RC_W=0, RC_H=0, RC_VD=0, RC_HORIZON=0;
+let rcStripe=null;
+let rcSin=null, rcCos=null, rcInvCos=null, rcTan=null;   // per-column, constant
+let rcZ=null, rcImg=null, rcPix=null;
+let rings=[];                       // wall rings: {pts, h, col, top, open}
+let ringCX=null, ringCY=null;       // ring points in camera space, rebuilt each frame
+
+function rcInit(){
+  RC_W = Math.round(PANE_P2.w/2);   // half-res offscreen, blitted 2x: chunky on purpose
+  RC_H = Math.round(PANE_P2.h/2);
+  rcCv = document.createElement('canvas');
+  rcCv.width = RC_W; rcCv.height = RC_H;
+  rcCtx = rcCv.getContext('2d', { alpha:false });
+  rcCtx.imageSmoothingEnabled = false;
+  RC_HORIZON = Math.round(RC_H*0.44);   // more road, less empty sky
+  rcZ = new Float32Array(RC_W);
+  rcImg = rcCtx.createImageData(RC_W, RC_H);
+  rcPix = rcImg.data;
+  rcColumns();
+}
+
+// per-column angle tables: constant for a given FOV, so rebuilt only on change
+function rcColumns(){
+  RC_VD = (RC_W/2) / Math.tan(RC_FOV/2);
+  rcSin = new Float32Array(RC_W); rcCos = new Float32Array(RC_W);
+  rcInvCos = new Float32Array(RC_W); rcTan = new Float32Array(RC_W);
+  for(let i=0;i<RC_W;i++){
+    const a = Math.atan((i + 0.5 - RC_W/2) / RC_VD);
+    rcSin[i]=Math.sin(a); rcCos[i]=Math.cos(a);
+    rcInvCos[i]=1/Math.cos(a); rcTan[i]=Math.tan(a);
+  }
+}
+function setFov(deg){ RC_FOV = clamp(deg,50,120) * Math.PI/180; rcColumns(); }
+
+// The corridor walls are straight and infinite, so the raycaster's rings are
+// rebuilt each frame as short open polylines spanning the road near the camera.
+// `open:true` tells rcWalls not to wrap the last point back to the first (which,
+// on a straight run, would lay a spurious segment down the whole wall).
+const RING_SPAN = 1500;            // how far ahead/behind the camera the walls reach
+const RING_STEP = 50;              // segment length, fine enough for legible banding
+let ringCenter = 0;                // forward-axis (y) centre the walls are built around
+
+function buildConvoyRings(center){
+  ringCenter = center;
+  // the walls run along y (the road direction) at fixed x; rebuilt around the camera
+  const line = (x) => {
+    const pts=[]; const y0 = center - RING_SPAN;
+    const n = Math.ceil(2*RING_SPAN/RING_STEP);
+    for(let i=0;i<=n;i++) pts.push({ x, y: y0 + i*RING_STEP });
+    return pts;
+  };
+  const fx = ROAD_HW + FENCE_OUT_C;
+  rings = [
+    { pts:line(-ROAD_HW), h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true },
+    { pts:line( ROAD_HW), h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true },
+    { pts:line(-fx),      h:FENCE_H,   col:'#2e2536', top:'#463a50', open:true },
+    { pts:line( fx),      h:FENCE_H,   col:'#2e2536', top:'#463a50', open:true }
+  ];
+  let n=0; for(const r of rings) n += r.pts.length;
+  if(!ringCX || ringCX.length < n){ ringCX = new Float32Array(n); ringCY = new Float32Array(n); }
+  let o=0; for(const r of rings){ r.off = o; o += r.pts.length; }
+}
+function buildRings(){ buildConvoyRings(0); }   // race-era name kept for the boot path
+
+// the road is the straight band |x| < ROAD_HW; no lookup table needed
+function onAsphalt(x,y){ return Math.abs(x) < ROAD_HW ? 1 : 0; }
+
+// ---- sky and floor, written straight into the image buffer
+const SKY_TOP=[26,20,34], SKY_HORIZ=[74,54,66];
+const ASPH=[43,36,48], ASPH_FAR=[30,25,36];
+const DIRT=[58,43,38], DIRT_FAR=[34,27,28];
+
+function rcBackground(camX, camY, bearing){
+  const fwx=Math.cos(bearing), fwy=Math.sin(bearing);
+  const rgx=-fwy, rgy=fwx;
+  let p=0;
+  for(let y=0;y<RC_H;y++){
+    if(y < RC_HORIZON){
+      const t = y/Math.max(1,RC_HORIZON);
+      const r=(SKY_TOP[0]+(SKY_HORIZ[0]-SKY_TOP[0])*t)|0;
+      const g=(SKY_TOP[1]+(SKY_HORIZ[1]-SKY_TOP[1])*t)|0;
+      const b=(SKY_TOP[2]+(SKY_HORIZ[2]-SKY_TOP[2])*t)|0;
+      for(let x=0;x<RC_W;x++){ rcPix[p]=r; rcPix[p+1]=g; rcPix[p+2]=b; rcPix[p+3]=255; p+=4; }
+      continue;
+    }
+    // floor: one perpendicular distance per row, then step across the row
+    const perp = EYE_Z*RC_VD/Math.max(0.5, y-RC_HORIZON+0.5);
+    const fog = Math.min(1, perp/900);
+    const ar=(ASPH[0]+(ASPH_FAR[0]-ASPH[0])*fog)|0, ag=(ASPH[1]+(ASPH_FAR[1]-ASPH[1])*fog)|0,
+          ab=(ASPH[2]+(ASPH_FAR[2]-ASPH[2])*fog)|0;
+      const dr=(DIRT[0]+(DIRT_FAR[0]-DIRT[0])*fog)|0, dg=(DIRT[1]+(DIRT_FAR[1]-DIRT[1])*fog)|0,
+          db=(DIRT[2]+(DIRT_FAR[2]-DIRT[2])*fog)|0;
+    // sample every other column and hold
+    let onRoad = 0;
+    for(let x=0;x<RC_W;x++){
+      if((x & 1)===0){
+        const r4 = perp*rcInvCos[x];
+        const wx = camX + (fwx*rcCos[x] + rgx*rcSin[x])*r4;
+        const wy = camY + (fwy*rcCos[x] + rgy*rcSin[x])*r4;
+        onRoad = onAsphalt(wx,wy);
+      }
+      if(onRoad){ rcPix[p]=ar; rcPix[p+1]=ag; rcPix[p+2]=ab; }
+      else      { rcPix[p]=dr; rcPix[p+1]=dg; rcPix[p+2]=db; }
+      rcPix[p+3]=255; p+=4;
+    }
+  }
+  rcCtx.putImageData(rcImg, 0, 0);
+}
+
+// ---- walls
+// Every ring point is transformed into camera space once per frame, then each
+// column is a ray-vs-segment solve. A column can hit several walls (the barrier
+// is low, so the fence shows above it), so hits are drawn far to near.
+const RC_HITS_MAX = 64;          // a grazing ray can cross a lot of one ring
+const rcHitD = new Float32Array(RC_HITS_MAX);
+const rcHitR = new Int32Array(RC_HITS_MAX);
+const rcHitU = new Float32Array(RC_HITS_MAX);     // distance along the wall, for banding
+const rcHitK = new Float32Array(RC_HITS_MAX);     // |segment|/|den|, for the top ribbon
+const rcHitOrder = new Int32Array(RC_HITS_MAX);
+
+function rcWalls(camX, camY, bearing){
+  const cb=Math.cos(-bearing), sb=Math.sin(-bearing);
+  for(const r of rings){
+    const pts=r.pts, off=r.off;
+    for(let i=0;i<pts.length;i++){
+      const dx=pts[i].x-camX, dy=pts[i].y-camY;
+      // camera space: +y forward, +x right
+      ringCX[off+i] = dx*cb - dy*sb;
+      ringCY[off+i] = dx*sb + dy*cb;
+    }
+  }
+  // camera looks along world `bearing`; rotating by -bearing puts forward on +x,
+  // so swap into (right, forward) = (-y, x)
+  for(let x=0;x<RC_W;x++) rcZ[x]=1e9;
+
+  for(let x=0;x<RC_W;x++){
+    const drx=rcSin[x], dry=rcCos[x];      // ray dir in (right, forward)
+    let nh=0;
+    for(let ri=0; ri<rings.length; ri++){
+      const r=rings[ri], pts=r.pts, off=r.off, n=pts.length;
+      const last = r.open ? n-1 : n;
+      for(let i=0;i<last;i++){
+        const j=r.open ? i+1 : (i+1)%n;
+        // (right, forward): a point at relative angle +a sits right of centre,
+        // matching the billboard and floor projections
+        const axr=ringCY[off+i], axf=ringCX[off+i];
+        const bxr=ringCY[off+j], bxf=ringCX[off+j];
+        if(axf<=0.5 && bxf<=0.5) continue;              // wholly behind the camera
+        const ex=bxr-axr, ey=bxf-axf;
+        const den=drx*ey - dry*ex;
+        if(den>-1e-9 && den<1e-9) continue;
+        // solving t*d = A + u*E for u gives this sign; getting it backwards
+        // accepts hits on the segment's backward extension, which on a closed
+        // ring of similar segments still looks plausible
+        const u=(dry*axr - drx*axf)/den;
+        if(u<0 || u>1) continue;
+        const t = Math.abs(drx)>Math.abs(dry) ? (axr+u*ex)/drx : (axf+u*ey)/dry;
+        if(t<=0.5) continue;
+        if(nh<RC_HITS_MAX){
+          rcHitD[nh]=t; rcHitR[nh]=ri;
+          rcHitU[nh]=i+u;                                  // which bit of wall this is
+          rcHitK[nh]=Math.sqrt(ex*ex+ey*ey)/Math.abs(den); // 1/|dot(dir, wallNormal)|
+          nh++;
+        }
+      }
+    }
+    if(!nh) continue;
+    for(let i=0;i<nh;i++) rcHitOrder[i]=i;
+    // track the nearest separately: the draw buffer can overflow, occlusion can't
+    let near=1e9;
+    for(let i=0;i<nh;i++) if(rcHitD[i]<near) near=rcHitD[i];
+    const nearPerp=near*rcCos[x];
+    if(nearPerp>0.6) rcZ[x]=nearPerp;
+    // insertion sort, far to near. nh is small.
+    for(let i=1;i<nh;i++){
+      const k=rcHitOrder[i]; const d=rcHitD[k]; let j=i-1;
+      while(j>=0 && rcHitD[rcHitOrder[j]]<d){ rcHitOrder[j+1]=rcHitOrder[j]; j--; }
+      rcHitOrder[j+1]=k;
+    }
+    const cosA=rcCos[x];
+    for(let hi=0; hi<nh; hi++){
+      const k=rcHitOrder[hi];
+      const perp=rcHitD[k]*cosA;
+      if(perp<0.6) continue;
+      const r=rings[rcHitR[k]];
+      const scale=RC_VD/perp;
+      const base=RC_HORIZON + EYE_Z*scale;
+      const top =RC_HORIZON + (EYE_Z-r.h)*scale;
+      let y0=top|0, y1=base|0;
+      if(y1<0 || y0>=RC_H) continue;
+      if(y0<0) y0=0; if(y1>RC_H) y1=RC_H;
+      if(y1<=y0) continue;
+      const fog=Math.min(0.82, perp/1100);
+
+      // Vertical banding from the along-wall coordinate. This is the important
+      // one: an untextured face shows nothing at all when you slide toward it,
+      // so the only thing that moves is the silhouette - and a tilting
+      // silhouette reads as rotation. Bands give honest lateral parallax.
+      const band = (rcHitU[k]*2.6)|0;
+      let f = 1 - fog*0.72;
+      if(band & 1) f *= 0.80;
+      // barrier posts anchored to WORLD y (the along-wall coordinate here), so they
+      // visibly stream past as you climb the road.
+      const worldY = ringCenter - RING_SPAN + rcHitU[k]*RING_STEP;
+      const postPhase = ((worldY % POST_STEP)+POST_STEP) % POST_STEP;
+      if(postPhase < 5) f *= 0.55;
+      rcCtx.fillStyle = shade(r.col, f);
+      rcCtx.fillRect(x, y0, 1, y1-y0);
+
+      // a kerb at the foot of the wall, so the base edge is legible too
+      const kerb = Math.max(1, Math.round((y1-y0)*0.18));
+      if(y1-kerb > y0){
+        rcCtx.fillStyle = shade(r.col, f*0.55);
+        rcCtx.fillRect(x, y1-kerb, 1, kerb);
+      }
+
+      // The top surface, when the wall is shorter than the gunner. Its far edge
+      // is one wall-thickness further along the ray, which is what turns a low
+      // barrier into something you can see you are looking down onto.
+      if(r.h < EYE_Z){
+        const dFar = perp + WALL_T*cosA*rcHitK[k];
+        const yFar = RC_HORIZON + (EYE_Z-r.h)*RC_VD/dFar;
+        let r0=yFar|0, r1=top|0;
+        if(r0<0) r0=0; if(r1>RC_H) r1=RC_H;
+        if(r1>r0){
+          rcCtx.fillStyle = shade(r.top, (1 - fog*0.6) * ((band & 1) ? 0.88 : 1));
+          rcCtx.fillRect(x, r0, 1, r1-r0);
+        }
+      }
+    }
+  }
+}
+
+// ---- billboards
+// Cars reuse the same low-poly meshes as the 2D half, re-baked at eye level
+// instead of the axonometric angle, so both halves show the same vehicles.
+const KY_FPS = 0.16, KZ_FPS = Math.sqrt(1 - 0.16*0.16);
+const FPS_SHEETS = new Map();
+
+function bakeFpsSprites(c){
+  const key = (c.model||0)+'|'+c.color;
+  const hit = FPS_SHEETS.get(key);
+  if(hit) return hit;
+  const n=32, fw=52, fh=52, ax=fw/2, ay=Math.round(fh*0.62);
+  const mesh = MODELS[(c.model||0) % MODELS.length];
+  const cvs=document.createElement('canvas');
+  cvs.width=fw*n; cvs.height=fh*2;
+  const g=cvs.getContext('2d');
+  const scratch=document.createElement('canvas');
+  scratch.width=fw*SS; scratch.height=fh*SS;
+  const sctx=scratch.getContext('2d');
+  for(let f=0;f<n;f++){
+    for(let row=0;row<2;row++){
+      sctx.putImageData(rasterCar(sctx, mesh, f/n*Math.PI*2, c.color, row===1,
+                                  fw, fh, ax, ay, KY_FPS, KZ_FPS, 1), 0, 0);
+      g.drawImage(scratch, 0,0,scratch.width,scratch.height, f*fw, row*fh, fw, fh);
+    }
+  }
+  const sheet={ cv:cvs, n, fw, fh, ax, ay };
+  FPS_SHEETS.set(key, sheet);
+  return sheet;
+}
+
+let bbList=[];
+function gatherBillboards(camX, camY, bearing){
+  bbList.length=0;
+  const lim = RC_FOV*0.5 + 0.30;
+  const add=(x,y,z,kind,ref)=>{
+    const dx=x-camX, dy=y-camY;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    if(d<6 || d>1500) return;
+    let b=Math.atan2(dy,dx)-bearing;
+    b=((b+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
+    if(b<-lim || b>lim) return;
+    bbList.push({d,b,z,kind,ref});
+  };
+  for(let i=1;i<cars.length;i++){ const c=cars[i]; if(!c.dead) add(c.x,c.y,0,'car',c); }
+  for(const p of pads) if(p.item) add(p.x,p.y,4,'pad',p);
+  for(const m of mines) add(m.x,m.y,2,'mine',m);
+  for(const s of shots) add(s.x,s.y,s.z,'shot',s);
+  for(const p of fx) add(p.x,p.y,p.z, p.ring?'ring':'spark', p);
+  bbList.sort((a,b)=>b.d-a.d);
+  return bbList;
+}
+
+function rcSprites(camX, camY, bearing){
+  const list=gatherBillboards(camX, camY, bearing);
+  for(const bb of list){
+    const perp=bb.d*Math.cos(bb.b);
+    if(perp<3) continue;
+    const scale=RC_VD/perp;
+    const sx=RC_W/2 + Math.tan(bb.b)*RC_VD;
+    const ground=RC_HORIZON + EYE_Z*scale;
+    const col=Math.round(sx);
+    if(col<0 || col>=RC_W) continue;
+    if(perp > rcZ[col]) continue;                 // behind a barrier
+    const fog=Math.min(0.78, perp/1100);
+
+    if(bb.kind==='car'){
+      const c=bb.ref;
+      const sp=c.fps || (c.fps=bakeFpsSprites(c));
+      // pick the frame from the car's heading relative to the line of sight.
+      // The bake's camera looks along -y, hence the quarter turn.
+      const look=Math.atan2(bb.ref.y-camY, bb.ref.x-camX);
+      const TAU=Math.PI*2;
+      let yaw=c.angle - look - Math.PI/2;
+      yaw=((yaw%TAU)+TAU)%TAU;
+      const f=Math.round(yaw/TAU*sp.n)%sp.n;
+      const row=c.hurtFlash>0 ? sp.fh : 0;
+      const w=sp.fw*scale, h=sp.fh*scale;
+      rcCtx.globalAlpha=1-fog*0.55;
+      rcCtx.drawImage(sp.cv, f*sp.fw, row, sp.fw, sp.fh,
+        sx-sp.ax*scale, ground-sp.ay*scale, w, h);
+      rcCtx.globalAlpha=1;
+    } else if(bb.kind==='pad'){
+      const s2=Math.max(1, 13*scale);
+      rcCtx.fillStyle=ITEMS[bb.ref.item].col;
+      rcCtx.globalAlpha=(1-fog)*0.9;
+      rcCtx.fillRect(sx-s2/2, ground - bb.z*scale - s2, s2, s2);
+      rcCtx.globalAlpha=1;
+    } else if(bb.kind==='mine'){
+      const s2=Math.max(1, 9*scale);
+      rcCtx.fillStyle = (Math.floor(bb.ref.blink*6)%2 && bb.ref.arm<=0) ? '#f0503c' : '#3a3040';
+      rcCtx.fillRect(sx-s2/2, ground-s2*0.6, s2, s2*0.6);
+    } else if(bb.kind==='shot'){
+      const s2=Math.max(1, (bb.ref.kind==='missile'?8:3)*scale);
+      // The player's own tracer is drawn leaving the gun rather than the
+      // bodywork - the gun really is up on the ring mount, and at road height it
+      // starts below the bottom of this pane and reads as a third of a second of
+      // delay. This is a RENDER offset only: the shot's world z stays at the
+      // front of the car, which is where the driving pane needs to draw it.
+      // Easing linearly in distance keeps the tracer at a constant height below
+      // the horizon, so it never outruns the visible band and blinks out.
+      let bz = bb.z;
+      if(bb.ref.owner===0)
+        bz += (EYE_Z - bb.z) * clamp(1 - bb.d/SHOT_SETTLE, 0, 1);
+      rcCtx.fillStyle = bb.ref.kind==='missile' ? '#ffcf6a' : '#ffe9a8';
+      rcCtx.fillRect(sx-s2/2, ground - bz*scale - s2/2, s2, s2);
+    } else if(bb.kind==='ring'){
+      const p=bb.ref, k=p.t/p.life;
+      const rr=lerp(p.r0,p.r1,k)*scale;
+      rcCtx.globalAlpha=(1-k)*0.5;
+      rcCtx.fillStyle='#ff9d3d';
+      rcCtx.fillRect(sx-rr, ground - p.z*scale - rr*0.5, rr*2, rr);
+      rcCtx.globalAlpha=1;
+    } else {
+      const p=bb.ref, k=p.t/p.life;
+      const s2=Math.max(1, p.size*scale);
+      rcCtx.globalAlpha=clamp(1-k,0,1)*(1-fog*0.5);
+      rcCtx.fillStyle = Array.isArray(p.col) ? p.col[(p.x*7+p.y*3|0)%p.col.length] : p.col;
+      rcCtx.fillRect(sx-s2/2, ground - p.z*scale - s2/2, s2, s2);
+      rcCtx.globalAlpha=1;
+    }
+  }
+}
+
+function drawGunnerView(){
+  const me=cars[0];
+  const bearing = me.angle + me.turret;
+  // the gun sits just behind the cabin, so the muzzle is not inside the bodywork
+  const camX = me.x - Math.cos(me.angle)*4;
+  const camY = me.y - Math.sin(me.angle)*4;
+  buildConvoyRings(camY);                 // walls run along y, built around the camera's y
+  rcBackground(camX, camY, bearing);
+  rcWalls(camX, camY, bearing);
+  rcSprites(camX, camY, bearing);
+
+  const p=PANE_P2;
+  ctx.save();
+  ctx.imageSmoothingEnabled=false;
+  const sh = cam.shake ? rnd(-cam.shake,cam.shake)*0.4*PX : 0;
+  ctx.drawImage(rcCv, 0,0,RC_W,RC_H, p.x*PX, p.y*PX + sh, p.w*PX, p.h*PX);
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- the turret
+// Two aim models, one per mode:
+//  - 2P is first-person, so the mouse turns the gun by its *movement* (locked
+//    pointer, like Counter-Strike): move and it turns, stop and it holds. No drift.
+//  - 1P is top-down, so the mouse is twin-stick: the gun points straight at the
+//    cursor's world position. Keyboard arrows are the rate-based fallback for both.
+const TURRET_RATE = 2.3;           // rad/s, keyboard traverse
+const FPS_SENS = 0.0042;           // radians of gun traverse per unit of mouse movement (2P)
+function updateTurret(c, dt){
+  const TAU=Math.PI*2;
+  if(numPlayers===1 && mouseIn && !c.dead){
+    // twin-stick: aim the gun at the world point under the cursor (z=0 ground)
+    const wx = (mouseSX - VCX)/S + cam.x;
+    const wy = (mouseSY - VCY)/(S*KY) + cam.y;
+    c.turret = Math.atan2(wy - c.y, wx - c.x) - c.angle;
+  } else {
+    let t=0;
+    if(held('ArrowLeft'))  t-=1;
+    if(held('ArrowRight')) t+=1;
+    c.turret = (c.turret||0) + t*TURRET_RATE*dt;
+    if(numPlayers===2){ c.turret += aimDX*FPS_SENS; aimDX=0; }   // locked-mouse traverse
+  }
+  c.turret = ((c.turret%TAU)+TAU)%TAU;
+  if(c.turret>Math.PI) c.turret -= TAU;
+  if(held('ArrowUp') || mouseFire) fireCannon(c);
+  if(held('ArrowDown') || mouseFire2) fireMissile(c);
+}
+
+let aimDX=0, mouseSX=0, mouseSY=0, mouseIn=false, mouseFire=false, mouseFire2=false;
+function pointerLocked(){ return typeof document!=='undefined' && document.pointerLockElement===cv; }
+function bindGunnerMouse(){
+  cv.addEventListener('contextmenu', e=>e.preventDefault());
+  cv.addEventListener('mousemove', e=>{
+    const r=cv.getBoundingClientRect();
+    mouseSX=(e.clientX-r.left)*(W/r.width);
+    mouseSY=(e.clientY-r.top)*(H/r.height);
+    mouseIn=true;
+    // 2P: accumulate raw mouse movement while the pointer is locked (FPS aim)
+    if(numPlayers===2 && pointerLocked()) aimDX += e.movementX||0;
+  });
+  cv.addEventListener('mouseleave', ()=>{ mouseIn=false; mouseFire=false; mouseFire2=false; });
+  cv.addEventListener('mousedown', e=>{
+    Snd.boot();
+    if(state!=='play'){ if(state==='title') startMatch(numPlayers); else if(state==='over') state='title'; return; }
+    // 2P grabs the pointer on first click, then clicks fire; 1P keeps the cursor visible
+    if(numPlayers===2 && cv.requestPointerLock && !pointerLocked()){ cv.requestPointerLock(); }
+    if(e.button===2) mouseFire2=true; else mouseFire=true;
+  });
+  cv.addEventListener('mouseup', e=>{ if(e.button===2) mouseFire2=false; else mouseFire=false; });
+}
+
+layoutPanes();
+rcInit();
+bindGunnerMouse();
+rescale();
+
+// ---------------------------------------------------------------- HUD
+let gunnerHit=0, gunnerKill=0;
+
+function bar(x,y,w,h,v,col,bg){
+  ctx.fillStyle=bg||'rgba(10,7,14,.8)'; ctx.fillRect(x-1,y-1,w+2,h+2);
+  ctx.fillStyle=col; ctx.fillRect(x,y,Math.round(w*clamp(v,0,1)),h);
+}
+function centerText(t,col,y,size,cx){
+  ctx.textAlign='center'; ctx.font='bold '+(size||10)+'px monospace'; ctx.fillStyle=col;
+  ctx.fillText(t, cx==null?VW/2:cx, y); ctx.textAlign='left';
+}
+function plate(x,y,w,h){
+  ctx.fillStyle='rgba(12,9,16,.74)'; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='rgba(120,100,140,.22)'; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);
+}
+
+// ---- player 2: crosshair, ammo, radar
+function drawGunnerHUD(){
+  const p=PANE_P2, me=cars[0];
+  const cx=p.x+p.w/2, cy=p.y+p.h*(RC_HORIZON/RC_H);
+
+  // is anything actually under the gun right now?
+  let onTarget=false;
+  const bearing=me.angle+(me.turret||0);
+  for(let i=1;i<cars.length;i++){
+    const o=cars[i]; if(o.dead) continue;
+    const d=Math.hypot(o.x-me.x,o.y-me.y);
+    if(d>420) continue;
+    if(Math.abs(angDiff(bearing, Math.atan2(o.y-me.y,o.x-me.x))) < 0.06 + 18/d) { onTarget=true; break; }
+  }
+
+  // FPS aim needs the pointer locked; prompt for the click that grabs it
+  if(!pointerLocked() && !me.dead){
+    ctx.font='8px monospace'; ctx.textAlign='center';
+    ctx.fillStyle='rgba(224,183,60,'+(0.55+0.35*Math.abs(Math.sin(matchTime*4)))+')';
+    ctx.fillText('CLICK TO AIM', cx, p.y+18); ctx.textAlign='left';
+  }
+
+  // The gun mount, fixed to the pane. A foreground that never moves is the
+  // strongest cue there is that the camera itself is not rotating. And since
+  // hit detection in this engine is purely horizontal, a tall bearing line is
+  // also an honest reticle: only the column you point at matters, not elevation.
+  const my=p.y+p.h;
+  ctx.fillStyle='rgba(232,213,176,.10)';
+  ctx.fillRect(cx-0.5, cy+6, 1, my-20-cy-6);
+  ctx.fillStyle='#16121c';
+  ctx.beginPath();
+  ctx.moveTo(p.x, my); ctx.lineTo(p.x, my-7);
+  ctx.quadraticCurveTo(cx, my-21, p.x+p.w, my-7);
+  ctx.lineTo(p.x+p.w, my); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#2a2333';
+  ctx.beginPath();
+  ctx.moveTo(cx-13, my-9); ctx.lineTo(cx-4, my-20);
+  ctx.lineTo(cx+4, my-20); ctx.lineTo(cx+13, my-9); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#3d3448'; ctx.fillRect(cx-2.5, my-23, 5, 5);
+  if(me.cool>0.09){
+    ctx.fillStyle='#ffe9a8';
+    ctx.beginPath(); ctx.arc(cx, my-25, 3+Math.random()*2, 0, Math.PI*2); ctx.fill();
+  }
+
+  const col = gunnerHit>0 ? '#ffffff' : onTarget ? '#f0503c' : 'rgba(232,213,176,.65)';
+  ctx.strokeStyle=col; ctx.lineWidth=1;
+  const g=onTarget?7:5;
+  ctx.beginPath();
+  ctx.moveTo(cx-g-4,cy); ctx.lineTo(cx-g,cy);
+  ctx.moveTo(cx+g,cy);   ctx.lineTo(cx+g+4,cy);
+  ctx.moveTo(cx,cy-g-4); ctx.lineTo(cx,cy-g);
+  ctx.moveTo(cx,cy+g);   ctx.lineTo(cx,cy+g+4);
+  ctx.stroke();
+  if(gunnerHit>0){
+    ctx.strokeStyle='#fff'; ctx.beginPath();
+    ctx.moveTo(cx-5,cy-5); ctx.lineTo(cx+5,cy+5);
+    ctx.moveTo(cx+5,cy-5); ctx.lineTo(cx-5,cy+5); ctx.stroke();
+  }
+
+  // role tag and ammo
+  plate(p.x+6, p.y+6, 92, 34);
+  ctx.font='8px monospace'; ctx.textBaseline='top';
+  ctx.fillStyle='#9d8ea5'; ctx.fillText('P2 GUNNER', p.x+11, p.y+10);
+  ctx.fillStyle='#f97362'; ctx.fillText('MSL '+me.missiles, p.x+11, p.y+21);
+  ctx.fillStyle= me.cool>0 ? '#5a4a5e' : '#e0b73c';
+  ctx.fillText('CANNON', p.x+50, p.y+21);
+  ctx.fillStyle='#5a4a5e';
+  ctx.fillText((me.turret>=0?'R':'L')+Math.abs(Math.round(me.turret*57))+'°', p.x+11, p.y+31);
+
+  if(gunnerKill>0){
+    ctx.globalAlpha=clamp(gunnerKill*2,0,1);
+    centerText('WRECKED HIM','#ffe9a8', p.y+p.h*0.30, 11, cx);
+    ctx.globalAlpha=1;
+  }
+
+  // radar: car-relative, with the turret's arc of fire drawn on it
+  const rx=p.x+p.w-46, ry=p.y+40, rr=32;
+  ctx.fillStyle='rgba(10,7,14,.7)';
+  ctx.beginPath(); ctx.arc(rx,ry,rr,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle='rgba(120,100,140,.3)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(rx,ry,rr,0,Math.PI*2); ctx.stroke();
+  // up on the radar is the car's nose
+  ctx.fillStyle='rgba(224,183,60,.16)';
+  ctx.beginPath(); ctx.moveTo(rx,ry);
+  ctx.arc(rx,ry,rr, (me.turret||0)-Math.PI/2-RC_FOV/2, (me.turret||0)-Math.PI/2+RC_FOV/2);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle='#e0b73c';
+  ctx.beginPath(); ctx.moveTo(rx,ry);
+  ctx.lineTo(rx+Math.cos((me.turret||0)-Math.PI/2)*rr, ry+Math.sin((me.turret||0)-Math.PI/2)*rr);
+  ctx.stroke();
+  const RAD_RANGE=620;
+  for(let i=1;i<cars.length;i++){
+    const o=cars[i]; if(o.dead) continue;
+    const dx=o.x-me.x, dy=o.y-me.y, d=Math.hypot(dx,dy);
+    if(d>RAD_RANGE) continue;
+    const rel=Math.atan2(dy,dx)-me.angle-Math.PI/2;
+    const k=d/RAD_RANGE*rr;
+    ctx.fillStyle=o.color;
+    ctx.fillRect(rx+Math.cos(rel)*k-1.5, ry+Math.sin(rel)*k-1.5, 3, 3);
+  }
+  ctx.fillStyle='#fff'; ctx.fillRect(rx-1,ry-1,2,2);
+}
+
+// ---- player 1: the driving instruments
+function drawDriverHUD(){
+  const p=PANE_P1, me=cars[0];
+  ctx.font='8px monospace'; ctx.textBaseline='top'; ctx.textAlign='left';
+
+  // hull + speed, bottom-left
+  plate(p.x+6, p.y+p.h-42, 118, 36);
+  ctx.fillStyle='#9d8ea5'; ctx.fillText(numPlayers===2?'P1 DRIVER':'DRIVER / GUNNER', p.x+11, p.y+p.h-38);
+  bar(p.x+11, p.y+p.h-27, 100, 6, me.hp/me.maxHp,
+      me.hp>me.maxHp*0.5?'#4ade80':me.hp>me.maxHp*0.25?'#e0b73c':'#f0503c');
+  bar(p.x+11, p.y+p.h-17, 100, 4, clamp(Math.abs(me.speed||0)/232,0,1), '#57b7d6');
+  // solo carries its own gun readout (in convoy this lives in the gunner pane)
+  if(numPlayers===1){
+    plate(p.x+p.w-70, p.y+p.h-42, 64, 36);
+    ctx.fillStyle='#9d8ea5'; ctx.fillText('GUN', p.x+p.w-64, p.y+p.h-38);
+    ctx.fillStyle= me.cool>0 ? '#5a4a5e' : '#e0b73c'; ctx.fillText('CANNON', p.x+p.w-64, p.y+p.h-27);
+    ctx.fillStyle='#f97362'; ctx.fillText('MSL '+me.missiles, p.x+p.w-64, p.y+p.h-16);
+  }
+
+  // distance survived (the score) + wave, top-left
+  plate(p.x+6, p.y+6, 96, 28);
+  ctx.font='bold 14px monospace'; ctx.fillStyle='#e0b73c';
+  ctx.fillText(Math.floor(distance)+'m', p.x+11, p.y+9);
+  ctx.font='8px monospace'; ctx.fillStyle='#9d8ea5';
+  ctx.fillText('WAVE '+wave+'   KILLS '+convoyKills, p.x+11, p.y+24);
+
+  // low-hp vignette so you feel the danger
+  if(me.hp < me.maxHp*0.3 && !me.dead){
+    ctx.globalAlpha = 0.10 + 0.12*Math.abs(Math.sin(matchTime*6));
+    ctx.fillStyle='#f0503c'; ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.globalAlpha=1;
+  }
+}
+
+function drawHUD(){
+  ctx.save(); ctx.scale(PX,PX);
+  ctx.textBaseline='top'; ctx.textAlign='left';
+  if(numPlayers===2){
+    drawGunnerHUD();
+    // seam between the two seats
+    ctx.fillStyle='#0b0810';
+    if(LAYOUT==='side') ctx.fillRect(VW/2-1, 0, 2, VH);
+    else ctx.fillRect(0, VH/2-1, VW, 2);
+  }
+  drawDriverHUD();
+
+  if(showFps){
+    ctx.fillStyle='#4ade80'; ctx.font='8px monospace';
+    ctx.fillText(fpsVal+' fps  '+W+'x'+H+'  rc '+RC_W+'x'+RC_H+
+      '  eye '+EYE_Z+'  fov '+Math.round(RC_FOV*180/Math.PI)+
+      '  '+(cars.length+shots.length+fx.length)+' ent  '+bbList.length+' bb', 132, 8);
+  }
+  if(paused) centerText('PAUSED','#e8d5b0', VH/2+20, 12);
+  ctx.restore();
+}
+
+function drawTitle(){
+  ctx.fillStyle='#141019'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.save(); ctx.scale(PX,PX);
+  ctx.textBaseline='top';
+  centerText('SCRAPHEAP ASCENT','#e0b73c',30,22);
+  centerText('climb the wasteland highway. survive the oncoming.','#8a7a92',58,9);
+
+  ctx.font='8px monospace';
+  const cols=[
+    { x:VW*0.26, tag:'1  SOLO RUN', col:'#57b7d6', rows:[
+      'you drive and you gun.',
+      '',
+      'W A S D          drive',
+      'MOUSE            aim the gun',
+      'CLICK            fire  (RMB missile)',
+      'SHIFT            hard slew',
+      '',
+      'the gun points where your',
+      'cursor is. grab ammo drops.' ]},
+    { x:VW*0.74, tag:'2  CO-OP (2P)', col:'#f0503c', rows:[
+      'road on the left, gunner right.',
+      '',
+      'P1  WASD + SHIFT drive',
+      'P2  MOUSE aims (click to lock),',
+      '    click fires, RMB missile',
+      '    - or ARROWS to traverse',
+      '',
+      'P1 grabs the ammo drops,',
+      'P2 works the ring gun.' ]}
+  ];
+  for(const c of cols){
+    ctx.textAlign='center';
+    ctx.font='bold 10px monospace'; ctx.fillStyle=c.col;
+    ctx.fillText(c.tag, c.x, 90);
+    ctx.font='8px monospace';
+    c.rows.forEach((t,i)=>{ ctx.fillStyle = i<5 ? '#cfc2d4' : '#7a6a84'; ctx.fillText(t, c.x, 110+i*12); });
+  }
+  ctx.textAlign='left';
+  centerText('press 1 for SOLO  or  2 for CO-OP','#4ade80',248,10);
+  if(bestDist>0) centerText('best run: '+bestDist+'m','#8a7a92',266,8);
+  ctx.fillStyle='#3f3448'; ctx.font='8px monospace';
+  centerText('R resolution  .  F fps  .  M sound  .  P pause  .  ESC title','#3f3448',282,8);
+  ctx.restore();
+}
+
+function drawOver(){
+  ctx.fillStyle='rgba(10,7,14,.82)'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.save(); ctx.scale(PX,PX);
+  ctx.textBaseline='top';
+  const me=cars[0];
+  const dist=Math.floor(distance), best=(dist>=bestDist);
+  centerText('WRECKED','#f0503c', 58, 20);
+  centerText(best?'a new best run':'the wasteland took you', '#8a7a92', 86, 9);
+
+  ctx.font='8px monospace';
+  const rows=[
+    ['DISTANCE',   dist+'m'],
+    ['BEST',       bestDist+'m'],
+    ['WAVE',       String(wave)]
+  ];
+  if(numPlayers===2) rows.push(['KILLS', String(convoyKills)]);
+  rows.push(['HULL LEFT', Math.max(0,Math.ceil(me.hp))+'/'+me.maxHp]);
+  rows.forEach((r,i)=>{
+    const y=118+i*15;
+    ctx.textAlign='left';  ctx.fillStyle='#7a6a84'; ctx.fillText(r[0], VW*0.32, y);
+    ctx.textAlign='right'; ctx.fillStyle=(i===0&&best)?'#e0b73c':'#e8d5b0'; ctx.fillText(r[1], VW*0.68, y);
+  });
+  ctx.textAlign='center';
+  ctx.fillStyle='#4ade80'; ctx.fillText('ENTER to run it back  .  1 / 2 to switch mode', VW/2, 214);
+  ctx.fillStyle='#6b5c72'; ctx.fillText('ESC for the title card', VW/2, 228);
+  ctx.textAlign='left';
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- frame
+let acc=0, last=performance.now(), fpsVal=60, fpsAcc=0, fpsN=0;
+
+function step(dt){
+  matchTime+=dt;
+  const me=cars[0];
+
+  // forced scroll: the camera climbs the road at an escalating pace (forward is -y),
+  // and distance survived is the score. This runs even while the player is dying.
+  camV = Math.min(CAM_VMAX, camV + CAM_RAMP*dt);
+  cam.y -= camV*dt;
+  distance += camV*dt;
+  updateSpawner(dt);
+
+  for(const c of cars) updateCar(c,dt);
+  carVsCar(dt);
+  updateShots(dt);
+  updatePads(dt);
+  updateFx(dt);
+  gunnerHit=Math.max(0,gunnerHit-dt);
+  gunnerKill=Math.max(0,gunnerKill-dt);
+
+  // keep the player inside the frame with soft walls ahead and behind (no damage -
+  // the "keep moving" pressure comes from the enemies now). Forward is -y, and the
+  // camera climbs at -camV, so holding station means me.vy ~= -camV.
+  if(!me.dead){
+    const rel = me.y - cam.y;
+    if(rel < -FRONT_MAX){ me.y = cam.y - FRONT_MAX; if(me.vy < -camV) me.vy = -camV; }
+    if(rel >  BACK_EDGE){ me.y = cam.y + BACK_EDGE; if(me.vy > -camV) me.vy = -camV*0.6 + me.vy*0.4; }
+  }
+
+  // camera tracks the player laterally (x), gently, and never leaves the corridor
+  cam.x = lerp(cam.x, clamp(me.x*0.5, -ROAD_HW*0.4, ROAD_HW*0.4), 1-Math.pow(0.02, dt));
+
+  // the player run ends a beat after the wreck, so the explosion gets to play
+  if(me.dead){
+    Snd.engineOff();
+    if(me.respawn < 1.4 && state==='play'){
+      bestDist = Math.max(bestDist, Math.floor(distance));
+      winner=null; state='over';
+    }
+  } else {
+    const rpm = clamp(Math.abs(me.speed||0)/232, 0, 1);
+    Snd.engine(rpm, clamp((me.slide||0)/120,0,1));
+  }
+}
+
+function inView(x,y,m){
+  m=m||40;
+  return Math.abs(x-cam.x) < VHW+m && Math.abs(y-cam.y) < VIEW_HH+m;
+}
+
+// the gunner's aim, drawn into the driving pane so P1 can see where P2 is looking
+function drawAimLine(){
+  const me=cars[0];
+  if(me.dead) return;
+  const a=aimAngle(me);
+  const p0=toScreen(me.x,me.y,7);
+  const reach=numPlayers===1?170:150;
+  const p1=toScreen(me.x+Math.cos(a)*reach, me.y+Math.sin(a)*reach, 7);
+  ctx.save();
+  ctx.globalAlpha=0.35; ctx.strokeStyle='#f0503c'; ctx.lineWidth=Math.max(1,S);
+  ctx.setLineDash([4*S,4*S]);
+  ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.lineTo(p1.x,p1.y); ctx.stroke();
+  // a reticle at the tip so the solo player (who is also the gunner) can read the aim
+  ctx.setLineDash([]); ctx.globalAlpha=0.8;
+  const g=5*S;
+  ctx.beginPath();
+  ctx.moveTo(p1.x-g,p1.y); ctx.lineTo(p1.x+g,p1.y);
+  ctx.moveTo(p1.x,p1.y-g); ctx.lineTo(p1.x,p1.y+g);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function render(){
+  ctx.fillStyle='#0b0810'; ctx.fillRect(0,0,W,H);
+
+  // ---- player 2: first person, out of the gun ring (only in a two-player run)
+  if(numPlayers===2) drawGunnerView();
+
+  // ---- player 1: the axonometric view, clipped to its own pane
+  const p=PANE_P1;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(p.x*PX, p.y*PX, p.w*PX, p.h*PX); ctx.clip();
+  const sx = cam.shake ? rnd(-cam.shake,cam.shake)*S : 0;
+  const sy = cam.shake ? rnd(-cam.shake,cam.shake)*KY*S : 0;
+  ctx.translate(Math.round(sx), Math.round(sy));
+
+  drawTrack();
+  // the barriers are now the left/right walls (at x = -/+ROAD_HW). They run the
+  // depth of the road, so both draw behind the cars; the cars are always clamped
+  // inboard of them. Posts sit at world-y intervals and stream past as you climb.
+  strokeWall(convoyWallPath(-ROAD_HW), TRK.WALL, '#6a5570');
+  drawWallPosts(-ROAD_HW);
+  strokeWall(convoyWallPath(ROAD_HW), TRK.WALL, '#6a5570');
+  drawWallPosts(ROAD_HW);
+
+  for(const pd of pads) if(inView(pd.x,pd.y)) drawPad(pd);
+  for(const m of mines) if(inView(m.x,m.y)) drawMine(m);
+
+  // painter's algorithm on world Y (depth), visible entities only
+  const drawables=[];
+  for(const c of cars) if(!c.dead && (c.isPlayer || inView(c.x,c.y))) drawables.push({y:c.y, f:()=>drawCar(c)});
+  for(const s of shots) if(inView(s.x,s.y)) drawables.push({y:s.y, f:()=>drawShot(s)});
+  drawables.sort((a,b)=>a.y-b.y);
+  for(const d of drawables) d.f();
+
+  drawAimLine();                       // the gun exists in both modes now
+  drawFx();
+  ctx.restore();
+
+  drawHUD();
+}
+
+function frame(now){
+  requestAnimationFrame(frame);
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.25) dt=0.25;
+  fpsAcc+=dt; fpsN++;
+  if(fpsAcc>0.5){ fpsVal=Math.round(fpsN/fpsAcc); fpsAcc=0; fpsN=0; }
+
+  if(state==='title'){ drawTitle(); return; }
+
+  if(state==='play' && !paused){
+    acc+=dt;
+    let guard=0;
+    while(acc>=DT && guard++<5){ step(DT); acc-=DT; }
+  }
+  render();
+  if(state==='over') drawOver();
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

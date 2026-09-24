@@ -25,7 +25,12 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
   from front and back. Two modes on the title card: **1 SOLO** (one full-screen view, you drive
   *and* work the gun — WASD + arrows/mouse) and **2 CONVOY** (the split-screen gunner pane
   returns). The road markings and barrier posts scroll with the camera so the motion reads.
-  Verified headless; **never been opened in a browser** — balance is simulated, not played.
+  Browser-tested and iterated: motion cues, twin-stick / FPS aim, dust wall cut. Playable.
+- `scrapheap-ascent-alpha.html` — SCRAPHEAP ASCENT, the **vertical** variant (2026-09-23). The
+  convoy build rotated 90° in world space: you climb **bottom→top** up a vertical road. Same two
+  modes, but 2P uses a **side-by-side** layout (driver on the tall left pane, gunner on the right)
+  because a vertical road wants vertical screen. Zoomed out ~10% and the vertical soft-walls size
+  to the visible height so the player roams the whole road. Browser-iterated (framing bug fixed).
 - `tools/headless.js` runs any build in node with a stubbed canvas.
 
 ## NEXT SESSION STARTS HERE — play SCRAPHEAP CONVOY in a browser
@@ -155,6 +160,39 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-09-23 — SCRAPHEAP ASCENT: the vertical variant
+Sixth build, its own file, forked from convoy. His ask: a stage that goes **bottom→top** (vertical
+road) instead of left→right, zoomed out ~10% to fit more.
+
+**The approach that mattered.** The axonometric camera is fixed-angle, so rather than rotate the
+*projection* (which would fight the baked sprites and lighting), I rotated the **world logic** 90°:
+forward is now -y (up), lateral is x, walls sit at x=±ROAD_HW. The projection, sprites and raycaster
+are untouched — every car facing is already baked, so a car pointing "up" just works. `ZOOM2D`
+0.8→0.72. Only the game logic swapped axes (corridor, camera scroll, spawner, AI headings, the road
+drawer, the raycaster's ring builder + `onAsphalt` + post phase, pad recycling).
+
+**Two things he caught in the browser, both fixed:**
+- *Only the bottom half of the road drew.* Root cause was a **latent bug** (present in convoy too):
+  `startMatch` called `layoutPanes()` but never recomputed the projection globals `VCX/VCY/VHW/VHH`,
+  so picking 1P kept the boot-time 2P half-height extent. The vertical road exposed it. Fix:
+  `startMatch` now calls `rescale()`. He said explicitly *not* to fix convoy (its road sits low-left,
+  so the stale extent doesn't show) — left it alone.
+- *Not enough vertical room, and no space for the P2 pane.* His idea (the convoy philosophy — "use
+  the space we have"): put the road on a **tall left pane** and the gunner **on the right**. Set
+  `LAYOUT='side'`. Because the left pane is full-height, the driver now gets the *same* vertical
+  space in 2P as in 1P. And `FRONT_MAX/BACK_EDGE` are now computed from the visible height each
+  `rescale` (≈706 world units of travel), so the player roams the whole rendered road in either mode.
+
+*Third catch — car vanished at the very top of the screen.* `inView` (the draw cull) is symmetric
+around the camera, but the `VCY=0.66` bias lets you see further UP than down, so a player pushed to
+`FRONT_MAX` crossed the cull threshold and disappeared (braking brought it back). Fix: `VIEW_HH` (a
+new cull half-extent) is sized in `rescale` to the *further* of the ahead/behind visible distances,
+and the player is exempt from culling anyway.
+
+Verified headless: both modes, side layout (RC pane 160×180), dynamic clamps, player never culled at
+the front edge, churn/mode-switch, 30s runs — all clean. Balance still simulated, not played. Camera
+bias `VCY=0.66` (player low, sees up the road); `CRUISE_BAND` 74→100 so W/S move you across the range.
 
 ### 2026-09-22 — SCRAPHEAP CONVOY: the Mad Max survival mode
 Fifth mode, its own file, forked from the **gunner** build (not the circuit build PROJECT.md had
