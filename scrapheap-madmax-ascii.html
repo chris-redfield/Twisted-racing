@@ -2407,6 +2407,7 @@ const rcHitR = new Int32Array(RC_HITS_MAX);
 const rcHitU = new Float32Array(RC_HITS_MAX);     // distance along the wall, for banding
 const rcHitK = new Float32Array(RC_HITS_MAX);     // |segment|/|den|, for the top ribbon
 const rcHitOrder = new Int32Array(RC_HITS_MAX);
+const rcHitHide  = new Uint8Array(RC_HITS_MAX);     // fully covered by a nearer wall
 
 function rcWalls(camX, camY, bearing){
   const cb=Math.cos(-bearing), sb=Math.sin(-bearing);
@@ -2468,7 +2469,20 @@ function rcWalls(camX, camY, bearing){
       rcHitOrder[j+1]=k;
     }
     const cosA=rcCos[x];
+    // Occlusion, nearest first: every wall runs from its top down to its base,
+    // and a farther wall's base is always higher on screen, so a farther wall
+    // whose top is below a nearer wall's top is entirely hidden. Skipping those
+    // matters now that far buildings draw a light per storey.
+    let minTop=1e9;
+    for(let hi=nh-1; hi>=0; hi--){
+      const k=rcHitOrder[hi], perp=rcHitD[k]*cosA;
+      if(perp<0.6){ rcHitHide[hi]=1; continue; }
+      const top=RC_HORIZON + (EYE_Z-rings[rcHitR[k]].h)*RC_VD/perp;
+      rcHitHide[hi] = top>=minTop ? 1 : 0;
+      if(top<minTop) minTop=top;
+    }
     for(let hi=0; hi<nh; hi++){
+      if(rcHitHide[hi]) continue;
       const k=rcHitOrder[hi];
       const perp=rcHitD[k]*cosA;
       if(perp<0.6) continue;
@@ -2482,7 +2496,7 @@ function rcWalls(camX, camY, bearing){
       if(y1<=y0) continue;
       const fog=Math.min(0.82, perp/1100);
 
-      if(r.bldg){ rcBuildingColumn(x, r, rcHitU[k], perp, scale, y0, y1, fog); continue; }
+      if(r.bldg){ rcBuildingColumn(x, r, rcHitU[k], perp, scale, y0, y1, fog, cosA*rcHitK[k]); continue; }
 
       // Vertical banding from the along-wall coordinate. This is the important
       // one: an untextured face shows nothing at all when you slide toward it,
@@ -2525,10 +2539,38 @@ function rcWalls(camX, camY, bearing){
   }
 }
 
-// One column of a building face: the wall, then a window per storey if this
-// column falls on a window. Windows are what make a facade legible at all -
-// and in the ascii view they are the brightest cells, so they become the '#'s.
-function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog){
+// One column of a building face: the wall, then its windows. Windows are what
+// make a facade legible at all - and in the ascii view the lit ones are the
+// brightest cells, so they become the '@'s.
+//
+// Lit windows are lights, so they have to survive distance. Two levels of
+// detail, after ascii-city's near/far tiers:
+//  - NEAR: this column covers less than a window pitch of wall, so it draws
+//    real windows (lit and dark), and a window counts as hit if it overlaps the
+//    strip of wall the column covers - point-sampling missed them on faces seen
+//    at an angle, which is why lights only showed when looking square on.
+//  - FAR: the column spans a window or more (distance or a grazing angle), so
+//    it just asks "is the window here lit?" and draws only the lights, at least
+//    one pixel each - far buildings become a speckle of city lights.
+// Fog barely touches the lights: they glow, the wall around them doesn't.
+// `slant` = cos(ray angle) / |cos(incidence)|: wall length per unit of
+// perpendicular distance, per column, times RC_VD.
+const WIN_A = 4, WIN_B = 9;          // window span inside each WIN_STEP of wall
+// How loud the city lights are, 0..1: 0 = the original (no far lights, fog
+// dims them 55%, ascii averages them away), 1 = every far light at full glow.
+// All the light dials below hang off this one number.
+let   LIGHTS_MIX = 0.5;
+let   LIT_COLS = null;               // lit window colour by fog, rebuilt when the mix changes
+let   litColsMix = -1;
+function litCols(){
+  if(litColsMix !== LIGHTS_MIX){
+    const dim = lerp(0.55, 0.2, LIGHTS_MIX);        // how much full fog dims a light
+    LIT_COLS = Array.from({length:32}, (_,i) => shade('#e8b860', 1 - (i/32)*dim));
+    litColsMix = LIGHTS_MIX;
+  }
+  return LIT_COLS;
+}
+function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog, slant){
   const seg = hu|0, along = (hu - seg)*r.len[seg];
   const f = (1 - fog*0.8) * r.fs[seg];
   rcCtx.fillStyle = shade(r.col, f);
@@ -2536,20 +2578,39 @@ function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog){
   // a darker plinth at street level, like the barrier's kerb
   const plinth = Math.max(1, Math.round(5*scale));
   if(y1-plinth > y0){ rcCtx.fillStyle = shade(r.col, f*0.6); rcCtx.fillRect(x, y1-plinth, 1, plinth); }
-  if(scale*FLOOR_H < 2) return;                      // storeys under 2px: just a silhouette
-  const wp = along % WIN_STEP;
-  if(wp < 4 || wp > 9) return;                       // between windows
-  const wi = (along / WIN_STEP)|0, b = r.bldg;
+
+  const pitch = scale*FLOOR_H;                       // storey height in pixels
+  if(pitch < 0.35) return;                           // storeys packed 3 to a pixel: silhouette
+  const step = perp*slant/RC_VD;                     // wall length this column covers
+  const far = step > WIN_STEP*0.6 || pitch < 3;
+  const b = r.bldg, wp = along % WIN_STEP;
+  let wi = (along / WIN_STEP)|0;
+  if(!far){
+    // does [along - step/2, along + step/2] touch this pitch's window?
+    const h = step/2;
+    if(wp + h < WIN_A || wp - h > WIN_B){
+      // not this one - but the strip may reach into a neighbour's window
+      if(wp - h < WIN_B - WIN_STEP) wi -= 1;
+      else if(wp + h > WIN_STEP + WIN_A) wi += 1;
+      else return;                                   // between windows
+    }
+  }
   const nf = Math.floor((r.h - 6) / FLOOR_H);
-  const litCol = shade('#e8b860', 1 - fog*0.55), darkCol = shade(r.col, f*0.45);
-  for(let fl=0; fl<nf; fl++){
-    const zA = fl*FLOOR_H + 4, zB = zA + 5;
+  const litCol = litCols()[(fog*31.99)|0], darkCol = far ? null : shade(r.col, f*0.45);
+  const stride = pitch < 1 ? Math.ceil(1/pitch) : 1; // one storey per pixel row, at most
+  for(let fl=0; fl<nf; fl+=stride){
+    const lit = hash3(b.seed*31 + seg, wi, fl + b.tier*101) < b.lit;
+    if(far && !lit) continue;                        // far away only the lights read
+    // ...and only a LIGHTS_MIX share of them, picked by hash so it never flickers
+    if(far && hash3(b.seed*17 + seg, wi*3 + 1, fl) >= LIGHTS_MIX) continue;
+    const zA = fl*FLOOR_H + WIN_A, zB = fl*FLOOR_H + WIN_B;
     let ya = (RC_HORIZON + (EYE_Z - zB)*scale)|0, yb = (RC_HORIZON + (EYE_Z - zA)*scale)|0;
+    if(yb <= ya) yb = ya + 1;                        // a light is never thinner than a pixel
     if(yb <= 0) break;                               // storeys above the top of the view
     if(ya >= RC_H) continue;
     if(ya < y0) ya = y0; if(yb > y1) yb = y1;
     if(yb <= ya) continue;
-    rcCtx.fillStyle = hash3(b.seed*31 + seg, wi, fl + b.tier*101) < b.lit ? litCol : darkCol;
+    rcCtx.fillStyle = lit ? litCol : darkCol;
     rcCtx.fillRect(x, ya, 1, yb-ya);
   }
 }
@@ -2721,6 +2782,7 @@ const ASC_CW = 2, ASC_CH = 3;       // raycaster pixels per character cell
 let   ASC_LO = 16, ASC_HI = 100, ASC_GAMMA = 1.0;   // luminance -> ramp tone curve
 const ASC_LIFT = 2.6;               // max tint boost; the glyph, not the tint, says how dark
 const ASC_SOLID = 0.24;             // mode 2 background strength
+const ASC_LIGHT_R = 120, ASC_LIGHT_WARM = 60;   // a pixel this red and this warm is a lit window
 let ascKey='', ascCols=0, ascRows=0, ascGW=0, ascGH=0;
 let ascAtlas=null, ascCv=null, ascCtx=null, ascTint=null, ascTintCtx=null, ascTintImg=null;
 let ascLast = null;                 // last frame's glyph indices, for the harness
@@ -2755,15 +2817,25 @@ function asciiBlit(dx, dy){
   ascCtx.fillStyle = '#000'; ascCtx.fillRect(0, 0, ascCv.width, ascCv.height);
   for(let cy=0; cy<ascRows; cy++){
     for(let cx=0; cx<ascCols; cx++){
-      let r=0, g=0, b=0;
+      let r=0, g=0, b=0, nl=0, lr=0, lg=0, lb=0;
       for(let yy=0; yy<ASC_CH; yy++){
         let o = ((cy*ASC_CH + yy)*RC_W + cx*ASC_CW)*4;
-        for(let xx=0; xx<ASC_CW; xx++){ r+=src[o]; g+=src[o+1]; b+=src[o+2]; o+=4; }
+        for(let xx=0; xx<ASC_CW; xx++){
+          const pr=src[o], pg=src[o+1], pb=src[o+2];
+          r+=pr; g+=pg; b+=pb;
+          if(pr > ASC_LIGHT_R && pr - pb > ASC_LIGHT_WARM){ nl++; lr+=pr; lg+=pg; lb+=pb; }
+          o+=4;
+        }
       }
       r*=inv; g*=inv; b*=inv;
       const lum = 0.299*r + 0.587*g + 0.114*b;
       let t = (lum - ASC_LO)*span; t = t<0 ? 0 : t>1 ? 1 : t;
-      const gi = Math.round(Math.pow(t, ASC_GAMMA)*n);
+      let gi = Math.round(Math.pow(t, ASC_GAMMA)*n);
+      // A light wins its cell. Averaged, one lit pixel among five dark ones is
+      // a dim '=' and the skyline goes out; instead the cell takes the light's
+      // colour and a bright glyph - '*' for one lit pixel at LIGHTS_MIX 1, '+'
+      // at 0.5 - rising to '@' as more of the cell is lit.
+      if(nl){ r=lr/nl; g=lg/nl; b=lb/nl; gi = Math.max(gi, Math.min(n, Math.round(3 + LIGHTS_MIX*2) + nl)); }
       const q = cy*ascCols + cx;
       ascLast[q] = gi;
       const m = Math.max(r, g, b, 1), lift = Math.min(ASC_LIFT, 235/m);
