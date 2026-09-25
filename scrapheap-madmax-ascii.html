@@ -353,9 +353,9 @@ const PALETTE = [
 // biggest. makeCar divides by the mesh's own width, so these numbers land on
 // screen as written.
 const ENEMY_TYPE = {
-  1: { kind:'batedor', size:0.90, hp:0.75, pace:1.10, from:'back'  },
-  2: { kind:'soldado', size:1.10, hp:1.00, pace:1.00, from:'back'  },
-  3: { kind:'tanque',  size:1.10, hp:1.00, pace:0.90, from:'front' }
+  1: { kind:'batedor', size:0.80, hp:0.75, pace:1.10, from:'back'  },
+  2: { kind:'soldado', size:1.20, hp:1.00, pace:1.00, from:'back'  },
+  3: { kind:'tanque',  size:1.30, hp:1.00, pace:0.90, from:'front' }
 };
 
 // natural width of a model's mesh, so `size` above can mean what it says
@@ -459,13 +459,16 @@ function makeCar(id, isPlayer, x, y, angle, model){
   // and emphatically not carrying explosives
   const t = (isPlayer || race) ? null : ENEMY_TYPE[model];
   const scale = t ? (meshWidth(0)*t.size)/meshWidth(model) : 1;
+  const size  = t ? t.size : 1;      // on-screen size relative to the player's car
   const hp = CAR_HP*(t ? t.hp : 1);
   return {
     id, name:pal.name, isPlayer, model,
     color:pal.body, dark:shade(pal.body,0.45), light:shade(pal.body,1.35),
     x, y, vx:0, vy:0, angle,
     etype: t ? t.kind : 'player',
-    scale, rad: 14*scale, pace: t ? t.pace : 1,
+    // the hitbox tracks the size you SEE, not the bake factor - that one is
+    // divided by the mesh's own width, so it does not describe the car on screen
+    scale, rad: 14*size, pace: t ? t.pace : 1,
     hp, maxHp:hp, frags:0, deaths:0,
     cool:0, mcool:0, minecool:0, missiles:2, minesLeft:1,
     gunHeat:0, gunRest:0,          // enemy submachine overheat (see fireCannon)
