@@ -37,12 +37,32 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
 - `tools/shot.js` takes **real-browser screenshots** (Windows Chrome from WSL, `--screenshot` +
   virtual time; the game file is never modified). Shots land in `.shots/` (git-ignored).
 
-## NEXT SESSION STARTS HERE — play-test the ASCII/buildings fork
+## NEXT SESSION STARTS HERE — convoy is playable; tune it
 
-**Built 2026-09-23:** `scrapheap-madmax-ascii.html`. Open it, pick a stage, pick **2 CO-OP** (the
-ASCII view is P2's pane; solo has no raycast view). **G** cycles the P2 view, **B** toggles
-buildings — both work on the menu and mid-run. **Dev mode (`I`) ships ON in this fork** so a stage
-can be looked at without dying; press `I` before judging anything about balance. Decide: keep / tune / fold into the canonical file.
+All work is in `scrapheap-madmax-ascii.html` and committed through `c0fc25a`. He has been playing
+it each round and correcting by feel, which is how most of 2026-09-25 got decided — keep that loop.
+
+**Open it, pick CONVOY, 2 CO-OP.** Dev mode (`I`) ships **ON**: no damage, and each enemy wears its
+type name over the roof. **Press `I` before judging anything about balance.**
+
+**Live keys:** `I` dev · `G` P2 view · `B` buildings · `H` perimeter fence (off by default) ·
+`[` `]` eye height · `-` `=` FOV · `,` `.` distant-car magnification · `R` `F` `M` `P`.
+
+**The three enemy types are new and unplayed** (`ENEMY_TYPE`, session log 2026-09-25). Everything
+about them is a first guess: sizes, 98 hp on the batedor, `232*pace` top speeds, `PURSUE_SQUAD` 4,
+`BOMB_DMG`/`BOMB_R`, `FLANK_OFF`/`BLOCK_LEAD`, `GUN_BURST`/`GUN_REST`. Expect to tune, not rebuild.
+
+**Two things known to be unfinished:**
+- A missile blast still takes the player from 212 to 27 (`explode()` knockback is not run through
+  `playerImpulse`). One line if it should match the bullet/contact rule.
+- soldado and tanque hitboxes are close enough that they read similarly in a scrum; nobody has
+  complained yet.
+
+**Still owed from before:** a first-pass browser check of `scrapheap-madmax-alpha.html`, and the
+decision on whether the ASCII fork folds back into the canonical file.
+
+**Older fork context.** **G** cycles the P2 view, **B** toggles buildings — both work on the menu
+and mid-run. Decide: keep / tune / fold into the canonical file.
 Tuning knobs: `ASC_LO/ASC_HI/ASC_GAMMA` (tone curve), `ASC_CW/ASC_CH` (cell size),
 `BLD_TIERS`/`BLD_TIERS_LOOP` (placement), `FLOOR_H`/`WIN_STEP` (windows).
 Known soft spots: plain ASCII mode leaves dark building faces blank (SOLID fixes that, hence the
@@ -115,6 +135,17 @@ Nothing is committed to yet — pick from here or bring something new.
 
 ## Known rough edges
 
+- **The survival driving model has one assist holding it together** (`SPIN_FREE`/`SPIN_RIGHT`,
+  latched on `c.spinFix`): it rights the car after a spin past 60° and is inert otherwise. Do not
+  "improve" it into something that acts below the threshold, and do not let it ease out before the
+  heading is home — that produced the crawl, and chasing the crawl wrecked the driving feel. Five
+  other approaches are written up under 2026-09-25 so they are not retried.
+- **The frame's ends are a spring now, not a clamp**, which also retired the velocity teleport that
+  caused the stuck car. Anything that writes position or velocity into the car *after* the physics
+  step is how that class of bug comes back.
+- **A player cannot deliberately turn round and drive back up the road**, which he liked before the
+  assist existed. Getting it back means raising `SPIN_FREE` and checking the stuck repro still
+  passes — not removing the latch.
 - **Convoy balance is simulated, not played** (as with loop mode). The scroll pace, spawn rate
   and enemy aggression are all first-guess numbers in the labelled tunables
   block and `updateSpawner`. Nobody has felt them yet.
@@ -170,6 +201,187 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-09-25 — enemy types: batedor / soldado / tanque
+Three enemy kinds, hung off the model/colour the spawner already picked, in `ENEMY_TYPE`.
+Survival only — `makeCar` skips all of it when `race`, or the loop's rivals inherit it and
+MANDIOCA becomes a bomb truck that detonates on the player mid-race (it did; caught in testing).
+
+| | colour | width | vs player | hp | top speed | comes from |
+| --- | --- | --- | --- | --- | --- | --- |
+| **batedor** | blue `#57b7d6` | 28.0 | 80% | 98 | 255 | behind |
+| **soldado** | green `#8ad14a` | 42.0 | 120% | 130 | 232 | behind |
+| **tanque** | yellow `#e0b73c` | 45.5 | 130% | 130 | 209 | ahead |
+
+- **`size` is relative to the player's car and the bake divides by the mesh's own width.** The
+  meshes are *not* the same size to begin with — blue 35.5 wide, green 28, yellow 30.5 — so asking
+  for 0.9 directly left the blue one still looking biggest. He spotted this before I did ("the
+  green one looks smaller") and he was right: green was already the smallest thing on screen.
+  `meshWidth()` normalises it, so the numbers in the table land as written.
+- **The hitbox comes off `size`, not off the bake factor.** The bake factor is skewed by mesh
+  width, so a soldado was colliding at radius 19.3 against the tanque's 17.7 — the opposite of
+  what you could see.
+- **Top speed is `232 * pace` for every enemy.** It used to key off `camV` *and* skip any car
+  whose pace was 1, so the soldado kept a flat 232 while the batedor got `camV*1.1` = 165 early in
+  a run: the quick one was comfortably the slowest of the three for most of a game. He reported
+  this as "the green one is clearly faster than the blue one" and he was right again.
+- **batedor** (`aiFlank`): comes up from behind, picks a side, runs past down that side, then
+  latches and sits ~24 ahead in your lane off the throttle, shutting the door. The latch matters —
+  without a wide gap between the two thresholds (`gap < 30` to engage, `gap > 220` to re-arm) it
+  flipped state every time the gap crossed one number and just weaved around the player forever.
+  It fires in *both* phases: gating fire on "done overtaking" meant it never fired at all, because
+  once it is in front the player is behind it and the gun only points down the nose.
+- **soldado**: the pursuer we already had, plus a queue. Ranked by distance each frame; the first
+  `PURSUE_SQUAD` (4) work the player, the rest form up 200 + 150 per squad behind, spread across
+  the road, and wait for a slot. Measured with 7: four at 150–225 back, three at 421–502.
+- **tanque**: `explode()` with `BOMB_DMG` 46 / `BOMB_R` 96 when it dies, and touching the player
+  kills it where it stands. Lower lateral grip (3.4 vs 6.4) plus a fishtail on its steering, so
+  its line is never quite the one you read. Measured: player 109 -> 48, a bystander at 70 units
+  took 15.
+- **Dev mode draws each enemy's type over its roof.** Added after a long stretch of disagreeing
+  about which colour was which; settle it by looking, not by arguing.
+
+### 2026-09-25 — enemy submachine overheat
+`GUN_BURST` 4.0s of trigger time, then `GUN_REST` 1.5s locked out, counted per shot inside
+`fireCannon` so all four AI trigger sites are covered at once and the player's gun is untouched by
+construction. Measured with an enemy pinned in firing position: 3.92s / 1.52s cycles (3.92 because
+heat climbs 0.14 at a time and 28 shots is where it tips), taking them from ~100% trigger time to
+73%. Heat does **not** bleed off between bursts — deliberate, per the spec.
+
+### 2026-09-25 — the ends of the frame push back instead of blocking
+The front/back limits were a position **and velocity** teleport written into the car after the
+physics ran. They are a damped spring now: you carry ~32 past the front line, ~53 past the back,
+and get eased home. `WALL_K` 4, `WALL_C` 3, `WALL_MAX` 80 as a backstop.
+
+The spring **stiffens with distance** (`1 + 6t²`). A flat rate lost its tug of war with the speed
+controller: hold `S` and you slid the whole 80 to the backstop and sat on it, which is the hard
+wall again just further out. Neither edge reaches the backstop now.
+
+**This is the "make it a force, not a teleport" refactor the stuck-car entry below asked for**, and
+it removes that bug's root cause rather than working around it. The car's velocity is its own; the
+frame only ever pushes on it. Spin repro still recovers cleanly afterwards.
+
+### 2026-09-25 — convoy's invisible walls were two hardcoded numbers
+"the car cannot get near the edges of the road" — and I spent a long time measuring the wrong axis.
+In convoy the road runs left→right, so "the left and right edges" is the **forward** axis, not the
+road's width. The width was identical in both stages all along (±166 car limit, ±180 corridor).
+
+`rescale()` computes `FRONT_MAX`/`BACK_EDGE` from the visible area for the vertical stage, but
+convoy had them **hardcoded at 210/240 against a 400-unit view** — so you stopped just past
+halfway to the screen edge with nothing there to see. Convoy now derives them the same way
+(`VHW - 60` = 340). Forward went 210 -> 287 and is no longer wall-limited; backward 240 -> 340.
+
+`ROAD_HW` also became per-stage in `applyStage` (both still 180) because he asked for the stages to
+stop sharing code; widening convoy's road to 230 was me fixing the wrong axis and is reverted.
+
+### 2026-09-25 — nothing an enemy does costs the player speed any more
+- **Contact** (`playerImpulse`, player only): the along-nose component of a collision impulse is
+  dropped if it would slow you, and a shunt from *behind* is multiplied by `RAM_GAIN` 1.7 and opens
+  a `RAM_COAST` 1.0s window where the cruise controller coasts instead of braking — without that
+  window the regulator scrubbed the shove off in a couple of tenths and you never felt it. The
+  sideways half of the impulse is untouched, so side-swipes shove you across the lane as before.
+  Head-on: 212 -> -33 before, flat 197 after. Rear-end: peaks 259 and holds 230-244.
+- **Gunfire** (`updateShots`): each bullet shoved the car along its own flight, so fire taken
+  head-on scrubbed your speed off a round at a time — a burst dragged 212 down to 145. Same filter,
+  but gunfire only stops *costing* speed; it does not add any, because a stream of bullets from
+  behind would re-open the coast window forever and hold your cruise control off.
+- **Still outstanding:** `explode()` knockback is *not* filtered, so one missile still takes you
+  from 212 to 27. Left deliberately — a blast throwing the car is more defensible than a machine
+  gun doing it, and the same channel serves barrels and mines. One line if it should change.
+
+### 2026-09-25 — HUD pass
+Speedometer removed (its hardcoded `/232` had also gone stale against the new top speed); hull bar
+is 20 pips, centred across the driving pane, lifted `HUD_LIFT` 6 off the bottom edge. Radar gone
+from the gunner pane. Both gun boxes moved to the top right — in the loop race the standings own
+that corner, so there it drops in just below them.
+
+**Pip geometry gotcha:** rounding each pip's x *and* width independently let the error accumulate
+until it tipped over, opening a double-width seam mid-bar (he spotted it). Round both *edges* from
+the exact split instead, and the widths absorb it.
+
+### 2026-09-25 — soundtrack
+`assets/Game.m4a.mp4` (real AAC-LC despite the doubled extension), wired through `Snd.music()` and
+driven from the frame loop: silent on the menus, plays from the start of a match and through the
+wreck screen, stops and rewinds at the title. A plain `<audio>` element, not a decoded buffer — the
+file is 5.3MB. Autoplay stays blocked until a gesture, so `play()` is just retried on later frames.
+`M` mutes it with everything else. `P` pauses the game but *not* the music, on purpose: stopping it
+would rewind the track on every unpause.
+
+### 2026-09-25 — THE STUCK CAR: fixed with one change, after five that failed
+**Read this before touching the survival driving model.** The diagnosis is measured and solid; the
+five failures below are written up so nobody retries them.
+
+**The bug.** In the survival stages, once the player's car was spun off the road axis while held
+against a soft wall, it became permanently undriveable: `W`/`S` did nothing and the heading locked.
+His words: "the car won't accelerate anymore... it will still turn, but not move". **Not damage** —
+reproduced at 130/130 hp with dev mode on.
+
+**Repro** (headless, convoy; ascent identical):
+```js
+const g=load('scrapheap-madmax-ascii.html'); g.tick();
+g.E('devMode=true'); g.E("stage='convoy'"); g.E('startMatch(2)'); g.run(30);
+g.E('cars[0].angle=Math.PI');   // what a ram does to you
+g.run(60);                      // hold any keys you like: it never recovers
+```
+Terminal state: `relX -240` (= `-BACK_EDGE`), `y 166` (`ROAD_HW` 180, so on the corridor wall),
+`angle 91°`, `fwd 0`, `turnAuth 0`, `contact true`. Three more seconds of `W`+`D` moved it **0.0**.
+
+**Mechanism (trust this part):**
+1. Survival `W`/`S` are not a throttle; they trim a target speed **along the car's own nose**.
+2. Spun, that target commands the car *away* from the camera, and the P-controller saturates — `W`
+   and `S` both compute exactly **1.0**. That is the "keys stopped working".
+3. The rear soft wall hard-set `me.x` **and rewrote `me.vx`** every frame, after the physics step.
+4. Sideways, all thrust went into the corridor wall and `fwd` collapsed to ~0.
+5. `turnAuth = clamp(|fwd|/70, 0, 1)` → 0, so the steering died too.
+6. `beginRecovery` was gated `if(!c.isPlayer)` — bots got un-wedged, the player never did.
+
+**The deeper cause, found late:** the wall's velocity rewrite injected ~200 units/s of **world-x**
+velocity every frame. For a car pointed *across* the road that lands almost entirely in its
+**lateral** axis — a permanent sideways skid — so `fwd` was dominated by the wall rather than by
+anything the player did, and near perpendicular **its sign chattered frame to frame**. `fwd`'s sign
+is what inverts the steering.
+
+**The five that failed:**
+1. **Throttle on the road axis, scaled by `nose`.** Freed it from the corridor wall but **created a
+   new stable trap at 90°**: `nose ≈ 0` means `throttle ≈ 0`, so it never regained the speed the
+   wheel needs. *Never scale the survival throttle by the nose.*
+2. **Same, `nose` picks only the sign.** Still locked at ±95°; `fwd` flipped sign every few frames
+   so the steering direction flipped with it. Held keys and feedback steering failed identically.
+3. **Floor under `turnAuth`.** Necessary, nowhere near sufficient — the authority is spent wobbling.
+4. **Gave the player the bots' stuck detector**, camera-relative (the world measure can never fire:
+   the wall drags a pinned car at `camV`, so world movement stays high while it goes nowhere). It
+   fires — then fires again every ~0.5s, because `beginRecovery` shoves along the nose, which points
+   back up the road. **Turned a frozen car into a thrashing one: strictly worse.**
+5. **Gated the wall's velocity drag on heading.** No better; the position clamp *alone* forbids
+   relative motion.
+
+**What shipped: one block in `updateCar`, 41 added lines, not one original line modified.** Past
+`SPIN_FREE` (60°) off the road axis, `c.spinFix` latches; while latched the heading is turned back
+at `SPIN_RIGHT` (2.2 rad/s) until it is home, then the latch clears. Below the threshold with the
+latch clear it does **nothing at all**. The heading is the one quantity the soft wall never wrote,
+so this is kinematic and no amount of velocity corruption can block it. Measured 180 -> 148 -> 117
+-> 85 -> 54 -> 22 over ~1.4s, both stages.
+
+**And four more changes that were reverted, which is the real lesson.** A first version eased the
+righting out *at* the threshold, parking the car at 60° driving diagonally and costing half its road
+speed ("it still goes very slowly"). Chasing that crawl produced road-axis speed regulation, a
+scroll-following `MAXF`, drag feed-forward and throttle slew. They were **right on the numbers** (a
+symmetric ±74 band, no backward sag, frame crossing 25s -> 6s) and **wrong in the hand**: *"I don't
+like that the movement of the car is different, it is janky now, it was a lot better before you
+fixed the bug"*, plus *"it appears as the player character gets a boost after hitting some enemy"* —
+a speed regulator answers every disturbance with full throttle. All four were reverted and the
+driving was verified bit-for-bit against `HEAD` (`W +7, idle -16.9, S -85.1` in both).
+
+> **The lesson:** every one of the four was a fix for a problem the incomplete *first* fix had
+> created. Righting the heading all the way home removed the reason to touch the throttle at all.
+> When a change starts breeding follow-on changes in code the user has a feel for, the first change
+> is probably wrong — go back to it rather than building on it.
+
+**Harness gotcha that wasted real time:** `tools/headless.js` runs ~60 `step(DT)` calls per
+`tick()`, i.e. **~1 simulated second per frame, not 1/60th**. Every timing read off `g.run(n)` is
+60× what it looks like. Speeds in units/s are unaffected. For sub-second detail, drive `step(DT)`
+directly. Also: the script is `"use strict"`, so `__x = 1` in the eval hatch throws — use
+`globalThis.__x`.
 
 ### 2026-09-24 — pulled the perimeter fence out (`H`)
 "between the first layers of buildings and the back layer of big tall buildings, there is this big

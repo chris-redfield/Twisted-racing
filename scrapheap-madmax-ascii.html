@@ -59,10 +59,41 @@ const CAM_RAMP  = 0.5;           // how fast the scroll speeds up (units/s per s
 let   CRUISE_BAND = 74;          // W/S trims your speed +/- this around the scroll pace (per stage)
 let   FRONT_MAX = 210;           // how far ahead of the camera you may push (soft wall; per stage)
 let   BACK_EDGE = 240;           // soft wall this far behind the camera (per stage)
+
+// BOOST - one charge, spend it, wait for it. SPACE, the player's car only.
+//
+// In the survival stages the player's speed is a REGULATOR (see updateCar): W/S
+// pick a target inside CRUISE_BAND around the scroll pace and the throttle serves
+// it. So a boost is not a force added to the car - it is a higher target, plus the
+// ceiling and the acceleration to reach it. Shoving velocity in directly is the
+// thing the stuck-car notes say never to do.
+//
+// It also needs somewhere to GO. Holding W already parks you near FRONT_MAX, so a
+// boost that only raises the target would spend itself against the frame's front
+// spring and gain no ground. BOOST_ROOM lends the frame extra room while it burns,
+// eased in and out through c.boostEase - a step back to FRONT_MAX at the end would
+// leave you 90 units "over" and get slapped, which is the hard wall all over again.
+const BOOST_ADD   = 95;          // forward target/ceiling on top of the cruise band
+const BOOST_ACC   = 700;         // acceleration while it burns (ACC is 330)
+const BOOST_TIME  = 0.9;         // seconds one charge burns for
+const BOOST_COOL  = 10;          // seconds to recharge, counted from the end of the burn
+const BOOST_ROOM  = 130;         // extra front-of-frame room while it burns
+// how fast boostEase moves, as a multiplier per second. In hard, so the room is
+// there before the car is; out slow (~3s), so the front line never retreats out
+// from under a car that is still ahead of where it used to be.
+const BOOST_EASE_IN = 0.001, BOOST_EASE_OUT = 0.37;
 // The ends of the frame push back rather than blocking: carry a little way past
 // the line and get eased home. K is how hard it pulls, C takes the bounce out of
 // the return, MAX is a hard backstop so nothing can throw the car out of frame.
 const WALL_K = 4, WALL_C = 3, WALL_MAX = 80;
+// The most the FRONT line may put you below the scroll pace while it reels you in.
+// Without it the spring pays for the ground a boost gained by taking the speed back
+// out of the car - measured at 233 -> 31 against a 153 scroll, which handed you
+// straight back to the pack and made using the boost a mistake. The frame is
+// allowed to stop the gap OPENING as hard as it likes (that part is unchanged, and
+// is what holds you at the line when you simply hold W); it is not allowed to drive
+// the car slower than the road. The backstop below still makes leaving impossible.
+const WALL_REEL = 30;
 const FENCE_OUT_C = 210;         // perimeter fence, outside the barrier, for the horizon
 let   VCY_BIAS = 0.5;            // where the camera point sits down the pane (per stage)
 let   numPlayers = 2;            // 1 = solo (drive + gun, one view), 2 = split-screen with a gunner
@@ -209,6 +240,9 @@ const Snd = (function(){
     pickup(){ blip(660,0.07,'square',0.16); setTimeout(()=>blip(990,0.09,'square',0.16),60); },
     crash(){ noise(0.18,0.4,1400,200); },
     mine(){ blip(1200,0.04,'square',0.1); },
+    // boost: cutoff and pitch both RISE (noise()/blip() ramp either direction), so
+    // it reads as winding up rather than as one more explosion
+    boost(){ noise(0.5,0.3,500,2400); blip(140,0.45,'sawtooth',0.15,430); },
     engine(rpm, load){
       if(!ac||!engGain) return;
       engGain.gain.value = 0.05 + load*0.05;
@@ -247,6 +281,7 @@ function onPress(code){
   if(code==='KeyB'){ showBuildings = !showBuildings; if(race && track) buildRingsLoop(); }
   if(code==='KeyH'){ showFence = !showFence; if(race && track) buildRingsLoop(); }
   if(code==='KeyP' && state==='play') paused=!paused;
+  if(code==='Space' && state==='play') tryBoost(cars[0]);
   // the gunner camera's feel hangs on two numbers that are hard to guess
   // without looking at them, so make them adjustable in place
   if(code==='BracketLeft')  EYE_Z = clamp(EYE_Z-2, 12, 70);
@@ -479,6 +514,10 @@ function makeCar(id, isPlayer, x, y, angle, model){
     prog:x, lap:0, total:0, place:1, lineOff:0, finished:false, finishTime:0, offTrack:0,
     pitT:0, pitX:0, pitY:0, pitR:0, deathZ:0, deathClip:null,
     skidT:0, hurtFlash:0, lastHitBy:-1,
+    // boost: boostT = burn left, boostCD = recharge left (only ticks once the burn
+    // is done, so the gauge reads "seconds until I can boost again"), boostEase =
+    // the smoothed 0..1 that lends the frame its extra room
+    boostT:0, boostCD:0, boostEase:0,
     // convoy: role is 'player', 'charger' (barrels through from ahead) or 'pursuer' (chases from behind)
     role:isPlayer?'player':'charger', tActive:0,
     turret:0, fps:null
@@ -865,6 +904,16 @@ function fireMissile(c){
     vx:fx0*190, vy:fy0*190, angle:aim, life:2.6, owner:c.id, dmg:34, smoke:0 });
   Snd.missile();
 }
+// SPACE. Refuses while a charge is still recharging, while the burn is already
+// running, and while the car is wrecked or down a pit - so it can never be used to
+// drive out of a hazard the pit is supposed to hold you in.
+function tryBoost(c){
+  if(!c || c.dead || c.pitT>0) return;
+  if(c.boostT>0 || c.boostCD>0) return;
+  c.boostT = BOOST_TIME; c.boostCD = BOOST_COOL;
+  Snd.boost();
+  cam.shake = Math.min(9, cam.shake + 1.2);
+}
 function dropMine(c){
   if(c.minecool>0 || c.minesLeft<=0) return;
   c.minecool=0.5; c.minesLeft--;
@@ -880,6 +929,13 @@ function updateCar(c, dt){
   c.minecool=Math.max(0,c.minecool-dt); c.invuln=Math.max(0,c.invuln-dt);
   c.ramT=Math.max(0,(c.ramT||0)-dt);
   c.hurtFlash=Math.max(0,c.hurtFlash-dt);
+  // boost timers. The recharge waits for the burn to finish rather than running
+  // through it, so 10 really is 10 seconds of not having it.
+  c.boostT=Math.max(0,(c.boostT||0)-dt);
+  if(c.boostT<=0) c.boostCD=Math.max(0,(c.boostCD||0)-dt);
+  // fast in (~0.1s), slow out (~1.5s): the frame reels you back in after the burn
+  c.boostEase = lerp(c.boostEase||0, c.boostT>0?1:0,
+                     1-Math.pow(c.boostT>0?BOOST_EASE_IN:BOOST_EASE_OUT, dt));
 
   if(c.dead){
     c.respawn-=dt;
@@ -937,7 +993,8 @@ function updateCar(c, dt){
       // won't accelerate any more": late in a run the car brakes fine and will
       // not pull. Nothing else about the controller changes - it still measures
       // along the nose, still has no feed-forward, so the hand of it is the same.
-      const targetF = Math.max(60, camV + boost*CRUISE_BAND);
+      // the boost sits ON TOP of the band, so W+SPACE is the fastest thing there is
+      const targetF = Math.max(60, camV + boost*CRUISE_BAND + (c.boostT>0?BOOST_ADD:0));
       throttle = clamp((targetF - fwdNow)/40, -1, 1);
       // Just been shunted from behind: coast instead of braking, or the regulator
       // scrubs the shove off within a couple of tenths and you never feel it.
@@ -966,9 +1023,12 @@ function updateCar(c, dt){
   // This used to key off camV and skip any car whose pace was 1, which meant the
   // soldado kept a flat 232 while the batedor got camV*1.1 - 165 early in a run.
   // The quick one was comfortably the slowest of the three for most of a game.
-  const MAXF = c.isPlayer ? (race ? 232 : Math.max(232, camV + CRUISE_BAND + 12))
+  // the boost raises the ceiling with the target - a target above MAXF can never
+  // be met, which is the same trap the comment above describes for the scroll
+  const bst = (c.isPlayer && c.boostT>0) ? BOOST_ADD : 0;
+  const MAXF = c.isPlayer ? (race ? 232+bst : Math.max(232, camV + CRUISE_BAND + 12) + bst)
              : (race ? 232 : 232*c.pace);
-  const MAXR=95, ACC=330;
+  const MAXR=95, ACC = bst ? BOOST_ACC : 330;
   const SPIN_FREE = 60*Math.PI/180;   // past this you are being spun, not driving
   const SPIN_RIGHT = 2.2;             // rad/s the latched righting turns you back
   if(throttle>0) fwd += ACC*dt*throttle;
@@ -1053,6 +1113,14 @@ function updateCar(c, dt){
           spd0:2, spd1:16, size:2, life0:0.5, life1:1.1, grav:-14, up0:6, up1:22 });
     }
   }
+  // boost flame out of the back while it burns. Blue-white at the head so it does
+  // not read as the damage smoke or as a hit.
+  if(c.boostT>0 && !c.dead){
+    particles(c.x-Math.cos(c.angle)*15, c.y-Math.sin(c.angle)*15, 5, 2,
+      { col:['#bfe8ff','#ffe9a8','#ff9d3d'], spd0:10, spd1:60, size:2,
+        life0:0.1, life1:0.28, grav:0, up0:2, up1:16 });
+  }
+
   if(!c.isPlayer){
     c.moveCheck -= dt;
     if(c.moveCheck<=0){
@@ -3469,14 +3537,22 @@ function drawDriverHUD(){
   // hull, centred across the driving pane and lifted clear of the bottom edge.
   // Everything inside is placed off hx/hy so the box moves as one piece.
   const HUD_LIFT = 6;                 // how far off the bottom edge the box sits
-  const HW_ = 118, hx = Math.round(p.x + (p.w - HW_)/2), hy = p.y + p.h - 32 - HUD_LIFT;
-  plate(hx, hy, HW_, 26);
+  const HW_ = 118, hx = Math.round(p.x + (p.w - HW_)/2), hy = p.y + p.h - 40 - HUD_LIFT;
+  plate(hx, hy, HW_, 34);
   ctx.fillStyle='#9d8ea5'; ctx.fillText(numPlayers===2?'P1 DRIVER':'DRIVER / GUNNER', hx+5, hy+4);
   // the hull bar never moves in dev mode, so say why rather than let it look broken
   if(devMode){ ctx.textAlign='right'; ctx.fillStyle='#e0b73c';
     ctx.fillText('DEV', hx+113, hy+4); ctx.textAlign='left'; }
   bar(hx+5, hy+15, 100, 6, me.hp/me.maxHp,
       me.hp>me.maxHp*0.5?'#4ade80':me.hp>me.maxHp*0.25?'#e0b73c':'#f0503c');
+  // BOOST. One continuous read of one number: it drains hot while the charge is
+  // being spent, then fills cool over the recharge. Full and cyan = press SPACE.
+  const burning = me.boostT>0;
+  const bv  = burning ? me.boostT/BOOST_TIME : 1 - me.boostCD/BOOST_COOL;
+  const bcol = burning ? '#ffe9a8' : me.boostCD>0 ? '#3f6a80' : '#7fd4ff';
+  ctx.fillStyle = burning ? '#ffe9a8' : me.boostCD>0 ? '#5a4a5e' : '#7fd4ff';
+  ctx.fillText('BST', hx+5, hy+24);
+  bar(hx+24, hy+25, 81, 4, bv, bcol, null, 10);
   // solo carries its own gun readout (in 2P this lives in the gunner pane), top
   // right to match it. In the loop race the standings board already owns that
   // corner, so it drops in just below rather than overlapping.
@@ -3630,6 +3706,7 @@ function drawSetup(){
       'MOUSE            aim the gun',
       'CLICK            fire (RMB missile)',
       'SHIFT            hard slew',
+      'SPACE            boost (one charge)',
       '',
       'the gun points where your',
       'cursor is. grab ammo drops.' ]},
@@ -3637,6 +3714,7 @@ function drawSetup(){
       'a driver and a gunner.',
       '',
       'P1  WASD + SHIFT drive',
+      'P1  SPACE        boost',
       'P2  MOUSE aims (click to lock),',
       '    click fires, RMB missile',
       '    - or ARROWS to traverse',
@@ -3649,7 +3727,9 @@ function drawSetup(){
     ctx.font='bold 10px monospace'; ctx.fillStyle=c.col;
     ctx.fillText(c.tag, c.x, 88);
     ctx.font='8px monospace';
-    c.rows.forEach((t,i)=>{ ctx.fillStyle = i<5 ? '#cfc2d4' : '#7a6a84'; ctx.fillText(t, c.x, 108+i*12); });
+    // the bright block is the control lines; the dim tail is the prose tips. Both
+    // columns now carry 5 control rows, so the split moved with the boost line.
+    c.rows.forEach((t,i)=>{ ctx.fillStyle = i<7 ? '#cfc2d4' : '#7a6a84'; ctx.fillText(t, c.x, 108+i*12); });
   }
   ctx.textAlign='left';
   centerText('press 1 for SOLO  or  2 for CO-OP','#4ade80',246,10);
@@ -3758,7 +3838,9 @@ function step(dt){
   if(!me.dead){
     const rel  = vertical ? (cam.y - me.y) : (me.x - cam.x);    // + = ahead of the camera
     const relV = vertical ? (-me.vy - camV) : (me.vx - camV);   // how fast that gap is opening
-    const over = rel >  FRONT_MAX ? rel - FRONT_MAX
+    // the front line gives while the boost burns, and eases back afterwards
+    const front = FRONT_MAX + BOOST_ROOM*(me.boostEase||0);
+    const over = rel >  front ? rel - front
                : rel < -BACK_EDGE ? rel + BACK_EDGE : 0;        // signed, 0 while inside
     if(over){
       // The spring stiffens the further out you are. A flat rate loses its tug of
@@ -3766,10 +3848,12 @@ function step(dt){
       // to the backstop and sit on it, which is the hard stop all over again. This
       // way the first few units are soft and it firms up until nothing gets there.
       const t = Math.abs(over)/WALL_MAX;
-      const a = -WALL_K*(1 + 6*t*t)*over - WALL_C*relV;
+      let a = -WALL_K*(1 + 6*t*t)*over - WALL_C*relV;
+      // front only: never push the car below camV - WALL_REEL. See WALL_REEL.
+      if(over > 0) a = Math.max(a, Math.min(0, (-WALL_REEL - relV)/dt));
       if(vertical) me.vy -= a*dt; else me.vx += a*dt;
       if(Math.abs(over) > WALL_MAX){            // backstop, far past where the spring turns you
-        const cap = over > 0 ? FRONT_MAX + WALL_MAX : -BACK_EDGE - WALL_MAX;
+        const cap = over > 0 ? front + WALL_MAX : -BACK_EDGE - WALL_MAX;
         if(vertical) me.y = cam.y - cap; else me.x = cam.x + cap;
       }
     }
