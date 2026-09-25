@@ -154,8 +154,37 @@ const Snd = (function(){
     const g=ac.createGain(); g.gain.value=vol||0.4;
     src.connect(f); f.connect(g); g.connect(master); src.start();
   }
+  // Soundtrack. A plain <audio> element rather than a decoded buffer: the file is
+  // several megabytes, so this streams and loops it instead of holding the whole
+  // thing in memory, and it costs no nodes in the graph. Autoplay stays blocked
+  // until the page has had a user gesture, so play() is simply retried on later
+  // frames - by the time a match is running, a key has been pressed to start it.
+  let mus=null, musTried=false, musPending=false;
+  const MUSIC_SRC = 'assets/Game.m4a.mp4', MUSIC_VOL = 0.5;
+  function music(want){
+    if(!musTried){
+      musTried = true;
+      try{ mus = new Audio(MUSIC_SRC); mus.loop = true; mus.preload = 'auto'; }
+      catch(e){ mus = null; }              // no Audio here (headless): stay quiet
+    }
+    if(!mus) return;
+    mus.volume = on ? MUSIC_VOL : 0;       // M mutes the track with everything else
+    if(want){
+      if(mus.paused && !musPending){
+        musPending = true;
+        const pr = mus.play();
+        if(pr && pr.then) pr.then(()=>{musPending=false;}, ()=>{musPending=false;});
+        else musPending = false;
+      }
+    } else if(!mus.paused || musPending){
+      musPending = false; mus.pause(); mus.currentTime = 0;   // back to the top next run
+    }
+  }
+
   return {
-    boot, toggle(){ on=!on; if(master) master.gain.value = on?0.32:0; return on; },
+    boot, music,
+    toggle(){ on=!on; if(master) master.gain.value = on?0.32:0;
+              if(mus) mus.volume = on?MUSIC_VOL:0; return on; },
     isOn(){ return on; },
     shot(){ blip(560,0.06,'square',0.16,180); },
     missile(){ noise(0.35,0.3,900,300); blip(180,0.3,'sawtooth',0.14,520); },
@@ -760,6 +789,7 @@ function dropMine(c){
 function updateCar(c, dt){
   c.cool=Math.max(0,c.cool-dt); c.mcool=Math.max(0,c.mcool-dt);
   c.minecool=Math.max(0,c.minecool-dt); c.invuln=Math.max(0,c.invuln-dt);
+  c.ramT=Math.max(0,(c.ramT||0)-dt);
   c.hurtFlash=Math.max(0,c.hurtFlash-dt);
 
   if(c.dead){
@@ -820,6 +850,10 @@ function updateCar(c, dt){
       // along the nose, still has no feed-forward, so the hand of it is the same.
       const targetF = Math.max(60, camV + boost*CRUISE_BAND);
       throttle = clamp((targetF - fwdNow)/40, -1, 1);
+      // Just been shunted from behind: coast instead of braking, or the regulator
+      // scrubs the shove off within a couple of tenths and you never feel it.
+      // Drag still bleeds it, so the boost fades on its own rather than stopping.
+      if(c.ramT>0 && throttle<0) throttle = 0;
     }
     // the gun rides in every stage now (2P gunner, or the solo driver on mouse/arrows)
     updateTurret(c, dt);
@@ -956,6 +990,26 @@ function updatePlaces(){
   order.forEach((c,i)=>c.place=i+1);
 }
 
+// A contact never takes the player's speed, and a shunt from behind adds to it.
+// Only the component along the nose is touched - the sideways half of the impulse
+// lands in full, so a hit still shoves you across the lane and a side-swipe feels
+// exactly as it did. Enemies are unaffected: they still get the whole impulse,
+// and damage is untouched either way.
+const RAM_GAIN  = 1.7;             // how much harder a rear-ender shoves the player
+const RAM_COAST = 1.0;             // seconds the cruise control lets that boost run
+// `ram` marks a car-on-car shunt, which is the only thing that ADDS speed. Gunfire
+// just stops costing it: a stream of bullets opening the coast window over and
+// over would hold the cruise control off for as long as someone was shooting you.
+function playerImpulse(c, ix, iy, ram){
+  const fx=Math.cos(c.angle), fy=Math.sin(c.angle);
+  const along = ix*fx + iy*fy;
+  if(along <= 0) return [ix - along*fx, iy - along*fy];     // frontal: drop it, keep the sideways
+  if(!ram) return [ix, iy];                                  // gunfire from behind: as it was
+  c.ramT = RAM_COAST;                                        // a shunt from behind: let it run
+  const add = along*(RAM_GAIN-1);
+  return [ix + add*fx, iy + add*fy];
+}
+
 function carVsCar(dt){
   for(let i=0;i<cars.length;i++) for(let j=i+1;j<cars.length;j++){
     const a=cars[i], b=cars[j];
@@ -967,7 +1021,10 @@ function carVsCar(dt){
       const rel=(b.vx-a.vx)*nx + (b.vy-a.vy)*ny;
       if(rel<0){
         const imp=-rel*0.7;
-        a.vx-=nx*imp; a.vy-=ny*imp; b.vx+=nx*imp; b.vy+=ny*imp;
+        let aix=-nx*imp, aiy=-ny*imp, bix=nx*imp, biy=ny*imp;
+        if(a.isPlayer) [aix,aiy]=playerImpulse(a,aix,aiy,true);
+        if(b.isPlayer) [bix,biy]=playerImpulse(b,bix,biy,true);
+        a.vx+=aix; a.vy+=aiy; b.vx+=bix; b.vy+=biy;
         if(-rel>150){
           Snd.crash(); cam.shake=Math.min(6,cam.shake+1.5);
           // ramming damage favours whoever was moving into the hit
@@ -1256,7 +1313,12 @@ function updateShots(dt){
         if(s.kind==='missile') explode(s.x,s.y,1,s.owner,s.dmg,62);
         else {
           damage(c,s.dmg,s.owner);
-          c.vx+=s.vx*0.03; c.vy+=s.vy*0.03;
+          // a bullet shoves along its own flight, so fire taken head-on used to
+          // scrub the player's speed off a round at a time. It still knocks you
+          // about sideways; it just cannot slow you down any more.
+          let kx=s.vx*0.03, ky=s.vy*0.03;
+          if(c.isPlayer) [kx,ky]=playerImpulse(c,kx,ky);
+          c.vx+=kx; c.vy+=ky;
           particles(s.x,s.y,7,3,{col:['#ffe9a8','#ff8a4a'],spd0:20,spd1:80,size:1,life0:0.08,life1:0.22});
         }
         gone=true; break;
@@ -3112,9 +3174,23 @@ rescale();
 // ---------------------------------------------------------------- HUD
 let gunnerHit=0, gunnerKill=0;
 
-function bar(x,y,w,h,v,col,bg){
+// Segmented, not continuous: pips with a hairline between them, so a glance
+// reads "three left" rather than "about a third". Spent pips stay as faint
+// ghosts so the full capacity is still legible. `ceil` keeps the last pip lit
+// until the value is actually zero - alive should never look empty.
+const BAR_PIPS = 20;               // CAR_HP is 130, so a pip is ~6 hull
+function bar(x,y,w,h,v,col,bg,n){
+  n = n || BAR_PIPS;
   ctx.fillStyle=bg||'rgba(10,7,14,.8)'; ctx.fillRect(x-1,y-1,w+2,h+2);
-  ctx.fillStyle=col; ctx.fillRect(x,y,Math.round(w*clamp(v,0,1)),h);
+  const gap=1, lit=Math.ceil(clamp(v,0,1)*n);
+  for(let i=0;i<n;i++){
+    // Both edges are rounded from the exact split. Rounding a single pip width
+    // and stepping by it instead lets the error accumulate until it tips over,
+    // which opened a double-width seam in the middle of the bar.
+    const x0=Math.round(x+i*w/n), x1=Math.round(x+(i+1)*w/n);
+    ctx.fillStyle = i<lit ? col : 'rgba(255,255,255,.07)';
+    ctx.fillRect(x0, y, x1-x0-gap, h);
+  }
 }
 function centerText(t,col,y,size,cx){
   ctx.textAlign='center'; ctx.font='bold '+(size||10)+'px monospace'; ctx.fillStyle=col;
@@ -3125,7 +3201,7 @@ function plate(x,y,w,h){
   ctx.strokeStyle='rgba(120,100,140,.22)'; ctx.lineWidth=1; ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);
 }
 
-// ---- player 2: crosshair, ammo, radar
+// ---- player 2: crosshair and ammo
 function drawGunnerHUD(){
   const p=PANE_P2, me=cars[0];
   const cx=p.x+p.w/2, cy=p.y+p.h*(RC_HORIZON/RC_H);
@@ -3184,15 +3260,17 @@ function drawGunnerHUD(){
     ctx.moveTo(cx+5,cy-5); ctx.lineTo(cx-5,cy+5); ctx.stroke();
   }
 
-  // role tag and ammo
-  plate(p.x+6, p.y+6, 92, 34);
+  // role tag and ammo, top right - the corner the radar used to occupy.
+  // Everything inside is placed off gx so the box stays one piece.
+  const gx = p.x + p.w - 98;
+  plate(gx, p.y+6, 92, 34);
   ctx.font='8px monospace'; ctx.textBaseline='top';
-  ctx.fillStyle='#9d8ea5'; ctx.fillText('P2 GUNNER', p.x+11, p.y+10);
-  ctx.fillStyle='#f97362'; ctx.fillText('MSL '+me.missiles, p.x+11, p.y+21);
+  ctx.fillStyle='#9d8ea5'; ctx.fillText('P2 GUNNER', gx+5, p.y+10);
+  ctx.fillStyle='#f97362'; ctx.fillText('MSL '+me.missiles, gx+5, p.y+21);
   ctx.fillStyle= me.cool>0 ? '#5a4a5e' : '#e0b73c';
-  ctx.fillText('CANNON', p.x+50, p.y+21);
+  ctx.fillText('CANNON', gx+44, p.y+21);
   ctx.fillStyle='#5a4a5e';
-  ctx.fillText((me.turret>=0?'R':'L')+Math.abs(Math.round(me.turret*57))+'°', p.x+11, p.y+31);
+  ctx.fillText((me.turret>=0?'R':'L')+Math.abs(Math.round(me.turret*57))+'°', gx+5, p.y+31);
 
   if(gunnerKill>0){
     ctx.globalAlpha=clamp(gunnerKill*2,0,1);
@@ -3200,32 +3278,6 @@ function drawGunnerHUD(){
     ctx.globalAlpha=1;
   }
 
-  // radar: car-relative, with the turret's arc of fire drawn on it
-  const rx=p.x+p.w-46, ry=p.y+40, rr=32;
-  ctx.fillStyle='rgba(10,7,14,.7)';
-  ctx.beginPath(); ctx.arc(rx,ry,rr,0,Math.PI*2); ctx.fill();
-  ctx.strokeStyle='rgba(120,100,140,.3)'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.arc(rx,ry,rr,0,Math.PI*2); ctx.stroke();
-  // up on the radar is the car's nose
-  ctx.fillStyle='rgba(224,183,60,.16)';
-  ctx.beginPath(); ctx.moveTo(rx,ry);
-  ctx.arc(rx,ry,rr, (me.turret||0)-Math.PI/2-RC_FOV/2, (me.turret||0)-Math.PI/2+RC_FOV/2);
-  ctx.closePath(); ctx.fill();
-  ctx.strokeStyle='#e0b73c';
-  ctx.beginPath(); ctx.moveTo(rx,ry);
-  ctx.lineTo(rx+Math.cos((me.turret||0)-Math.PI/2)*rr, ry+Math.sin((me.turret||0)-Math.PI/2)*rr);
-  ctx.stroke();
-  const RAD_RANGE=620;
-  for(let i=1;i<cars.length;i++){
-    const o=cars[i]; if(o.dead) continue;
-    const dx=o.x-me.x, dy=o.y-me.y, d=Math.hypot(dx,dy);
-    if(d>RAD_RANGE) continue;
-    const rel=Math.atan2(dy,dx)-me.angle-Math.PI/2;
-    const k=d/RAD_RANGE*rr;
-    ctx.fillStyle=o.color;
-    ctx.fillRect(rx+Math.cos(rel)*k-1.5, ry+Math.sin(rel)*k-1.5, 3, 3);
-  }
-  ctx.fillStyle='#fff'; ctx.fillRect(rx-1,ry-1,2,2);
 }
 
 // ---- player 1: the driving instruments
@@ -3233,21 +3285,26 @@ function drawDriverHUD(){
   const p=PANE_P1, me=cars[0];
   ctx.font='8px monospace'; ctx.textBaseline='top'; ctx.textAlign='left';
 
-  // hull + speed, bottom-left
-  plate(p.x+6, p.y+p.h-42, 118, 36);
-  ctx.fillStyle='#9d8ea5'; ctx.fillText(numPlayers===2?'P1 DRIVER':'DRIVER / GUNNER', p.x+11, p.y+p.h-38);
+  // hull, centred across the driving pane and lifted clear of the bottom edge.
+  // Everything inside is placed off hx/hy so the box moves as one piece.
+  const HUD_LIFT = 6;                 // how far off the bottom edge the box sits
+  const HW_ = 118, hx = Math.round(p.x + (p.w - HW_)/2), hy = p.y + p.h - 32 - HUD_LIFT;
+  plate(hx, hy, HW_, 26);
+  ctx.fillStyle='#9d8ea5'; ctx.fillText(numPlayers===2?'P1 DRIVER':'DRIVER / GUNNER', hx+5, hy+4);
   // the hull bar never moves in dev mode, so say why rather than let it look broken
   if(devMode){ ctx.textAlign='right'; ctx.fillStyle='#e0b73c';
-    ctx.fillText('DEV', p.x+119, p.y+p.h-38); ctx.textAlign='left'; }
-  bar(p.x+11, p.y+p.h-27, 100, 6, me.hp/me.maxHp,
+    ctx.fillText('DEV', hx+113, hy+4); ctx.textAlign='left'; }
+  bar(hx+5, hy+15, 100, 6, me.hp/me.maxHp,
       me.hp>me.maxHp*0.5?'#4ade80':me.hp>me.maxHp*0.25?'#e0b73c':'#f0503c');
-  bar(p.x+11, p.y+p.h-17, 100, 4, clamp(Math.abs(me.speed||0)/232,0,1), '#57b7d6');
-  // solo carries its own gun readout (in convoy this lives in the gunner pane)
+  // solo carries its own gun readout (in 2P this lives in the gunner pane), top
+  // right to match it. In the loop race the standings board already owns that
+  // corner, so it drops in just below rather than overlapping.
   if(numPlayers===1){
-    plate(p.x+p.w-70, p.y+p.h-42, 64, 36);
-    ctx.fillStyle='#9d8ea5'; ctx.fillText('GUN', p.x+p.w-64, p.y+p.h-38);
-    ctx.fillStyle= me.cool>0 ? '#5a4a5e' : '#e0b73c'; ctx.fillText('CANNON', p.x+p.w-64, p.y+p.h-27);
-    ctx.fillStyle='#f97362'; ctx.fillText('MSL '+me.missiles, p.x+p.w-64, p.y+p.h-16);
+    const gy = race ? p.y+16+cars.length*10 : p.y+6;
+    plate(p.x+p.w-70, gy, 64, 36);
+    ctx.fillStyle='#9d8ea5'; ctx.fillText('GUN', p.x+p.w-64, gy+4);
+    ctx.fillStyle= me.cool>0 ? '#5a4a5e' : '#e0b73c'; ctx.fillText('CANNON', p.x+p.w-64, gy+15);
+    ctx.fillStyle='#f97362'; ctx.fillText('MSL '+me.missiles, p.x+p.w-64, gy+26);
   }
 
   if(race){
@@ -3629,6 +3686,10 @@ function frame(now){
   if(dt>0.25) dt=0.25;
   fpsAcc+=dt; fpsN++;
   if(fpsAcc>0.5){ fpsVal=Math.round(fpsN/fpsAcc); fpsAcc=0; fpsN=0; }
+
+  // the soundtrack runs with the run itself: up on the menus, playing from the
+  // moment a match starts and on through the wreck screen
+  Snd.music(state==='play' || state==='over');
 
   if(state==='title'){ drawTitle(); return; }
   if(state==='setup'){ drawSetup(); return; }
