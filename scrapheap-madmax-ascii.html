@@ -428,6 +428,7 @@ function makeCar(id, isPlayer, x, y, angle, model){
     x, y, vx:0, vy:0, angle,
     hp:CAR_HP, maxHp:CAR_HP, frags:0, deaths:0,
     cool:0, mcool:0, minecool:0, missiles:2, minesLeft:1,
+    gunHeat:0, gunRest:0,          // enemy submachine overheat (see fireCannon)
     dead:false, respawn:0, invuln:1.4,
     aiTimer:0, aiSteer:0, aiThrottle:1, aiBrake:false, wander:rnd(0,6),
     avoidDir:Math.random()<0.5?-1:1, orbitDir:Math.random()<0.5?-1:1, blockedT:0, closeT:0,
@@ -771,8 +772,21 @@ function damage(c, amount, ownerId){
 // the player's guns follow the gunner's traverse, not the nose of the car
 function aimAngle(c){ return c.isPlayer ? c.angle + (c.turret||0) : c.angle; }
 
+// The enemy submachine gun overheats. The AI held the trigger down for as long as
+// it had a target, which gave the player no gaps to work in; a burst is now
+// finite. GUN_BURST seconds of actual firing and the gun is out for GUN_REST,
+// then it starts clean. Heat is counted per shot (each one occupies a `cool`
+// slot), so it measures real trigger time rather than time spent near a target.
+// The player's gun is deliberately untouched.
+const GUN_BURST = 4.0;             // seconds of fire an enemy gets
+const GUN_REST  = 1.5;             // seconds before it can start again
 function fireCannon(c){
   if(c.cool>0) return;
+  if(!c.isPlayer){
+    if(c.gunRest>0) return;                       // still cooling off
+    c.gunHeat += 0.14;                            // this shot's worth of trigger time
+    if(c.gunHeat >= GUN_BURST){ c.gunHeat = 0; c.gunRest = GUN_REST; }
+  }
   c.cool = 0.14;
   const aim = aimAngle(c);
   const fx0=Math.cos(aim), fy0=Math.sin(aim);
@@ -805,6 +819,7 @@ function dropMine(c){
 // ---------------------------------------------------------------- car update
 function updateCar(c, dt){
   c.cool=Math.max(0,c.cool-dt); c.mcool=Math.max(0,c.mcool-dt);
+  c.gunRest=Math.max(0,c.gunRest-dt);
   c.minecool=Math.max(0,c.minecool-dt); c.invuln=Math.max(0,c.invuln-dt);
   c.ramT=Math.max(0,(c.ramT||0)-dt);
   c.hurtFlash=Math.max(0,c.hurtFlash-dt);
