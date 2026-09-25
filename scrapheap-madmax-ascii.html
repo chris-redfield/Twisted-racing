@@ -46,13 +46,23 @@ const DT = 1/60;
 let stage = 'convoy';            // 'convoy' | 'ascent' | 'loop'
 let vertical = false;            // ASCENT only (forward is -y)
 let race = false;                // LOOP only (closed-track race)
-const ROAD_HW   = 180;           // half-width of the drivable band (walls at +/-ROAD_HW)
+// Half-width of the drivable band (walls at +/-ROAD_HW). Per stage, set in
+// applyStage: the two stages run along different axes and get different amounts
+// of screen for their width, so one shared number left convoy hemmed in well
+// before the car looked like it had reached anything.
+let   ROAD_HW   = 180;
+const ROAD_HW_CONVOY = 180;      // per stage now, but both back at the original width
+const ROAD_HW_ASCENT = 180;
 const CAM_V0    = 150;           // starting forced scroll speed (world units/s)
 const CAM_VMAX  = 214;           // top forced scroll speed
 const CAM_RAMP  = 0.5;           // how fast the scroll speeds up (units/s per s)
 let   CRUISE_BAND = 74;          // W/S trims your speed +/- this around the scroll pace (per stage)
 let   FRONT_MAX = 210;           // how far ahead of the camera you may push (soft wall; per stage)
 let   BACK_EDGE = 240;           // soft wall this far behind the camera (per stage)
+// The ends of the frame push back rather than blocking: carry a little way past
+// the line and get eased home. K is how hard it pulls, C takes the bounce out of
+// the return, MAX is a hard backstop so nothing can throw the car out of frame.
+const WALL_K = 4, WALL_C = 3, WALL_MAX = 80;
 const FENCE_OUT_C = 210;         // perimeter fence, outside the barrier, for the horizon
 let   VCY_BIAS = 0.5;            // where the camera point sits down the pane (per stage)
 let   numPlayers = 2;            // 1 = solo (drive + gun, one view), 2 = split-screen with a gunner
@@ -84,7 +94,13 @@ function rescale(){
     BACK_EDGE = Math.max(120, behindV - 40);
     VIEW_HH   = Math.max(aheadV, behindV) + 80;
   } else {
-    FRONT_MAX = 210; BACK_EDGE = 240;            // convoy's signed-off fixed clamps
+    // Convoy's forward axis is x and its camera sits centred, so both clamps
+    // follow the visible half-width the same way the vertical stage's follow its
+    // height. They used to be hardcoded at 210/240 against a 400-unit view, which
+    // is what stopped the car a little past halfway to the screen edge with
+    // nothing there to see - the "invisible walls".
+    FRONT_MAX = Math.max(140, VHW - 60);
+    BACK_EDGE = Math.max(120, VHW - 60);
   }
   makePatterns();
   if(race && track) makeTrack();                // loop paths bake S into their coords
@@ -433,6 +449,7 @@ function applyStage(){
   LAYOUT    = vertical ? 'side' : 'stack';
   VCY_BIAS  = vertical ? 0.66 : 0.5;
   CRUISE_BAND = vertical ? 100 : 74;
+  ROAD_HW   = vertical ? ROAD_HW_ASCENT : ROAD_HW_CONVOY;
   TRK.HW    = race ? LOOP.HW : ROAD_HW;  // the loop corridor is narrower than the highway
 }
 
@@ -3564,18 +3581,33 @@ function step(dt){
   gunnerHit=Math.max(0,gunnerHit-dt);
   gunnerKill=Math.max(0,gunnerKill-dt);
 
-  // keep the player inside the frame with soft walls ahead and behind (no damage -
-  // the "keep moving" pressure comes from the enemies)
+  // Keep the player inside the frame, softly (no damage - the "keep moving"
+  // pressure comes from the enemies). This used to stop the car dead on the line
+  // and rewrite its velocity, which felt like hitting a wall. Now the line is a
+  // spring: you overshoot it a little and it eases you back.
+  //
+  // It being a FORCE rather than a teleport is the other half of the point. The
+  // old version wrote position and velocity straight into the car after the
+  // physics had run, which is what left a spun car with a velocity it had never
+  // earned and no way to drive out of - see the stuck-car notes. The car's
+  // velocity is its own now; the frame only ever pushes on it.
   if(!me.dead){
-    if(vertical){
-      // forward is -y; camera climbs at -camV, so holding station means vy ~= -camV
-      const rel = me.y - cam.y;
-      if(rel < -FRONT_MAX){ me.y = cam.y - FRONT_MAX; if(me.vy < -camV) me.vy = -camV; }
-      if(rel >  BACK_EDGE){ me.y = cam.y + BACK_EDGE; if(me.vy > -camV) me.vy = -camV*0.6 + me.vy*0.4; }
-    } else {
-      const rel = me.x - cam.x;
-      if(rel > FRONT_MAX){ me.x = cam.x + FRONT_MAX; if(me.vx>camV) me.vx = camV; }
-      if(rel < -BACK_EDGE){ me.x = cam.x - BACK_EDGE; if(me.vx < camV) me.vx = camV*0.6 + me.vx*0.4; }
+    const rel  = vertical ? (cam.y - me.y) : (me.x - cam.x);    // + = ahead of the camera
+    const relV = vertical ? (-me.vy - camV) : (me.vx - camV);   // how fast that gap is opening
+    const over = rel >  FRONT_MAX ? rel - FRONT_MAX
+               : rel < -BACK_EDGE ? rel + BACK_EDGE : 0;        // signed, 0 while inside
+    if(over){
+      // The spring stiffens the further out you are. A flat rate loses its tug of
+      // war with the speed controller - hold S and you would slide the whole way
+      // to the backstop and sit on it, which is the hard stop all over again. This
+      // way the first few units are soft and it firms up until nothing gets there.
+      const t = Math.abs(over)/WALL_MAX;
+      const a = -WALL_K*(1 + 6*t*t)*over - WALL_C*relV;
+      if(vertical) me.vy -= a*dt; else me.vx += a*dt;
+      if(Math.abs(over) > WALL_MAX){            // backstop, far past where the spring turns you
+        const cap = over > 0 ? FRONT_MAX + WALL_MAX : -BACK_EDGE - WALL_MAX;
+        if(vertical) me.y = cam.y - cap; else me.x = cam.x + cap;
+      }
     }
   }
 
