@@ -339,6 +339,39 @@ const PALETTE = [
   { name:'MANDIOCA',body:'#e0b73c' }
 ];
 
+// Enemy types, one per model/colour the spawner already uses. Everything that
+// makes them read differently hangs off here: how big they are, how tough, how
+// fast relative to the pace of the road, and which end they come from.
+//   1 VULTURE  blue    BATEDOR - 10% menor, rapido, frágil; vem por tras, ultrapassa
+//                                 pelo lado e so entao parte pra cima de voce
+//   2 GRAVA    green   SOLDADO - tamanho normal, o que persegue por tras
+//   3 MANDIOCA yellow  TANQUE  - 10% maior, lento, derrapa, e explode
+//
+// `size` is the size we WANT relative to the player's car. The meshes are not the
+// same size as each other to begin with (blue 35.5 wide, green 28, yellow 30.5),
+// so asking for 0.9 directly would have left the blue one still looking the
+// biggest. makeCar divides by the mesh's own width, so these numbers land on
+// screen as written.
+const ENEMY_TYPE = {
+  1: { kind:'batedor', size:0.90, hp:0.75, pace:1.10, from:'back'  },
+  2: { kind:'soldado', size:1.10, hp:1.00, pace:1.00, from:'back'  },
+  3: { kind:'tanque',  size:1.10, hp:1.00, pace:0.90, from:'front' }
+};
+
+// natural width of a model's mesh, so `size` above can mean what it says
+const MESH_W = {};
+function meshWidth(m){
+  const k = m % MODELS.length;
+  if(MESH_W[k] == null){
+    let x0=9e9, x1=-9e9;
+    for(const f of MODELS[k]) for(const v of f.v){ if(v[0]<x0) x0=v[0]; if(v[0]>x1) x1=v[0]; }
+    MESH_W[k] = x1-x0;
+  }
+  return MESH_W[k];
+}
+const PURSUE_SQUAD = 4;            // greens working the player at once; the rest queue
+const BOMB_DMG = 46, BOMB_R = 96;  // what the yellow one lets go when it dies
+
 // ---------------------------------------------------------------- track
 // Straight survival band OR the loop race track. TRK.HW is the corridor half-width
 // (set per stage). LOOP is the reused superellipse map from the GUNNER build.
@@ -422,11 +455,18 @@ function hazardAt(x,y,r){
 
 function makeCar(id, isPlayer, x, y, angle, model){
   const pal = PALETTE[model % PALETTE.length];
+  // survival only - the loop race's rivals stay plain cars, same size, same hull,
+  // and emphatically not carrying explosives
+  const t = (isPlayer || race) ? null : ENEMY_TYPE[model];
+  const scale = t ? (meshWidth(0)*t.size)/meshWidth(model) : 1;
+  const hp = CAR_HP*(t ? t.hp : 1);
   return {
     id, name:pal.name, isPlayer, model,
     color:pal.body, dark:shade(pal.body,0.45), light:shade(pal.body,1.35),
     x, y, vx:0, vy:0, angle,
-    hp:CAR_HP, maxHp:CAR_HP, frags:0, deaths:0,
+    etype: t ? t.kind : 'player',
+    scale, rad: 14*scale, pace: t ? t.pace : 1,
+    hp, maxHp:hp, frags:0, deaths:0,
     cool:0, mcool:0, minecool:0, missiles:2, minesLeft:1,
     gunHeat:0, gunRest:0,          // enemy submachine overheat (see fireCannon)
     dead:false, respawn:0, invuln:1.4,
@@ -526,7 +566,10 @@ function spawnEnemy(){
   if(enemies >= enemyCap()) return;
   const aheadBias = clamp(0.72 - wave*0.03, 0.45, 0.72);   // more pursuers as it heats up
   const charger = Math.random() < aheadBias;
-  const model = 1 + (Math.random()*3|0);                    // 1..3, never the player's orange
+  // the side picks the type, not the other way round, so the ahead/behind mix
+  // stays the tuned one: the two front-runners are blue and yellow, and green is
+  // the only thing that comes up behind you
+  const model = charger ? 3 : (Math.random()<0.45 ? 1 : 2);
   const lat = rnd(-ROAD_HW+26, ROAD_HW-26);
   const reach = vertical ? VHH/KY : VHW;                    // how far up/along the road you see
   const spd = charger ? (150 + wave*6 + rnd(0,40)) : (camV + 40 + wave*3);
@@ -556,6 +599,14 @@ function updateSpawner(dt){
     spawnEnemy();
     spawnT = Math.max(0.5, 2.0 - wave*0.12) * rnd(0.7,1.3);
   }
+  // Rank the tail chasers by who is closest, so only PURSUE_SQUAD of them press
+  // the attack and the overflow forms its own pack (see aiPursue).
+  const tail = [];
+  for(let i=1;i<cars.length;i++) if(!cars[i].dead && cars[i].etype==='soldado') tail.push(cars[i]);
+  const me0 = cars[0];
+  tail.sort((a,b)=>Math.hypot(a.x-me0.x,a.y-me0.y)-Math.hypot(b.x-me0.x,b.y-me0.y));
+  for(let i=0;i<tail.length;i++){ tail[i].rank=i; tail[i].squad=(i/PURSUE_SQUAD)|0; }
+
   // cull anything well past the edges of the frame (never the player at index 0)
   const reach = vertical ? VHH/KY : VHW;
   for(let i=cars.length-1;i>=1;i--){
@@ -744,9 +795,12 @@ function damage(c, amount, ownerId){
   if(c.hp<=0){
     c.hp=0; c.dead=true; c.respawn=2.6; c.deaths++;
     const dz = c.deathZ || 0, dclip = c.deathClip || null, sp = dclip ? 0.45 : 1;
+    // the yellow one is a bomb on wheels - its wreck is the weapon
+    const bomb = c.etype === 'tanque' && !dclip;
     // down a hole the blast cannot spread outward, so it spreads across the
     // lower plane instead and vents back up through the mouth
-    explode(c.x,c.y,1.2,null,0,dclip ? dclip.r*0.9 : 10,{z:dz, clip:dclip});
+    explode(c.x, c.y, bomb?2.4:1.2, null, bomb?BOMB_DMG:0,
+            dclip ? dclip.r*0.9 : (bomb?BOMB_R:10), {z:dz, clip:dclip});
     particles(c.x,c.y,dz+6,dclip?20:14,{col:[c.color,'#ffd27a','#3a3040'],
       spd0:60*sp,spd1:220*sp,size:3,life0:0.4,life1:1.0,floor:dz,clip:dclip});
     if(dclip){
@@ -902,7 +956,15 @@ function updateCar(c, dt){
   // flat 232 against a 214 scroll leaves 18 units/s of headroom and the target
   // can never be met. The player only, and the survival stages only - enemies and
   // the loop race keep the fixed 232, since this is about the frame, not racing.
-  const MAXF = (c.isPlayer && !race) ? Math.max(232, camV + CRUISE_BAND + 12) : 232;
+  // The player's top end rises with the scroll. An enemy's is its pace times the
+  // standard 232, so a soldado is exactly the car it always was and the other two
+  // sit 10% either side of it.
+  //
+  // This used to key off camV and skip any car whose pace was 1, which meant the
+  // soldado kept a flat 232 while the batedor got camV*1.1 - 165 early in a run.
+  // The quick one was comfortably the slowest of the three for most of a game.
+  const MAXF = c.isPlayer ? (race ? 232 : Math.max(232, camV + CRUISE_BAND + 12))
+             : (race ? 232 : 232*c.pace);
   const MAXR=95, ACC=330;
   const SPIN_FREE = 60*Math.PI/180;   // past this you are being spun, not driving
   const SPIN_RIGHT = 2.2;             // rad/s the latched righting turns you back
@@ -911,7 +973,9 @@ function updateCar(c, dt){
   fwd -= fwd*0.7*dt;
   fwd = clamp(fwd, -MAXR, MAXF);
 
-  const grip = brake ? 1.7 : 6.4;
+  // the big one is loose at the back: it washes out sideways and takes a moment to
+  // gather itself up, which is what makes it something to dodge rather than fight
+  const grip = brake ? 1.7 : (c.etype==='tanque' ? 3.4 : 6.4);
   lat -= lat*Math.min(1, grip*dt);
 
   const turnAuth = clamp(Math.abs(fwd)/70, 0, 1);
@@ -959,7 +1023,7 @@ function updateCar(c, dt){
   c.vy = fy0*fwd + fx0*lat;
   c.x += c.vx*dt; c.y += c.vy*dt;
 
-  const impact = blockCollide(c, 14, true);
+  const impact = blockCollide(c, c.rad||14, true);
   if(impact>140){ Snd.crash(); damage(c, impact*0.035, null);
     particles(c.x,c.y,6,4,{col:['#ffe9a8','#9a8aa0'],spd0:20,spd1:90,size:2,life0:0.1,life1:0.3}); }
   if(c.hitBlock && c.hitBlock.type==='barrel'){ c.hitBlock.hp-=impact*0.2; if(c.hitBlock.hp<=0) popBarrel(c.hitBlock,c.id); c.hitBlock=null; }
@@ -1047,8 +1111,11 @@ function carVsCar(dt){
     const a=cars[i], b=cars[j];
     if(a.dead||b.dead) continue;
     const dx=b.x-a.x, dy=b.y-a.y, d=Math.hypot(dx,dy);
-    if(d<26 && d>0.01){
-      const nx=dx/d, ny=dy/d, push=(26-d)/2;
+    // contact distance is the two cars' own sizes now, not a flat 26 (which is
+    // what the -2 keeps it at for a pair of standard ones)
+    const touch = (a.rad||14)+(b.rad||14)-2;
+    if(d<touch && d>0.01){
+      const nx=dx/d, ny=dy/d, push=(touch-d)/2;
       a.x-=nx*push; a.y-=ny*push; b.x+=nx*push; b.y+=ny*push;
       const rel=(b.vx-a.vx)*nx + (b.vy-a.vy)*ny;
       if(rel<0){
@@ -1057,6 +1124,9 @@ function carVsCar(dt){
         if(a.isPlayer) [aix,aiy]=playerImpulse(a,aix,aiy,true);
         if(b.isPlayer) [bix,biy]=playerImpulse(b,bix,biy,true);
         a.vx+=aix; a.vy+=aiy; b.vx+=bix; b.vy+=biy;
+        // touching the player sets the bomb truck off where it stands
+        const bt = a.etype==='tanque' ? a : b.etype==='tanque' ? b : null;
+        if(bt && (a.isPlayer || b.isPlayer) && !bt.dead) damage(bt, 9999, null);
         if(-rel>150){
           Snd.crash(); cam.shake=Math.min(6,cam.shake+1.5);
           // ramming damage favours whoever was moving into the hit
@@ -1084,7 +1154,8 @@ function aiThink(c, dt){
     return;
   }
   if(mode==='convoy'){
-    if(c.role==='charger') aiCharge(c, dt);
+    if(c.etype==='batedor') aiFlank(c, dt);
+    else if(c.role==='charger') aiCharge(c, dt);
     else aiPursue(c, dt);
     return;
   }
@@ -1105,11 +1176,65 @@ function aiCharge(c, dt){
   if(lat >  ROAD_HW*0.78) want = base + (vertical ? 0.35 : 0.35);
   if(lat < -ROAD_HW*0.78) want = base - (vertical ? 0.35 : 0.35);
   c.aiSteer = clamp(angDiff(c.angle, want)*2.0, -1, 1);
+  // and it fishtails as it comes, so its line is never quite the one you read
+  if(c.etype==='tanque') c.aiSteer = clamp(c.aiSteer + Math.sin(c.wander*2.3)*0.55, -1, 1);
   c.aiThrottle = 1;
   c.aiBrake = false;
   const aim = angDiff(c.angle, Math.atan2(me.y-c.y, me.x-c.x));
   const dist = Math.hypot(me.x-c.x, me.y-c.y);
   if(Math.abs(aim)<0.14 && dist<320 && Math.random()<0.25) fireCannon(c);
+}
+
+// batedor: comes up from behind, but it will not sit on your bumper. It picks a
+// side, runs past you down that side - it has the legs for it, being the quick one
+// - and only once it is level or ahead does it turn in and work you over. Being
+// overtaken and then met head-on is the shape of it.
+const FLANK_OFF = 78;              // how wide it swings to go round you
+const BLOCK_LEAD = 70;             // how far in front it sits once it is there
+function aiFlank(c, dt){
+  const me = cars[0];
+  // forward and lateral unit vectors for this stage
+  const fx = vertical ? 0 : 1,  fy = vertical ? -1 : 0;
+  const sx = vertical ? 1 : 0,  sy = vertical ? 0 : 1;
+  // which side to go round; swap if this one is running out of road
+  if(!c.flankSide) c.flankSide = Math.random()<0.5 ? -1 : 1;
+  const lat = vertical ? c.x : c.y;
+  if(lat*c.flankSide > ROAD_HW*0.72) c.flankSide = -c.flankSide;
+
+  const gap = (me.x-c.x)*fx + (me.y-c.y)*fy;     // + while the player is still ahead
+  // Latched, with a wide gap between the two thresholds. Without that it flipped
+  // state every time the gap crossed one number and just weaved around him
+  // forever, never settling into either job.
+  if(gap < 30)  c.flankDone = 1;                 // through - stop overtaking
+  if(gap > 220) c.flankDone = 0;                 // lost him again - go round afresh
+  const passing = !c.flankDone;
+
+  let tx, ty, thr = 1;
+  if(passing){
+    // aim past him, out on our side: it has the legs to get there
+    const lead = gap + 150;
+    tx = me.x + fx*lead + sx*c.flankSide*FLANK_OFF;
+    ty = me.y + fy*lead + sy*c.flankSide*FLANK_OFF;
+  } else {
+    // through, so now shut the door: sit in his lane just ahead and come off the
+    // throttle, which is the "fecha voce pela frente" half of it
+    tx = me.x + fx*BLOCK_LEAD;
+    ty = me.y + fy*BLOCK_LEAD;
+    thr = 0.82;
+  }
+  let want = Math.atan2(ty-c.y, tx-c.x);
+  if(lat >  ROAD_HW*0.82) want -= 0.4;
+  if(lat < -ROAD_HW*0.82) want += 0.4;
+  const diff = angDiff(c.angle, want);
+  c.aiSteer = clamp(diff*2.3, -1, 1);
+  c.aiThrottle = thr;
+  c.aiBrake = false;
+  // It takes any shot it gets, in either phase. Gating this on having finished the
+  // overtake meant it never fired at all: once it is in front and shutting the
+  // door, the player is behind it, and the gun only points down the nose.
+  const dist = Math.hypot(me.x-c.x, me.y-c.y);
+  const aim  = angDiff(c.angle, Math.atan2(me.y-c.y, me.x-c.x));
+  if(Math.abs(aim)<0.5 && dist<300 && Math.random()<0.45) fireCannon(c);
 }
 
 // pursuer: run the player down from behind and ram or shoot. Reuses the arena
@@ -1119,6 +1244,16 @@ function aiPursue(c, dt){
   const dx=me.x-c.x, dy=me.y-c.y, dist=Math.hypot(dx,dy);
   const lead=clamp(dist/430,0,1);
   let want=Math.atan2(me.y+me.vy*0.3*lead - c.y, me.x+me.vx*0.3*lead - c.x);
+  // Past the first PURSUE_SQUAD of them (ranked by who is closest) a green stops
+  // working the player and forms up in its own pack further back, spread across
+  // the road, waiting for a place to open. You get waves rather than a scrum on
+  // the bumper, and the ones holding back still read as hunting you.
+  if(c.squad > 0){
+    const back = 200 + c.squad*150, side = ((c.rank % PURSUE_SQUAD) - 1.5)*60;
+    const hx = me.x + (vertical ? side : -back);
+    const hy = me.y + (vertical ? back : side);
+    want = Math.atan2(hy - c.y, hx - c.x);
+  }
   if(dist<130){
     c.closeT=(c.closeT||0)+dt;
     if(c.closeT>3.0){ c.closeT=0; c.orbitDir=-(c.orbitDir||1); }
@@ -2014,7 +2149,8 @@ function rasterCar(sctx, mesh, yaw, col, flash, fw, fh, ax, ay, ky, kz, vsc){
 let CAR2D = new Map();
 function bakeCarSprites(c){
   const n = 32;
-  const fw = Math.ceil(52*S), fh = Math.ceil(52*S);
+  const sc = c.scale || 1;
+  const fw = Math.ceil(52*S*sc), fh = Math.ceil(52*S*sc);
   const ax = Math.round(fw/2), ay = Math.round(fh*0.62);
   const key = (c.model||0)+'|'+c.color;
   const cached = CAR2D.get(key);
@@ -2081,6 +2217,15 @@ function drawCar(c){
   ctx.fillStyle='rgba(10,7,14,.75)'; ctx.fillRect(p.x-w/2-S, p.y-24*S, w+2*S, 4*S);
   ctx.fillStyle = c.hp>50?'#4ade80':c.hp>25?'#e0b73c':'#f0503c';
   ctx.fillRect(p.x-w/2, p.y-23*S, hpw, 2*S);
+  // dev mode: say out loud which type each car actually is, so a disagreement
+  // about which colour is which can be settled by looking instead of guessing
+  if(devMode && !c.isPlayer && c.etype){
+    ctx.save();
+    ctx.font='bold '+Math.round(7*S)+'px monospace'; ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.fillStyle='rgba(10,7,14,.8)'; ctx.fillRect(p.x-20*S, p.y-34*S, 40*S, 9*S);
+    ctx.fillStyle=c.color; ctx.fillText(c.etype.toUpperCase(), p.x, p.y-26*S);
+    ctx.restore();
+  }
   if(c.isPlayer){
     ctx.fillStyle='#fff';
     ctx.beginPath();
@@ -2814,7 +2959,8 @@ function bakeFpsSprites(c){
   const key = (c.model||0)+'|'+c.color;
   const hit = FPS_SHEETS.get(key);
   if(hit) return hit;
-  const n=32, fw=52, fh=52, ax=fw/2, ay=Math.round(fh*0.62);
+  const sc = c.scale || 1;
+  const n=32, fw=Math.ceil(52*sc), fh=Math.ceil(52*sc), ax=fw/2, ay=Math.round(fh*0.62);
   const mesh = MODELS[(c.model||0) % MODELS.length];
   const cvs=document.createElement('canvas');
   cvs.width=fw*n; cvs.height=fh*2;
