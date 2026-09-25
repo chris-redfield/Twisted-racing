@@ -808,9 +808,17 @@ function updateCar(c, dt){
     } else {
       // survival: you sit at a cruise pace and W/S trim it within a band; your
       // position in the frame is the speed you chose.
+      //
       const fwdNow = c.vx*Math.cos(c.angle) + c.vy*Math.sin(c.angle);
       const boost = held('KeyW') ? 1 : held('KeyS') ? -1 : 0;
-      const targetF = clamp(camV + boost*CRUISE_BAND, 60, 240);
+      // The ceiling follows the scroll. It used to be a flat 240 while camV ramps
+      // to CAM_VMAX = 214, so the FORWARD half of the band evaporated as a run
+      // went on - W was worth +59 over the camera at the start and +7 by full
+      // pace, while S kept its whole -85 throughout. That asymmetry is the "it
+      // won't accelerate any more": late in a run the car brakes fine and will
+      // not pull. Nothing else about the controller changes - it still measures
+      // along the nose, still has no feed-forward, so the hand of it is the same.
+      const targetF = Math.max(60, camV + boost*CRUISE_BAND);
       throttle = clamp((targetF - fwdNow)/40, -1, 1);
     }
     // the gun rides in every stage now (2P gunner, or the solo driver on mouse/arrows)
@@ -824,7 +832,14 @@ function updateCar(c, dt){
   let fwd = c.vx*fx0 + c.vy*fy0;
   let lat = -c.vx*fy0 + c.vy*fx0;
 
-  const MAXF=232, MAXR=95, ACC=330;
+  // ...and the top speed with it, or the raised ceiling above is unreachable: a
+  // flat 232 against a 214 scroll leaves 18 units/s of headroom and the target
+  // can never be met. The player only, and the survival stages only - enemies and
+  // the loop race keep the fixed 232, since this is about the frame, not racing.
+  const MAXF = (c.isPlayer && !race) ? Math.max(232, camV + CRUISE_BAND + 12) : 232;
+  const MAXR=95, ACC=330;
+  const SPIN_FREE = 60*Math.PI/180;   // past this you are being spun, not driving
+  const SPIN_RIGHT = 2.2;             // rad/s the latched righting turns you back
   if(throttle>0) fwd += ACC*dt*throttle;
   else if(throttle<0) fwd += (fwd>0 ? -520 : -260)*dt*Math.abs(throttle);
   fwd -= fwd*0.7*dt;
@@ -835,6 +850,44 @@ function updateCar(c, dt){
 
   const turnAuth = clamp(Math.abs(fwd)/70, 0, 1);
   c.angle += steer * 2.75 * dt * turnAuth * (fwd<0?-1:1) * (brake?1.25:1);
+
+  // SPIN RECOVERY - survival stages, player only. See PROJECT.md 2026-09-24.
+  //
+  // Spun past broadside while the soft wall holds you, the car used to be
+  // permanently undriveable: the wall rewrites world velocity every frame after
+  // the physics step, so `fwd` stops meaning what the car is doing, and `fwd` is
+  // what both the throttle controller and the steering sign are built on. Five
+  // fixes aimed at those three - throttle model, authority floor, auto-recovery -
+  // all failed, two of them made it worse.
+  //
+  // This one works on the HEADING instead, which is the one quantity the wall
+  // never touches: it is kinematic, so no amount of velocity nonsense can stop
+  // it. Past SPIN_FREE off the road axis the car rights itself, easing in over
+  // the next SPIN_RAMP so there is no step at the threshold. Under SPIN_FREE
+  // nothing happens at all, and you never drive a survival stage broadside on
+  // purpose - the gun turns 360 on its own, so there is no reason to turn the car
+  // around - which is what keeps ordinary weaving and dodging unassisted.
+  if(c.isPlayer && !race){
+    const toAxis = angDiff(c.angle, vertical ? -Math.PI/2 : 0);
+    const off = Math.abs(toAxis), sgn = toAxis<0 ? -1 : 1;
+    // A LATCH, not a permanent assist. Going past SPIN_FREE arms it; from then on
+    // it rights the car all the way home and only then lets go. Below the
+    // threshold with the latch clear it does nothing whatsoever, which is what
+    // keeps ordinary driving bit-for-bit the way it always was - no self-centring
+    // under your hands, no resistance to a turn.
+    //
+    // Righting all the way home is what makes the rest unnecessary. An earlier
+    // version eased out AT the threshold and parked the car there driving
+    // diagonally, which cost half its road speed; chasing that crawl is what led
+    // to re-modelling the throttle, and re-modelling the throttle is what made
+    // the driving feel wrong. Fix the heading properly and the throttle never
+    // needs touching.
+    if(off > SPIN_FREE) c.spinFix = 1;
+    if(c.spinFix){
+      if(off < 0.15) c.spinFix = 0;                      // home: hand it back
+      else c.angle += sgn * Math.min(SPIN_RIGHT*dt, off);
+    }
+  }
 
   c.vx = fx0*fwd - fy0*lat;
   c.vy = fy0*fwd + fx0*lat;
