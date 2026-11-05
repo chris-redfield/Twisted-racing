@@ -55,8 +55,8 @@ let street = false;              // STREET only (free drive, park, walk)
 //  STREET_ENEMIES - run ASCENT's spawner. The scroll still never forces, so with
 //                   this on the enemies keep coming while you are parked or on
 //                   foot, and can run you over (WALK_HP).
-//  WALK_ARMED     - a sidearm on foot: click / Up fires through fireCannon from
-//                   the walker (see walkFire).
+//  WALK_ARMED     - a sidearm on foot: click / SPACE fires through fireCannon
+//                   from the walker (see walkFire). Up/Down are the look keys.
 const STREET_ENEMIES = false;
 const WALK_ARMED     = false;
 // Half-width of the drivable band (walls at +/-ROAD_HW). Per stage, set in
@@ -2694,6 +2694,10 @@ const CITY_IN    = ROAD_HW + 6;     // lots start just past the barrier
 const CITY_XST   = 92;              // the cross street at the top of every chunk
 const CITY_OUTR  = 78;              // the road down the strip's outer edge
 const CITY_ROADS = [86, 70, 58, 50];// road width by depth of cut: avenues first, lanes last
+// ...but never under CITY_ROAD_MIN. The 50s and 58s were too tight to drive, in
+// both directions alike (measured: both axes went down to 50), so the deep cuts
+// now all come out at 70 - the same as the first lane-sized cut.
+const CITY_ROAD_MIN = 70;
 const LOT_MIN = 150, LOT_MAX = 440, LOT_STOP = 0.3, LOT_JITTER = 0.75;
 const LOT_ASPECT = 1.5, LOT_MERGE = 0.3, LOT_MERGE_MAX = 560;
 const PAVE = 16;                    // pavement ring round every block
@@ -2719,7 +2723,7 @@ function cityRng(seed){
            pick: arr => arr[(next()*arr.length)|0] };
 }
 const snap4 = v => Math.round(v/4)*4;
-const cityRoadW = d => CITY_ROADS[Math.min(d, CITY_ROADS.length - 1)];
+const cityRoadW = d => Math.max(CITY_ROAD_MIN, CITY_ROADS[Math.min(d, CITY_ROADS.length - 1)]);
 
 // the party's cut(), with x = u. `pad` is the road width on each side of the
 // piece, so a road laid across it runs into the roads at both ends.
@@ -3900,6 +3904,7 @@ function updateTurret(c, dt){
   if(held('ArrowDown') || mouseFire2) fireMissile(c);
 }
 
+let aimDY=0;                       // locked-mouse vertical movement, on foot (look up/down)
 let aimDX=0, mouseSX=0, mouseSY=0, mouseIn=false, mouseFire=false, mouseFire2=false;
 function pointerLocked(){ return typeof document!=='undefined' && document.pointerLockElement===cv; }
 function bindGunnerMouse(){
@@ -3911,6 +3916,7 @@ function bindGunnerMouse(){
     mouseIn=true;
     // 2P: accumulate raw mouse movement while the pointer is locked (FPS aim)
     if((numPlayers===2 || onFoot) && pointerLocked()) aimDX += e.movementX||0;
+    if(onFoot && pointerLocked()) aimDY += e.movementY||0;
   });
   cv.addEventListener('mouseleave', ()=>{ mouseIn=false; mouseFire=false; mouseFire2=false; });
   cv.addEventListener('mousedown', e=>{
@@ -3962,7 +3968,14 @@ const ENTER_R = 34;                  // how close to the car E puts you back in
 const CAR_HL = 19, CAR_HW = 10;      // the player's car as a box, for walking into it
 const WALK_HP = 40;                  // for STREET_ENEMIES: a person is not a car
 let onFoot = false;
-const walker = { x:0, y:0, a:0, hp:WALK_HP, bob:0, moving:0, t:0 };
+const walker = { x:0, y:0, a:0, pitch:0, hp:WALK_HP, bob:0, moving:0, t:0 };
+// Looking up and down, after C:\proj\ascii-city: a "shift", not a tilt. The
+// camera stays level and the horizon slides by RC_VD*tan(pitch), so every
+// screen column is still a world-vertical plane - which is all this raycaster
+// knows how to draw - and tall buildings don't splay outward as you look up
+// at them (the bug ascii-city had with a real tilt). Its walking limits too.
+const WALK_PITCH_UP = 0.78, WALK_PITCH_DOWN = -0.51;
+const WALK_PITCH_RATE = 1.4;         // rad/s, Up/Down arrows
 let walkMsg = '', walkMsgT = 0;
 const walkBld = [];
 
@@ -4030,6 +4043,11 @@ function updateWalker(dt){
   if(held('ArrowLeft'))  turn -= 1;
   if(held('ArrowRight')) turn += 1;
   w.a += turn*WALK_TURN*dt + aimDX*WALK_SENS; aimDX = 0;
+  let tilt = 0;
+  if(held('ArrowUp'))   tilt += 1;
+  if(held('ArrowDown')) tilt -= 1;
+  w.pitch = clamp(w.pitch + tilt*WALK_PITCH_RATE*dt - aimDY*WALK_SENS, WALK_PITCH_DOWN, WALK_PITCH_UP);
+  aimDY = 0;
   const TAU = Math.PI*2;
   w.a = ((w.a % TAU) + TAU) % TAU;
   // move: W/S along the view, A/D strafe. Right of heading a is (-sin a, cos a).
@@ -4049,7 +4067,7 @@ function updateWalker(dt){
     w.bob += dt*(run ? 13 : 9);
   }
   walkCollide(w);
-  if(WALK_ARMED && held('ArrowUp')) walkFire();
+  if(WALK_ARMED && held('Space')) walkFire();
 }
 
 // WALK_ARMED's hook. Off for now; the sidearm goes here.
@@ -4063,7 +4081,7 @@ function nearCar(){
 function toggleOnFoot(){
   const me = cars[0];
   if(!me || me.dead) return;
-  aimDX = 0;
+  aimDX = 0; aimDY = 0;
   if(!onFoot){
     if(Math.abs(me.speed||0) > EXIT_SPEED){ walkSay('STOP THE CAR FIRST'); return; }
     // out of the driver's door (the car's left), or the right if that is blocked
@@ -4077,7 +4095,7 @@ function toggleOnFoot(){
       if(Math.hypot(p.x - x0, p.y - y0) < 1){ walker.x = p.x; walker.y = p.y; placed = true; break; }
     }
     if(!placed){ walkSay('NO ROOM TO OPEN THE DOOR'); return; }
-    walker.a = me.angle; walker.bob = 0; walker.moving = 0; walker.hp = WALK_HP;
+    walker.a = me.angle; walker.pitch = 0; walker.bob = 0; walker.moving = 0; walker.hp = WALK_HP;
     onFoot = true;
     mouseFire = false; mouseFire2 = false;
     Snd.engineOff(); Snd.hit();
@@ -4094,13 +4112,15 @@ function toggleOnFoot(){
 // first person, whole screen
 function drawWalkView(){
   const w = walker;
-  const eye0 = EYE_Z;
+  const eye0 = EYE_Z, hz0 = RC_HORIZON;
   EYE_Z = WALK_EYE + (w.moving ? Math.sin(w.bob)*0.7 : 0);   // a little head bob
+  // look up = the horizon slides DOWN the screen (see WALK_PITCH_UP)
+  RC_HORIZON = Math.round(hz0 + RC_VD*Math.tan(w.pitch));
   buildConvoyRings(w.y, w.x, w.y, w.a);
   rcBackground(w.x, w.y, w.a);
   rcWalls(w.x, w.y, w.a);
   rcSprites(w.x, w.y, w.a);
-  EYE_Z = eye0;
+  EYE_Z = eye0; RC_HORIZON = hz0;
   const p = RC_PANE;
   ctx.save();
   ctx.imageSmoothingEnabled = false;
@@ -4142,7 +4162,7 @@ function drawWalkHUD(){
     centerText(msg, msg==='E  GET IN' ? '#4ade80' : '#e8d5b0', VH - 48, 8);
   }
   ctx.fillStyle='#5a4a5e';
-  centerText('WASD walk  .  MOUSE / ARROWS look  .  SHIFT run  .  E get in'+(pointerLocked()?'':'  .  click for mouse-look'),
+  centerText('WASD walk  .  MOUSE / ARROWS look (up too)  .  SHIFT run  .  E get in'+(pointerLocked()?'':'  .  click for mouse-look'),
              '#6a5a72', VH - 14, 8);
   if(showFps){
     ctx.fillStyle='#4ade80';
