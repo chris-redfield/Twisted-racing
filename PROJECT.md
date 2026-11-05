@@ -69,7 +69,15 @@ click/touch minigames on a CRT, and the first to 4 candies walks out. Design + j
   the table (couldn't move), end-of-game index crash (also hit haunted-vacuum — fixed there too).
   Queued next: Costume Party Murder.
 
-## NEXT SESSION STARTS HERE (2026-11-05) — STREET city: add car enemies (task 2)
+## NEXT SESSION STARTS HERE (2026-11-05) — the definitive game, `index.html`
+
+**Read `HANDOFF.md` first** (top entry: the plan, where every piece lives, the corner problem,
+the open questions, and a ready prompt). In short: a new `index.html` forked from
+`scrapheap-madmax-city.html` - START GAME menu from the-party in cyberpunk colours, then one run:
+horizontal survival -> a 90-degree curve (checkpoint) -> vertical survival -> the BSP city with
+walking. The car-enemies-by-density task below is folded into part 3 of that plan.
+
+### (superseded) STREET city: add car enemies (task 2)
 
 Work is in **`scrapheap-madmax-city.html`** (title option 4 STREET, solo). Uncommitted at handoff -
 check `git status`. Done and validated by him: BSP city strip, streets >= 70, four-wall buildings,
