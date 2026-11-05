@@ -7,10 +7,90 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-05 | [NEXT: the definitive game (`index.html`)](#2026-11-05--next-the-definitive-game-indexhtml) | plan, start here |
+| 2026-11-06 | [index.html: the city joined on (steps 2+3)](#2026-11-06--indexhtml-the-city-joined-on-steps-23) | built, start here |
+| 2026-11-05 | [index.html step 1: menu, leg 1, the corner, leg 2](#2026-11-05--indexhtml-step-1-menu-leg-1-the-corner-leg-2) | built, played |
+| 2026-11-05 | [NEXT: the definitive game (`index.html`)](#2026-11-05--next-the-definitive-game-indexhtml) | plan (decisions below) |
 | 2026-11-05 | [STREET city: state of the build](#2026-11-05--street-city-state-of-the-build) | reference |
 | 2026-11-05 | [Raycaster + ASCII performance](#2026-11-05--raycaster--ascii-performance) | reference |
 | 2026-11-04 | [STREET: walk, then a BSP city](#2026-11-04--street-walk-then-a-bsp-city) | summary |
+
+---
+
+## 2026-11-06 — index.html: the city joined on (steps 2+3)
+
+He played step 1 to the end ("this is getting good"). Asked: join leg 2 to the city with **no
+screen transition**, park and walk, **enemy cars still present and able to enter the small
+roads**, and **one key that removes the enemies and brings them back**. Built, not yet played.
+
+- **The gate** is leg 2's end rounded on to a city chunk edge (`ROAD.gateY` = -19600,
+  `cityLimitY`). `cityChunks/cityGround` stop there; a wall runs along the city's south edge and
+  the highway is shut `CITY_BACK` 2400 behind it (out of sight). Leg 2's lots stop at the gate.
+- **The handover** fires when your CAR crosses the gate (`runEvents` -> `enterCity`): `street`
+  goes true mid-run, so STREET's free drive, city collision, E to walk all switch on. The city is
+  drawn ahead the whole of leg 2's end (run draws both worlds). The camera hands over over
+  `CITY_CAM_EASE` 2.4 s: a lagging follow point started at its steady lag + the scroll's offset
+  eased out - measured smooth (no lurch, no stall).
+- **Hunters**: every enemy uses `aiCity` in the city. Pathing is a **flow field** (`FLOW`, BFS over
+  a 170x20u grid round the target, through streets/pavement, across the barrier only at gaps;
+  3.5 ms per rebuild every 0.35 s). They follow it downhill, ram, shoot when lined up with a clear
+  line. Stuck -> reverse 0.7 s. `citySpawner` keeps `CITY_ENEMIES` 6 around you (900-1500 out,
+  off screen), culls past 2600. Leg-2 chasers follow you in (up to 9 at entry).
+- **On foot** they hunt the walker: shots (`WALK_SHOT_DMG`) and being run over (`WALK_RUNOVER`)
+  hurt; `WALK_HP` 40 bar on the walk HUD; death = "RUN DOWN". Dev mode protects the walker too.
+- **N** (`ENEMY_TOGGLE_KEY`) clears every enemy / brings them back, any part of the run.
+- **City checkpoint**: entering the city replaces the corner one; ENTER after a wreck puts you at
+  the gate in a fresh car.
+- New: `tools/oracle.js` (the bit-identical CONVOY/ASCENT check, now a permanent tool).
+
+**Verified:** oracle still identical; full run start -> city headless (handover 181.9 s, no NaN);
+9 distinct hunters reached a parked car in 25 s; walker hunted down with damage on; checkpoint;
+N both ways on leg 1 and in the city; screenshots of approach / crossing / city / on foot.
+
+**Rough / for him to judge:** hunter count and aggression; leg-2 rumble strips run across the
+city's barrier gaps; the city's south wall isn't in the first-person view; no WALK_ARMED yet
+(on foot you can only run); `cityGhost` see-through is per car, not per walker.
+
+---
+
+## 2026-11-05 — index.html step 1: menu, leg 1, the corner, leg 2
+
+**Built, not yet played by him.** `index.html` + **`config.js`** (new: every knob, loaded first as
+a plain script, so names are unchanged and modders edit one file). Fork of
+`scrapheap-madmax-city.html`, which is untouched.
+
+**His answers (2026-11-05):** legs ~90 s each · die after the corner → restart at the corner, full
+HP, unlimited · solo only · part 3 HAS car enemies (by density) in v1 · magenta `#ff2bd6` + cyan
+`#22f0ff` on `#07040f` · build order: (1) menu + legs + corner + checkpoint ← done, (2) city
+arrival, (3) city enemies · zoom: leg 1 keeps CONVOY's 0.8, ease to 0.72 through the bend;
+**if the ease looks bad, fix it at 0.8** (`RUN.ZOOM_V = 0.80` in config.js).
+
+**How the corner was solved:** the road is a path (`ROAD`, `makeRoad/roadFrame/roadPoint/
+roadProject`: s along, lat to the right, curvature k). Every `vertical ?` branch in survival code
+now works in (s, lat): scroll (`camS`, `camLat`, `placeCam`), soft walls, spawner + cull, pads,
+all three AIs, spin latch, collision (`trackProject` wraps `roadProject`), road/walls/posts/lots
+drawing. CONVOY and ASCENT are single-straight roads. `vertical` now only matters to STREET.
+- In the bend the scroll is measured in **your lane** (`laneScale`), else the outside line is
+  (R+180)/R longer. Corner radius `RUN.CORNER_R` 420, ~3.3 s.
+- Look-ahead along the road replaces ASCENT's `VCY_BIAS` (`RUN.VIEW_BIAS_V`), so it turns with it.
+- Zoom eases per frame via `setZoom` (no rescale). Car sheets are baked only at the two leg zooms
+  (`homeZoom`, `prebakeSheets` at run start; a bake is ~30 ms) and drawn scaled in between; ground
+  tiles use a pattern transform.
+- Walls: a stretch whose outward normal faces down-screen draws in front of the cars.
+- Inside-of-bend lots are dropped (bare dirt there - a rough edge).
+- No spawns within `RUN.QUIET` 650 of the bend. Entering the bend = `checkpoint` + banner.
+- End of leg 2 (`ROAD.gateS`) → "CITY AHEAD" over screen (placeholder for step 2).
+
+**Verified:** oracle - seeded bot runs of CONVOY and ASCENT are **bit-identical** to the old file
+(60 s dev, 120 s with damage). Path maths vs hand cases + 20k round trips (2e-12). Full run
+headless: leg 1 89.9 s, bend 3.3 s, leg 2 89.3 s, gate reached, no NaN. Checkpoint restart both
+ways. Real Chrome screenshots through the bend: it reads; scaled sprites fine.
+
+**For him to judge:** difficulty - waves reach 25 by the gate (spawner caps at wave 7/13, so leg 2
+is all max); zoom ease feel; menu font (bold monospace, not the party's Deathly face).
+Dev stages remain on the menu's digit keys 1-4 (not shown). DEV_MODE off by default (I toggles).
+
+**Next (step 2):** at `ROAD.gateS` hand over to STREET: stop scroll/spawner, turn on BSP chunks
+offset to start at the gate (leg 2 is on x = 0 like STREET's highway), E to walk.
 
 ---
 

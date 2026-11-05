@@ -71,6 +71,7 @@ click/touch minigames on a CRT, and the first to 4 candies walks out. Design + j
 
 ## NEXT SESSION STARTS HERE (2026-11-05) — the definitive game, `index.html`
 
+**Step 1 is BUILT** (`index.html` + `config.js`, see HANDOFF.md top entry); next is step 2, the city.
 **Read `HANDOFF.md` first** (top entry: the plan, where every piece lives, the corner problem,
 the open questions, and a ready prompt). In short: a new `index.html` forked from
 `scrapheap-madmax-city.html` - START GAME menu from the-party in cyberpunk colours, then one run:

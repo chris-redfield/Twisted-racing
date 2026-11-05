@@ -59,7 +59,11 @@ function load(file){
   sandbox.window = sandbox; sandbox.globalThis = sandbox;
 
   const html = fs.readFileSync(file, 'utf8');
-  const code = /<script>\n([\s\S]*)\n<\/script>/.exec(html)[1];
+  // external classic scripts (e.g. config.js) run first, in the same global scope
+  const dir = pathmod.dirname(pathmod.resolve(file));
+  const ext = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)]
+    .map(m => fs.readFileSync(pathmod.join(dir, m[1]), 'utf8')).join('\n;\n');
+  const code = ext + '\n;\n' + /<script>\n([\s\S]*)\n<\/script>/.exec(html)[1];
   vm.createContext(sandbox);
   // top-level let/const stay in script scope, so open an eval hatch into it
   vm.runInContext(code + '\n;globalThis.__e = s => eval(s);', sandbox, { filename: pathmod.basename(file) });
