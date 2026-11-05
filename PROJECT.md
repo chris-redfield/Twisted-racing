@@ -69,7 +69,23 @@ click/touch minigames on a CRT, and the first to 4 candies walks out. Design + j
   the table (couldn't move), end-of-game index crash (also hit haunted-vacuum — fixed there too).
   Queued next: Costume Party Murder.
 
-## NEXT SESSION STARTS HERE — convoy is playable; tune it
+## NEXT SESSION STARTS HERE (2026-11-05) — STREET city: add car enemies (task 2)
+
+Work is in **`scrapheap-madmax-city.html`** (title option 4 STREET, solo). Uncommitted at handoff -
+check `git status`. Done and validated by him: BSP city strip, streets >= 70, four-wall buildings,
+look up/down on foot, view distance `VIEW_D` 3600 (9/0 on foot), ASCII built on the CPU, raycaster
+`RC_DIRECT` + `RC_OCCLUDE` both on (the "together" mode; table in the session log).
+
+**Task 2, agreed, not started:** bring the CAR enemies back in STREET - no enemies on foot yet.
+Not ASCENT's endless spawner: a **density** of enemy cars per area of city, spawned as the player
+moves through the map (and culled when far). Hooks: `STREET_ENEMIES` switch, ASCENT's
+`spawnEnemy`/`updateSpawner`/`ENEMY_TYPE` (batedor/soldado/tanque), `WALK_HP` exists for being run
+over later. Open design points: the AI only knows the highway corridor (`aiCharge`/`aiFlank`/
+`aiPursue` steer on the `vertical` axis and `ROAD_HW`) - city streets need at least road-following
+or they will grind into buildings; `cityCollide` already handles cars vs buildings/barrier; each
+enemy is also a first-person billboard (cost is small, `rcSprites`). Ask him density numbers.
+
+## (older) convoy is playable; tune it
 
 All work is in `scrapheap-madmax-ascii.html` and committed through `c0fc25a`. He has been playing
 it each round and correcting by feel, which is how most of 2026-09-25 got decided — keep that loop.
