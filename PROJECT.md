@@ -33,9 +33,37 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
 - **`scrapheap-madmax-ascii.html` — experimental fork** of SCRAPHEAP (2026-09-23): ASCII P2 view
   (G cycles NORMAL / ASCII / ASCII SOLID, default SOLID) + roadside buildings in both views (B
   toggles). The canonical file is untouched; fold this in only once it's played and approved.
+- **`scrapheap-madmax-walk.html` — experimental fork** of the ASCII build (2026-11-04): adds a 4th
+  stage, **4 STREET** — solo, free drive up ASCENT's road (no scroll, no enemies), stop and press
+  **E** to get out and walk in full-screen first person among the roadside buildings. Not played yet.
 - `tools/headless.js` runs any build in node with a stubbed canvas.
 - `tools/shot.js` takes **real-browser screenshots** (Windows Chrome from WSL, `--screenshot` +
   virtual time; the game file is never modified). Shots land in `.shots/` (git-ignored).
+
+## GAME JAM (2026-09-25) — Halloween, separate game in `game-jam/`
+
+The jam theme (Halloween) doesn't fit SCRAPHEAP, so there's a new game, **TRICK OR TREAT**:
+a Saw-style duel. You and a rival (Dracula) are tied up in a basement, a masked host runs
+click/touch minigames on a CRT, and the first to 4 candies walks out. Design + jam scope:
+`game-jam/DESIGN.md` (section 0 overrides the rest). Build: `game-jam/trick-or-treat.html`.
+2 days, ~1.5 days of work. Dark comedy.
+
+- First playable: 5 minigames (Unwrap, Poison Sort, Bob, Count the Kids, Knock Knock),
+  TRICK (lights out / upside-down / shake, x2) vs TREAT (hidden nasty), escalation, both endings.
+- Headless bot (perfect accuracy) finishes all 5 in every match. Rival pace lives in `beginGame()`
+  (`f = 1.5 → 1.15` × target); **still needs tuning by a real human playing.**
+- `tools/headless.js` gained a `createRadialGradient` stub.
+- **Experiments (same folder, one file each):** `candy-dealer.html` — BUILT 2026-09-25 (Papers-Please
+  porch: candy / toothbrush / slam, tells via hall mirror + grandma's rules, 3 shifts). Bot: 100% right
+  choices always wins, 90% wins ~57%, 80% ~23%.
+  `haunted-vacuum.html` — BUILT 2026-09-25 (top-down Roomba vs ghosts, bin of 3 + battery → dock,
+  poltergeists throw china, cat on top). Pathfinding bot clears all 3 nights; a sloppy bot uses
+  40–60% of the 90 s night. Doorways are 70–80px on purpose (vacuum is 36 wide).
+  `last-candle.html` — BUILT 2026-09-25 (top-down dark room; wax = light radius = clock; candlelight
+  only SLOWS shades, lanterns/flare burn them). Full-loop bot title→3 nights→won→title passes; a
+  decent bot survives each night ~50%, standing still dies ~45 s. Bugs found+fixed: spawned inside
+  the table (couldn't move), end-of-game index crash (also hit haunted-vacuum — fixed there too).
+  Queued next: Costume Party Murder.
 
 ## NEXT SESSION STARTS HERE — convoy is playable; tune it
 
@@ -201,6 +229,35 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-11-04 — STREET: park the car and walk (fork `scrapheap-madmax-walk.html`)
+Forked from `scrapheap-madmax-ascii.html` (left untouched). New title option **4 STREET**, solo only
+(skips the setup screen; `startMatch` forces `numPlayers=1`). Decided with him: free drive, no
+enemies, unarmed on foot — but **both are coming**, so they sit behind two switches at the top:
+`STREET_ENEMIES` (ASCENT's spawner; enemies keep coming while you're parked/on foot, `WALK_HP` is
+already there for being run over) and `WALK_ARMED` (`walkFire()` is the empty hook; click and Up
+already route to it).
+
+- **Driving:** `street` reuses the vertical axis (`vertical` is true) but drives like the race:
+  W/S are a real throttle, no cruise band, no forced scroll, no spin latch (you can turn round).
+  Camera chases the car along the road. HUD shows `E GET OUT` once you're under `EXIT_SPEED` 25.
+- **On foot** (`onFoot`, `walker`, section "on foot (STREET)"): WASD walk/strafe, SHIFT run, mouse
+  look (pointer lock is grabbed on the E press — a key is a user gesture — or the first click) or
+  arrows. The car brakes to a halt and stays put; the driving camera stays on it. E within
+  `ENTER_R` 34 of the car gets back in. Top-left arrow + distance points at the car.
+- **View:** the gunner raycaster at full screen. `rcInit(pane)` now takes a pane (`RC_PANE`;
+  `PANE_FULL` = 320x180 casts), ascii sizes from it too. Eye at `WALK_EYE` 16 (`[` `]` tune it on
+  foot). Your own car becomes a billboard, unmagnified. Cost: 4.7 ms/frame vs 3.1 for the gunner pane.
+- **Barrier on foot is drawn 7 high (`WALK_BARRIER_H`), not 16** — at 16 it stood above a
+  person's eye and read as a wall you then walk through. Render-only; marked `low` so it doesn't
+  hide billboards. The driving pane and car collision never see it.
+- **Collision:** buildings are solid (STREET's are all axis-aligned, so circle-vs-box), radius
+  `WALK_R` 5; the parked car is an oriented box (`CAR_HL`/`CAR_HW`); the barrier is stepped over.
+  Headless: stops exactly 5 short of every building face, walks the alleys through to the far tier.
+  `WALK_LIM` 760 is an **invisible** side limit — give it something visible if it bothers.
+
+**Open:** nobody has walked it yet. Feel knobs: `WALK_SPD`/`RUN_SPD`, `WALK_EYE`, `WALK_SENS`.
+Up close the car billboard is chunky (half-res sprite); fine from ~40 out.
 
 ### 2026-09-25 — enemy types: batedor / soldado / tanque
 Three enemy kinds, hung off the model/colour the spawner already picked, in `ENEMY_TYPE`.

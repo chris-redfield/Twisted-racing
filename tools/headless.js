@@ -28,6 +28,7 @@ function makeCtx(){
   c.getImageData    = (x,y,w,h) => ({ width:w, height:h, data:new Uint8ClampedArray(w*h*4) });
   c.createPattern = () => ({});
   c.createLinearGradient = () => ({ addColorStop:noop });
+  c.createRadialGradient = () => ({ addColorStop:noop });
   c.measureText = t => ({ width:(t||'').length*6 });
   return c;
 }
