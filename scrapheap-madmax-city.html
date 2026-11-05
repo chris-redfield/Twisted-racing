@@ -296,6 +296,12 @@ function onPress(code){
   if(code==='KeyP' && state==='play') paused=!paused;
   if(code==='Space' && state==='play' && !onFoot) tryBoost(cars[0]);
   if(code==='KeyE' && state==='play' && street && !paused) toggleOnFoot();
+  // how far the walker sees (STREET, on foot): 9 nearer, 0 further
+  if((code==='Digit9' || code==='Digit0') && state==='play' && onFoot){
+    const i = VIEW_STEPS.indexOf(VIEW_D) + (code==='Digit0' ? 1 : -1);
+    VIEW_D = VIEW_STEPS[clamp(i, 0, VIEW_STEPS.length-1)];
+    walkViewMsgT = 2.5;
+  }
   // the gunner camera's feel hangs on two numbers that are hard to guess
   // without looking at them, so make them adjustable in place
   if(code==='BracketLeft')  { if(onFoot) WALK_EYE = clamp(WALK_EYE-1, 8, 40); else EYE_Z = clamp(EYE_Z-2, 12, 70); }
@@ -3024,15 +3030,24 @@ function cityGhost(b){
 }
 
 // ---- the raycaster: every plot near you, all four walls, inside the view cone
-const RC_CITY_R = 1150;
+// VIEW_D is how far the walker sees the city (9 / 0 on foot step it through
+// VIEW_STEPS). It used to be a fixed 1150, which is the wall you hit looking up
+// or down the road. Past VIEW_LOD a plot only gets in if it stands at least
+// VIEW_LOD_PX tall on screen: at 3000 out a 40-tall walk-up is under two
+// pixels and the street in front would hide it anyway, so what is left out
+// there is the skyline - the towers - which is the bit worth seeing.
+const VIEW_STEPS = [1150, 1800, 2600, 3600, 5000, 7000];
+let   VIEW_D = 3600;                 // default picked from the 2026-11-05 experiment (PROJECT.md)
+const VIEW_LOD = 900, VIEW_LOD_PX = 2.5;
 function cityRings(camX, camY, bearing, out){
   const half = RC_FOV/2;
-  for(const c of cityChunks(camY - RC_CITY_R, camY + RC_CITY_R)){
+  for(const c of cityChunks(camY - VIEW_D, camY + VIEW_D)){
     for(const b of c.bld){
       const mx = (b.x0 + b.x1)/2, my = (b.y0 + b.y1)/2;
       const dx = mx - camX, dy = my - camY, d = Math.hypot(dx, dy);
       const rad = Math.hypot(b.x1 - b.x0, b.y1 - b.y0)/2;
-      if(d - rad > RC_CITY_R) continue;
+      if(d - rad > VIEW_D) continue;
+      if(d > VIEW_LOD && (b.h - EYE_Z)*RC_VD/d < VIEW_LOD_PX) continue;
       if(d > rad){
         let a = Math.atan2(dy, dx) - bearing;
         a = ((a + Math.PI) % (Math.PI*2) + Math.PI*2) % (Math.PI*2) - Math.PI;
@@ -3158,9 +3173,10 @@ function buildRings(){ buildConvoyRings(0); }
 // wall at the edge of the strip, the city's plots near you, and the skyline
 function buildCityRings(center, camX, camY, bearing){
   const bh = onFoot ? WALK_BARRIER_H : BARRIER_H;
+  const span = Math.max(RING_SPAN, VIEW_D + 200), sky = Math.max(SKY_REACH, VIEW_D + 1500);
   rings = [];
   for(const side of [-1, 1]){
-    for(const sp of barrierSpans(side, center - RING_SPAN, center + RING_SPAN)){
+    for(const sp of barrierSpans(side, center - span, center + span)){
       const pts = [];
       for(let y = sp[0]; y < sp[1]; y += RING_STEP) pts.push({ x:side*ROAD_HW, y });
       pts.push({ x:side*ROAD_HW, y:sp[1] });
@@ -3168,14 +3184,14 @@ function buildCityRings(center, camX, camY, bearing){
       rings.push({ pts, h:bh, col:'#6a5570', top:'#a894b0', open:true, low:onFoot, u0:sp[0] });
     }
     const wall = [];
-    const n = Math.ceil(2*RING_SPAN/RING_STEP);
-    for(let i=0;i<=n;i++) wall.push({ x:side*CITY_W, y:center - RING_SPAN + i*RING_STEP });
-    rings.push({ pts:wall, h:CITY_WALL_H, col:'#2e2536', top:'#463a50', open:true });
+    const n = Math.ceil(2*span/RING_STEP);
+    for(let i=0;i<=n;i++) wall.push({ x:side*CITY_W, y:center - span + i*RING_STEP });
+    rings.push({ pts:wall, h:CITY_WALL_H, col:'#2e2536', top:'#463a50', open:true, u0:center - span });
   }
   if(showBuildings){
     cityRings(camX, camY, bearing, rings);
     bldList.length = 0;
-    survivalTier(BLD_SKY_CITY, SKY_TIER, center - SKY_REACH, center + SKY_REACH, bldList);
+    survivalTier(BLD_SKY_CITY, SKY_TIER, center - sky, center + sky, bldList);
     buildingRings(bldList, rings);
   }
   let nn=0; for(const r of rings) nn += r.pts.length;
@@ -3368,12 +3384,20 @@ function rcWalls(camX, camY, bearing){
         if(u<0 || u>1) continue;
         const t = Math.abs(drx)>Math.abs(dry) ? (axr+u*ex)/drx : (axf+u*ey)/dry;
         if(t<=0.5) continue;
-        if(nh<RC_HITS_MAX){
-          rcHitD[nh]=t; rcHitR[nh]=ri;
-          rcHitU[nh]=i+u;                                  // which bit of wall this is
-          rcHitK[nh]=Math.sqrt(ex*ex+ey*ey)/Math.abs(den); // 1/|dot(dir, wallNormal)|
-          nh++;
-        }
+        // A full column keeps the NEAREST hits. It used to keep the first 64
+        // found, in ring order - harmless with a few walls, but a deep city can
+        // put more than that down one ray, and dropping the nearest of them is a
+        // hole in the occlusion. Overflow is rare, so the scan for the farthest
+        // only ever runs then.
+        let slot = nh;
+        if(nh>=RC_HITS_MAX){
+          slot = 0;
+          for(let h=1;h<RC_HITS_MAX;h++) if(rcHitD[h]>rcHitD[slot]) slot=h;
+          if(t>=rcHitD[slot]) continue;
+        } else nh++;
+        rcHitD[slot]=t; rcHitR[slot]=ri;
+        rcHitU[slot]=i+u;                                  // which bit of wall this is
+        rcHitK[slot]=Math.sqrt(ex*ex+ey*ey)/Math.abs(den); // 1/|dot(dir, wallNormal)|
       }
     }
     if(!nh) continue;
@@ -3783,10 +3807,21 @@ function drawGunnerView(){
 // glyph: the glyph's density carries the brightness, its tint carries the
 // colour. Render path only - nothing in the world knows this exists.
 //
-// Compositing, so the tint costs no per-cell work: glyphs are drawn WHITE on
-// black, then a tiny cols x rows "tint" image is scaled over them with
-// `multiply` (white x tint = tint, black x tint = black). Mode 2 adds
-// ascii-city's "solid glyphs": the tint, dimmed, as a background behind each cell.
+// Drawn on the CPU, in one go. This used to be one drawImage per cell from the
+// atlas onto an offscreen canvas, then the tint multiplied over it and the
+// result added onto the screen - three passes, ~9300 draw calls a frame at full
+// screen. Measured in Chrome (2026-11-05) that was 25-55 ms a frame on its own,
+// against ~3 ms for the raycast that feeds it: the on-foot view went choppy in
+// ASCII and stayed smooth in plain 3D. Now every glyph's coverage is read out of
+// the atlas once (ascInit), each frame's pixels are written straight into one
+// ImageData, and it goes to the screen with a single putImageData.
+//
+// Same picture as the old passes, done as arithmetic per pixel:
+//   glyph   = tint * coverage                     (white glyph x tint, 'multiply')
+//   mode 1  = glyph                               (on black)
+//   mode 2  = bg*(1-ASC_SOLID) + tint*ASC_SOLID   ascii-city's "solid glyphs"
+//             + glyph, clamped                    ('lighter')
+// where bg is the frame's backdrop colour the old passes drew over.
 let asciiMode = 2;                  // 0 off, 1 ascii, 2 ascii on solid cells (G cycles)
 const ASC_NAMES = ['NORMAL','ASCII','ASCII SOLID'];
 const ASC_RAMP  = ' .:-=+*%#@';     // sparse -> dense
@@ -3798,8 +3833,11 @@ const ASC_LIFT = 2.6;               // max tint boost; the glyph, not the tint, 
 const ASC_SOLID = 0.24;             // mode 2 background strength
 const ASC_LIGHT_R = 120, ASC_LIGHT_WARM = 60;   // a pixel this red and this warm is a lit window
 let ascKey='', ascCols=0, ascRows=0, ascGW=0, ascGH=0;
-let ascAtlas=null, ascCv=null, ascCtx=null, ascTint=null, ascTintCtx=null, ascTintImg=null;
+let ascAtlas=null;                  // the glyphs, white on clear, one per ramp step
+let ascMask=null;                   // ...read back once as coverage, 0..255 per pixel
+let ascOut=null, ascOut32=null;     // the frame being written, and a 32-bit view of it
 let ascLast = null;                 // last frame's glyph indices, for the harness
+const ASC_BG = [11, 8, 16];         // '#0b0810', what render() clears to under the view
 
 function ascInit(){
   ascCols = Math.floor(RC_W/ASC_CW); ascRows = Math.floor(RC_H/ASC_CH);
@@ -3807,17 +3845,19 @@ function ascInit(){
   ascGW = Math.round(RC_PANE.w*PX/ascCols); ascGH = Math.round(RC_PANE.h*PX/ascRows);
   ascAtlas = document.createElement('canvas');
   ascAtlas.width = ascGW*ASC_RAMP.length; ascAtlas.height = ascGH;
-  const a = ascAtlas.getContext('2d');
+  const a = ascAtlas.getContext('2d', { willReadFrequently:true });
   a.fillStyle = '#fff'; a.textAlign = 'center'; a.textBaseline = 'middle';
   a.font = 'bold ' + ascGH + 'px ui-monospace,"DejaVu Sans Mono",monospace';
   for(let i=1;i<ASC_RAMP.length;i++) a.fillText(ASC_RAMP[i], (i+0.5)*ascGW, ascGH*0.55);
-  ascCv = document.createElement('canvas');
-  ascCv.width = ascCols*ascGW; ascCv.height = ascRows*ascGH;
-  ascCtx = ascCv.getContext('2d', { alpha:false });
-  ascTint = document.createElement('canvas');
-  ascTint.width = ascCols; ascTint.height = ascRows;
-  ascTintCtx = ascTint.getContext('2d');
-  ascTintImg = ascTintCtx.createImageData(ascCols, ascRows);
+  // coverage = the atlas's alpha, laid out glyph by glyph, row by row
+  const ad = a.getImageData(0, 0, ascAtlas.width, ascGH).data;
+  ascMask = new Uint8Array(ASC_RAMP.length*ascGW*ascGH);
+  for(let gi=0; gi<ASC_RAMP.length; gi++)
+    for(let y=0; y<ascGH; y++)
+      for(let x=0; x<ascGW; x++)
+        ascMask[(gi*ascGH + y)*ascGW + x] = ad[(y*ascAtlas.width + gi*ascGW + x)*4 + 3];
+  ascOut = ctx.createImageData(ascCols*ascGW, ascRows*ascGH);
+  ascOut32 = new Uint32Array(ascOut.data.buffer);
   ascLast = new Uint8Array(ascCols*ascRows);
   ascKey = RC_W+'x'+RC_H+'@'+PX;
 }
@@ -3825,10 +3865,10 @@ function ascInit(){
 function asciiBlit(dx, dy){
   if(ascKey !== RC_W+'x'+RC_H+'@'+PX) ascInit();
   const src = rcCtx.getImageData(0, 0, RC_W, RC_H).data;
-  const tp = ascTintImg.data, n = ASC_RAMP.length - 1;
+  const n = ASC_RAMP.length - 1;
   const inv = 1/(ASC_CW*ASC_CH), span = 1/(ASC_HI - ASC_LO);
-  ascCtx.globalCompositeOperation = 'source-over';
-  ascCtx.fillStyle = '#000'; ascCtx.fillRect(0, 0, ascCv.width, ascCv.height);
+  const GW = ascGW, GH = ascGH, OW = ascCols*GW, out = ascOut32, mask = ascMask;
+  const solid = asciiMode === 2, keep = 1 - ASC_SOLID;
   for(let cy=0; cy<ascRows; cy++){
     for(let cx=0; cx<ascCols; cx++){
       let r=0, g=0, b=0, nl=0, lr=0, lg=0, lb=0;
@@ -3850,30 +3890,32 @@ function asciiBlit(dx, dy){
       // colour and a bright glyph - '*' for one lit pixel at LIGHTS_MIX 1, '+'
       // at 0.5 - rising to '@' as more of the cell is lit.
       if(nl){ r=lr/nl; g=lg/nl; b=lb/nl; gi = Math.max(gi, Math.min(n, Math.round(3 + LIGHTS_MIX*2) + nl)); }
-      const q = cy*ascCols + cx;
-      ascLast[q] = gi;
+      ascLast[cy*ascCols + cx] = gi;
+      // the cell's tint, rounded the way the old tint image stored it
       const m = Math.max(r, g, b, 1), lift = Math.min(ASC_LIFT, 235/m);
-      tp[q*4] = r*lift; tp[q*4+1] = g*lift; tp[q*4+2] = b*lift; tp[q*4+3] = 255;
-      if(gi) ascCtx.drawImage(ascAtlas, gi*ascGW, 0, ascGW, ascGH, cx*ascGW, cy*ascGH, ascGW, ascGH);
+      const tr = Math.min(255, Math.round(r*lift)), tg = Math.min(255, Math.round(g*lift)), tb = Math.min(255, Math.round(b*lift));
+      const br = solid ? Math.round(ASC_BG[0]*keep + tr*ASC_SOLID) : 0;
+      const bg = solid ? Math.round(ASC_BG[1]*keep + tg*ASC_SOLID) : 0;
+      const bb = solid ? Math.round(ASC_BG[2]*keep + tb*ASC_SOLID) : 0;
+      let p = cy*GH*OW + cx*GW;
+      if(!gi){
+        const c = 0xff000000 | (bb<<16) | (bg<<8) | br;    // RGBA bytes, little-endian
+        for(let yy=0; yy<GH; yy++, p+=OW) for(let xx=0; xx<GW; xx++) out[p+xx] = c;
+        continue;
+      }
+      let k = gi*GW*GH;
+      for(let yy=0; yy<GH; yy++, p+=OW){
+        for(let xx=0; xx<GW; xx++, k++){
+          const cov = mask[k];
+          if(!cov){ out[p+xx] = 0xff000000 | (bb<<16) | (bg<<8) | br; continue; }
+          let R = br + ((tr*cov + 127)/255|0), G = bg + ((tg*cov + 127)/255|0), B = bb + ((tb*cov + 127)/255|0);
+          if(R>255) R=255; if(G>255) G=255; if(B>255) B=255;
+          out[p+xx] = 0xff000000 | (B<<16) | (G<<8) | R;
+        }
+      }
     }
   }
-  ascTintCtx.putImageData(ascTintImg, 0, 0);
-  ascCtx.imageSmoothingEnabled = false;
-  ascCtx.globalCompositeOperation = 'multiply';
-  ascCtx.drawImage(ascTint, 0, 0, ascCols, ascRows, 0, 0, ascCv.width, ascCv.height);
-  ascCtx.globalCompositeOperation = 'source-over';
-
-  const w = ascCv.width, h = ascCv.height;
-  if(asciiMode === 2){
-    ctx.globalAlpha = ASC_SOLID;
-    ctx.drawImage(ascTint, 0, 0, ascCols, ascRows, dx, dy, w, h);
-    ctx.globalAlpha = 1;
-    ctx.globalCompositeOperation = 'lighter';       // black adds nothing: only glyphs land
-    ctx.drawImage(ascCv, dx, dy);
-    ctx.globalCompositeOperation = 'source-over';
-  } else {
-    ctx.drawImage(ascCv, dx, dy);
-  }
+  ctx.putImageData(ascOut, Math.round(dx), Math.round(dy));
 }
 
 // ---------------------------------------------------------------- the turret
@@ -3977,6 +4019,7 @@ const walker = { x:0, y:0, a:0, pitch:0, hp:WALK_HP, bob:0, moving:0, t:0 };
 const WALK_PITCH_UP = 0.78, WALK_PITCH_DOWN = -0.51;
 const WALK_PITCH_RATE = 1.4;         // rad/s, Up/Down arrows
 let walkMsg = '', walkMsgT = 0;
+let walkViewMsgT = 0, walkMs = 0;    // the view-distance readout, and what a walk frame costs
 const walkBld = [];
 
 function walkSay(m){ walkMsg = m; walkMsgT = 1.6; }
@@ -4111,6 +4154,7 @@ function toggleOnFoot(){
 
 // first person, whole screen
 function drawWalkView(){
+  const t0 = performance.now();
   const w = walker;
   const eye0 = EYE_Z, hz0 = RC_HORIZON;
   EYE_Z = WALK_EYE + (w.moving ? Math.sin(w.bob)*0.7 : 0);   // a little head bob
@@ -4127,6 +4171,7 @@ function drawWalkView(){
   if(asciiMode) asciiBlit(p.x*PX, p.y*PX);
   else ctx.drawImage(rcCv, 0,0,RC_W,RC_H, p.x*PX, p.y*PX, p.w*PX, p.h*PX);
   ctx.restore();
+  walkMs = lerp(walkMs, performance.now() - t0, 0.08);      // smoothed, so it reads
 }
 
 function drawWalkHUD(){
@@ -4164,9 +4209,17 @@ function drawWalkHUD(){
   ctx.fillStyle='#5a4a5e';
   centerText('WASD walk  .  MOUSE / ARROWS look (up too)  .  SHIFT run  .  E get in'+(pointerLocked()?'':'  .  click for mouse-look'),
              '#6a5a72', VH - 14, 8);
+  // view distance: shown for a moment after 9 / 0, and always with F
+  if(walkViewMsgT > 0 || showFps){
+    const segs = rings.reduce((a, r) => a + r.pts.length, 0);
+    const t = 'VIEW '+VIEW_D+'   '+walkMs.toFixed(1)+' ms   '+rings.length+' walls / '+segs+' pts   (9 nearer . 0 further)';
+    plate(VW - t.length*5 - 20, 6, t.length*5 + 14, 14);
+    ctx.textAlign='right'; ctx.fillStyle = walkMs > 12 ? '#f0503c' : walkMs > 8 ? '#e0b73c' : '#4ade80';
+    ctx.fillText(t, VW - 13, 9); ctx.textAlign='left';
+  }
   if(showFps){
     ctx.fillStyle='#4ade80';
-    ctx.fillText(fpsVal+' fps  rc '+RC_W+'x'+RC_H+'  eye '+WALK_EYE+'  x '+Math.round(walker.x)+' y '+Math.round(walker.y), 132, 8);
+    ctx.fillText(fpsVal+' fps  rc '+RC_W+'x'+RC_H+'  eye '+WALK_EYE+'  x '+Math.round(walker.x)+' y '+Math.round(walker.y), 132, 24);
   }
   if(paused) centerText('PAUSED','#e8d5b0', VH/2+20, 12);
   ctx.restore();
@@ -4594,6 +4647,7 @@ function step(dt){
     updatePads(dt);
     updateFx(dt);
     if(onFoot) updateWalker(dt); else walkMsgT = Math.max(0, walkMsgT - dt);
+  walkViewMsgT = Math.max(0, walkViewMsgT - dt);
     gunnerHit=Math.max(0,gunnerHit-dt);
     gunnerKill=Math.max(0,gunnerKill-dt);
     distance = Math.max(distance, -me.y);
