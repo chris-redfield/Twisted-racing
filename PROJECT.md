@@ -36,6 +36,10 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
 - **`scrapheap-madmax-walk.html` — experimental fork** of the ASCII build (2026-11-04): adds a 4th
   stage, **4 STREET** — solo, free drive up ASCENT's road (no scroll, no enemies), stop and press
   **E** to get out and walk in full-screen first person among the roadside buildings. Not played yet.
+- **`scrapheap-madmax-city.html` — experimental fork** of the walk build (2026-11-04): STREET's
+  roadside buildings replaced by an endless **BSP city** either side of the highway (after
+  `C:\proj\the-party`'s `src/city.js`); streets join the highway through gaps in the barrier, so the
+  car can drive into the city; every building has all four walls in first person. Not played yet.
 - `tools/headless.js` runs any build in node with a stubbed canvas.
 - `tools/shot.js` takes **real-browser screenshots** (Windows Chrome from WSL, `--screenshot` +
   virtual time; the game file is never modified). Shots land in `.shots/` (git-ignored).
@@ -229,6 +233,124 @@ Nothing is committed to yet — pick from here or bring something new.
 ## Session log
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
+
+### 2026-11-05 — raycaster: direct wall writes + building occlusion (in place)
+(The "still 42 fps" report was an old copy of the file; the ASCII fix had worked. He asked for the
+two CPU-side ideas anyway - explicitly NOT a WebGL path, so the game never needs a GPU.)
+
+Before: ~4000 `fillStyle`+`fillRect` per frame for walls/windows (each building a colour string),
+and 80-85% of ray hits / 74-84% of gathered buildings ended up invisible.
+- `RC_DIRECT`: walls, kerbs, plinths, windows written straight into `rcPix32` via `rcSpan` /
+  `rcPacked` (shade()'s exact integers); one putImageData at the end of rcWalls.
+- `RC_OCCLUDE`: `rcOcclude` culls whole buildings before ray tests - nearest first, a per-column
+  "lowest cover" line, occluders only once wholly nearer; conservative both ways (see its comment).
+  Culls 65-72% of buildings, halves segments tested. Brute-force rcZ check: 0 bad of 64,000.
+- All four combinations produce **byte-identical** frames (hashed, every view, GPU on and off).
+
+Real Chrome, whole walk frame (raycast + ASCII), ms saved vs baseline, median of 4 runs:
+
+| VIEW | view | baseline | 1 direct | 2 occlude | 1+2 both |
+|---|---|---|---|---|---|
+| 3600 | highway north | 6.4 | -2.3 (36%) | -0.1 (1%) | **-2.7 (43%)** |
+| 3600 | city street north | 15.8 | -5.2 (33%) | -0.4 (3%) | **-5.8 (37%)** |
+| 3600 | across blocks east | 11.9 | -2.2 (18%) | -1.4 (12%) | **-2.8 (24%)** |
+| 7000 | highway north | 15.6 | -5.6 (36%) | -0.5 (3%) | **-6.5 (41%)** |
+| 7000 | city street north | 15.7 | -5.1 (33%) | -0.7 (4%) | **-5.6 (36%)** |
+| 7000 | across blocks east | 11.6 | -1.5 (14%) | -0.5 (5%) | **-2.3 (21%)** |
+
+Both on is the default. Occlusion alone gains little because hidden walls were ALREADY not drawn
+and the bucketed ray tests are cheap; the cost was the per-strip canvas calls, which is what
+`RC_DIRECT` removes. Baselines are bimodal (~6 vs ~15 ms for the same view across runs) - a fixed
+overhead in headless Chrome that moves every variant together; compare ms saved, not totals.
+
+### 2026-11-05 — ASCII view was the lag, not the city (in place, `scrapheap-madmax-city.html`)
+He found on-foot ASCII SOLID choppy while plain 3D stayed smooth at any view distance. Measured in
+real Chrome (frame forced to finish with a getImageData flush): raycast 2.8-3.8 ms at any VIEW_D,
+plain 3D all-in ~5 ms, **ASCII SOLID all-in 29 ms (software) / 58 ms (GPU)**. Cause: full-screen
+ASCII is 160x60 cells = ~9300 `drawImage` glyph calls a frame (2x the 2P pane, which is why it was
+never noticed there), plus a full-screen `multiply` tint pass and a `lighter` composite.
+
+Fix: `asciiBlit` now builds the frame on the CPU - glyph coverage read out of the atlas once in
+`ascInit` (`ascMask`), every pixel written into one ImageData (`ascOut32`), one `putImageData`.
+The blend maths is reproduced exactly (see the comment above `asciiMode`). Pixel diff against the
+old output: max 2/255 in either mode. **Now 7.2 ms software / 7.5 ms GPU all-in, ~7.5 ms at VIEW
+7000.** The 2P gunner pane shares it. Cost scales with device pixels, so R (PX 3) costs ~2.25x the
+glyph-writing part.
+
+How to re-run the benchmark: append a `<script>` to a temp copy that loops render pieces
+synchronously, flushing with `ctx.getImageData(0,0,1,1)` each iteration, writes the times into a
+`<pre>`, then `chrome.exe --headless=new --dump-dom` it (no `--virtual-time-budget`, or the clock
+stands still while JS runs). Try with and without `--disable-gpu`.
+
+### 2026-11-05 — city: how far the walker sees (experiment, in place)
+He wanted the "fog of war" gone looking up/down the road - an endless cyberpunk city - but didn't
+know how far would still look good or run well. What stopped the view: city plots only gathered
+within 1150 (`RC_CITY_R`), barrier/wall rings 1500, wall fog maxed at 1100.
+
+- `VIEW_D` (default **3600**), **9 / 0 on foot** step `VIEW_STEPS` 1150..7000; a readout (top
+  right, for 2.5 s after a step, always with F) shows VIEW, the walk frame's real ms (green < 8,
+  amber < 12, red), walls and points. Walls/skyline spans follow VIEW_D.
+- **LOD:** past `VIEW_LOD` 900 a plot only gets in if it stands `VIEW_LOD_PX` 2.5 px tall on
+  screen - what's left far out is the skyline. This is what keeps the cost sublinear.
+- **Hit cap bug fixed:** a column kept the FIRST 64 hits in ring order; a deep city put up to 68
+  down one ray (city street, VIEW >= 2600), which could drop the nearest wall. Now keeps the nearest.
+  Brute-force check at 3600: 0 bad of 64,000 columns.
+- Headless compute, ms/frame (draws stubbed) at 1150 / 2600 / 3600 / 7000: highway north 7.1 /
+  10.0 / 10.3 / 11.5; city street north 6.8 / 8.9 / 8.6 / 9.1; crossing east 5.7 / 6.2 / 6.5 / 7.3.
+- Looks: along the highway, 3600+ fills the gap at the vanishing point with distant blocks and
+  lights. Up a city street it barely changes - BSP streets end at T-junctions a block or two on.
+  Far buildings are small (a 300 tower at 5000 is ~8 px, ~3 glyph rows), so the far city reads as
+  a band of lights. If he wants it to tower: taller megatowers further out is the lever, not range.
+
+### 2026-11-04 — city: wider streets, look up on foot (in place, `scrapheap-madmax-city.html`)
+- **Streets min 70** (`CITY_ROAD_MIN`, clamps `cityRoadW`). He felt the parallel streets were too
+  thin; measured, BOTH axes went down to 50 (orthogonal 50x251/58x127, parallel 50x259/58x91 over
+  60 chunk-sides) - the parallel ones just get driven head-on. Chosen with him: 70 for all. Now
+  orthogonal 70/86 + 92 cross streets, parallel 70/86 + 78 outer road; ~15 blocks per chunk-side.
+- **Look up/down on foot** (all render modes, not only ASCII), after ascii-city's "shift"
+  projection: the camera stays level and `RC_HORIZON` slides by `RC_VD*tan(pitch)` for the walk
+  view only, restored after. Columns stay world-vertical, so tall buildings don't splay. Locked
+  mouse Y or Up/Down; limits are ascii-city's walking ones, +0.78 / -0.51. Pitch resets on getting
+  out. The future sidearm's keyboard fire moved Up -> SPACE to free the arrow.
+- Gotcha for screenshots: a new run blinks the car for 2.4 s (`invuln`), so a shot can land on
+  an "off" frame and look like the car vanished - set `c.invuln=0` in the shot setup.
+
+### 2026-11-04 — STREET gets a city (fork `scrapheap-madmax-city.html`)
+He saved the walk build (committed) and asked for two things: building backsides (you can walk
+behind them now) and a realistic city with streets the car can use, "kinda GTA-ish", built the way
+the-party builds its city. Chosen with him: an **endless city strip** either side of the endless
+highway (not one finite square).
+
+- **The cut** (section "the city (STREET)") is the party's `cut()`/`cutPlots()` almost verbatim:
+  halve the ground, every cut leaves a road (widths `CITY_ROADS` by depth: avenues first, lanes
+  last), some cuts undone into big blocks (`LOT_MERGE`), block cores cut again without roads into
+  plots (one building each, wall to wall, own height/colour, ~7% towers). Pavement ring `PAVE` 16.
+- **Chunks:** side s, chunk k covers y in [k*1400, (k+1)*1400), |x| from the barrier to `CITY_W`
+  1400. Each opens with a cross street along its top edge and has an outer road down its far edge,
+  so chunks always join. Seeded from (k, s): same city every time, nothing stored (cache of 48,
+  regenerates identically). ~16 blocks / 206 buildings / 4.4 highway openings per chunk-side, 0.6 ms.
+- **Barrier gaps:** wherever a horizontal street reaches the highway (`barrierSpans`). 2D walls,
+  posts, raycaster rings (`u0` keeps the posts world-anchored) and car collision all use the spans.
+- **Collision:** `cityCollide` (barrier pieces as thin boxes, building cores, the city wall) replaces
+  the corridor clamp for cars in STREET; shots stop on buildings, fly over the barrier; the walker
+  uses the cores. Cars can drive on the pavements.
+- **Ground:** `cityGround` = 8-unit mask per chunk (road / pavement / building / beyond), used by
+  the first-person floor (pavement is its own colour now) and shots.
+- **Driving pane:** strip drawn as road, blocks as kerbed pavement, dashed centre lines on streets
+  >= 66 wide that stop at junctions (party's `markGaps`). Buildings join the depth sort by their
+  south face; one that would cover your car goes see-through (`cityGhost`). Camera follows the car
+  laterally all the way now.
+- **Backsides:** `buildingRings` now emits closed four-wall rings (also for the old roadside tiers
+  in this file); city plots are closed rings from the start (`cityRing`).
+- **Perf: `rcWalls` buckets segments by screen column** before the per-column solve — every column
+  testing every segment didn't scale to a city (5.7 -> 3.4 ms). Verified against brute force: 0
+  depth mismatches over 64,000 columns from 200 random spots. The only differences are brute
+  force "hits" at ~1e9 distance from rays grazing a straight wall — junk the column range rejects.
+  First person also culls plots to `RC_CITY_R` 1150 and the view cone.
+
+**Open:** not played yet. Knobs: `CITY_ROADS`, `LOT_*`, `PLOT_*`, tower chance/heights in
+`makeCityChunk`, `CITY_W`. The highway's red/white rumble strip still runs across the gaps. No
+traffic, pedestrians or street furniture yet. `STREET_ENEMIES` AI knows nothing about the city.
 
 ### 2026-11-04 — STREET: park the car and walk (fork `scrapheap-madmax-walk.html`)
 Forked from `scrapheap-madmax-ascii.html` (left untouched). New title option **4 STREET**, solo only
