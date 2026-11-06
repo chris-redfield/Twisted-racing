@@ -271,6 +271,35 @@ const MAP_COL = {
 };
 
 // -----------------------------------------------------------------------------
+// 8c. THE INTRO COMIC - shown after START GAME, before the run
+// -----------------------------------------------------------------------------
+// Each page is up to 4 panels, read left to right, top to bottom. ENTER (or a
+// click) reveals the next panel, ESC skips the comic. A panel whose image isn't
+// there yet shows as an empty frame; a page with no images at all is skipped.
+// `at` is where the caption box sits: t/b (top/bottom) + l/c/r (left/centre/right),
+// e.g. 'tl', 'tc', 'br' - put it where it doesn't cover anyone's face.
+// `size` (optional) is the caption's text size; 8 if left out.
+// Captions are typed by the game, so the wording can change without new art.
+const COMIC = {
+  ENABLED: true,
+  PAGES: [
+    [ { img:'assets/comic/page1-1.png', at:'tl', caption:'The humans are gone. They left us the world, and nothing to do in it.' },
+      { img:'assets/comic/page1-2.png', at:'bl', caption:'Out here, we had nothing they wanted. Almost.' },
+      { img:'assets/comic/page1-3.png', at:'tl', caption:'' },
+      { img:'assets/comic/page1-4.png', at:'br', caption:"They didn't want her. They wanted what she carries." } ],
+    [ { img:'assets/comic/page2-1.png', at:'tl', caption:'' },
+      { img:'assets/comic/page2-2.png', at:'tc', caption:'One road in. Every hunter they own on it.' },
+      { img:'assets/comic/page2-3.png', at:'tl', size:6.5, caption:'They hunt only new tech. An old model like me? Beneath their notice.' },
+      { img:'assets/comic/page2-4.png', at:'br', caption:"Hold on. I'm coming." } ],
+  ],
+  TYPE_SPEED:  38,      // caption letters per second
+  PANEL_FADE:  0.45,    // seconds a panel takes to come in
+  CAPTION_BG:  '#f4e39a',   // the classic yellow caption box
+  CAPTION_INK: '#14101a',
+  GUTTER_INK:  '#000000',   // panel borders
+};
+
+// -----------------------------------------------------------------------------
 // 9. COLOURS - the cyberpunk menu and HUD
 // -----------------------------------------------------------------------------
 const NEON = {

@@ -271,8 +271,13 @@ function onPress(code){
   if(code==='Comma')        CAR_MAG_MAX = clamp(CAR_MAG_MAX-0.1, 1, 4);
   if(code==='Period')       CAR_MAG_MAX = clamp(CAR_MAG_MAX+0.1, 1, 4);
 
+  // the intro comic: ENTER / SPACE next, ESC skips it
+  if(state==='comic'){
+    if(code==='Enter' || code==='NumpadEnter' || code==='Space'){ comicAdvance(); return; }
+    if(code==='Escape'){ comicEnd(); return; }
+  }
   // testing: straight to the city gate, from the menu or anywhere in a run
-  if(code===SKIP_TO_CITY_KEY && (state==='title' || state==='play' || state==='over') && !paused){ skipToCity(); return; }
+  if(code===SKIP_TO_CITY_KEY && (state==='title' || state==='play' || state==='over' || state==='comic') && !paused){ skipToCity(); return; }
   // the menu: ENTER / SPACE starts the run. The digits are dev shortcuts to the
   // stages this engine grew out of (not shown on the menu).
   if(state==='title'){
@@ -4668,6 +4673,7 @@ function bindGunnerMouse(){
     // menus are keyboard-driven; a click just advances (title -> setup -> play)
     if(state!=='play'){
       if(state==='title') menuChoose();
+      else if(state==='comic') comicAdvance();
       else if(state==='over' && stage==='run') onPress('Enter');
       else if(state==='setup') startMatch(numPlayers);
       else if(state==='over') state='title';
@@ -5395,6 +5401,134 @@ function drawCityOverview(Q, F, R){
   ctx.fillText('THE CITY, ZOOMED OUT', Q.x + 6, Q.y + 5);
 }
 
+// ---------------------------------------------------------------- the intro comic
+// COMIC.PAGES (config.js) as comic pages: a 2x2 grid of 3:2 panels, revealed one
+// at a time in reading order, each with its caption typed into a yellow box.
+const comicImgs = COMIC.PAGES.map(pg => pg.map(p => {
+  const r = { ok:false, bad:false, img:null };
+  if(typeof Image !== 'undefined' && p.img){
+    r.img = new Image();
+    r.img.onload = () => { r.ok = true; };
+    r.img.onerror = () => { r.bad = true; };
+    r.img.src = p.img;
+  } else r.bad = true;
+  return r;
+}));
+const comic = { pages:[], page:0, shown:0, t:0, typed:0 };
+const hintEl = (typeof document !== 'undefined' && document.getElementById) ? document.getElementById('hint') : null;
+// pages with at least one image that has loaded (or is still loading)
+function comicPages(){
+  const out = [];
+  COMIC.PAGES.forEach((pg, i) => { if(comicImgs[i].some(r => !r.bad)) out.push(i); });
+  return out;
+}
+function startComic(){
+  stage = 'run';
+  comic.pages = COMIC.ENABLED ? comicPages() : [];
+  if(!comic.pages.length){ startMatch(1); return; }
+  comic.page = 0; comic.shown = 1; comic.t = 0; comic.typed = 0;
+  state = 'comic';
+}
+function comicEnd(){ startMatch(1); }
+function comicPanel(){ return COMIC.PAGES[comic.pages[comic.page]][comic.shown - 1]; }
+function comicTick(dt){
+  comic.t += dt;
+  if(comic.t > COMIC.PANEL_FADE) comic.typed += COMIC.TYPE_SPEED*dt;
+}
+function comicAdvance(){
+  const cap = comicPanel().caption || '';
+  // first press finishes the panel (fade + typing), the next one moves on
+  if(comic.t < COMIC.PANEL_FADE || comic.typed < cap.length){ comic.t = COMIC.PANEL_FADE; comic.typed = cap.length; return; }
+  const n = COMIC.PAGES[comic.pages[comic.page]].length;
+  if(comic.shown < n){ comic.shown++; comic.t = 0; comic.typed = 0; return; }
+  if(comic.page < comic.pages.length - 1){ comic.page++; comic.shown = 1; comic.t = 0; comic.typed = 0; return; }
+  comicEnd();
+}
+// where panel i (0..3) of a 2x2 page sits, in VW x VH units
+function comicRect(i){
+  const G = 8, top = 12, bottom = 26;
+  const h = (VH - top - bottom - G)/2, w = h*1.5;
+  const x0 = (VW - (2*w + G))/2;
+  return { x: x0 + (i % 2)*(w + G), y: top + ((i/2)|0)*(h + G), w, h };
+}
+// break a caption into lines that fit `maxW` at the current font
+function comicWrap(text, maxW){
+  const words = text.split(' '), lines = [];
+  let line = '';
+  for(const w of words){
+    const t = line ? line + ' ' + w : w;
+    if(ctx.measureText(t).width > maxW && line){ lines.push(line); line = w; } else line = t;
+  }
+  if(line) lines.push(line);
+  return lines;
+}
+function drawComic(){
+  ctx.fillStyle = NEON.BG; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.save(); ctx.scale(PX, PX);
+  const pi = comic.pages[comic.page], pg = COMIC.PAGES[pi];
+  for(let i=0; i<comic.shown; i++){
+    const R = comicRect(i), p = pg[i], im = comicImgs[pi][i];
+    const cur = i === comic.shown - 1;
+    const a = cur ? clamp(comic.t/COMIC.PANEL_FADE, 0, 1) : 1;
+    const k = 0.96 + 0.04*(1 - Math.pow(1 - a, 3));      // settles in, very slightly
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(R.x + R.w/2, R.y + R.h/2); ctx.scale(k, k); ctx.translate(-R.w/2, -R.h/2);
+    // the panel, its art cropped to fill (cover), and an ink border
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, R.w, R.h); ctx.clip();
+    if(im.ok){
+      const iw = im.img.naturalWidth, ih = im.img.naturalHeight;
+      const sc = Math.max(R.w/iw, R.h/ih), dw = iw*sc, dh = ih*sc;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(im.img, (R.w - dw)/2, (R.h - dh)/2, dw, dh);
+      ctx.imageSmoothingEnabled = false;
+    } else {
+      // not drawn yet: an empty frame that says what goes here
+      ctx.fillStyle = '#120c20'; ctx.fillRect(0, 0, R.w, R.h);
+      ctx.strokeStyle = NEON.DIM; ctx.setLineDash([4, 4]); ctx.strokeRect(6, 6, R.w - 12, R.h - 12); ctx.setLineDash([]);
+      ctx.font = '8px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = NEON.DIM;
+      ctx.fillText(im.bad ? (p.img || '').split('/').pop() + '  (not drawn yet)' : 'loading...', R.w/2, R.h/2);
+    }
+    ctx.restore();
+    ctx.lineWidth = 2.5; ctx.strokeStyle = COMIC.GUTTER_INK; ctx.strokeRect(0, 0, R.w, R.h);
+    ctx.lineWidth = 0.6; ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.strokeRect(1.6, 1.6, R.w - 3.2, R.h - 3.2);
+    // the caption, typed in once the panel is in
+    const cap = p.caption || '';
+    const nTyped = cur ? Math.floor(comic.typed) : cap.length;
+    if(cap && (nTyped > 0 || !cur)){
+      const fs = p.size || 8, lh = fs*1.25;               // per-panel text size (config: size)
+      ctx.font = 'bold '+fs+'px "Trebuchet MS", Verdana, sans-serif';
+      const lines = comicWrap(cap.toUpperCase(), R.w*0.62);
+      const bw = Math.max(...lines.map(l => ctx.measureText(l).width)) + 10, bh = lines.length*lh + 6;
+      // at: t/b (top/bottom) + l/c/r (left/centre/right)
+      const at = p.at || 'tl', bottom = at[0] === 'b', hz = at[1] || 'l';
+      const bx = hz === 'r' ? R.w - bw - 6 : hz === 'c' ? (R.w - bw)/2 : 6;
+      const by = bottom ? R.h - bh - 6 : 6;
+      ctx.fillStyle = COMIC.CAPTION_BG; ctx.fillRect(bx, by, bw, bh);
+      ctx.lineWidth = 1; ctx.strokeStyle = COMIC.CAPTION_INK; ctx.strokeRect(bx + 0.5, by + 0.5, bw - 1, bh - 1);
+      ctx.fillStyle = COMIC.CAPTION_INK; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      let left = nTyped;
+      lines.forEach((l, li) => {
+        if(left <= 0) return;
+        ctx.fillText(l.slice(0, left), bx + 5, by + 4 + li*lh);
+        left -= l.length + 1;
+      });
+    }
+    ctx.restore();
+  }
+  // what ENTER does next
+  const n = pg.length, last = comic.page === comic.pages.length - 1;
+  const done = comic.t >= COMIC.PANEL_FADE && comic.typed >= (comicPanel().caption || '').length;
+  ctx.font = '9px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = NEON.CYAN; ctx.globalAlpha = done ? 0.6 + 0.4*Math.sin(menuT*4 + comic.t*4)**2 : 0.35;
+  ctx.fillText(comic.shown < n ? 'ENTER  next' : last ? 'ENTER  start' : 'ENTER  turn the page', VW/2, VH - 9);
+  ctx.globalAlpha = 1; ctx.fillStyle = NEON.DIM; ctx.textAlign = 'right';
+  ctx.fillText('ESC  skip', VW - 10, VH - 9);
+  ctx.textAlign = 'left'; ctx.fillText('PAGE ' + (comic.page + 1) + ' / ' + comic.pages.length, 10, VH - 9);
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------- the menu
 // After the-party's front door (src/hud.js drawMenu): the name, the items under
 // it, the chosen one lit and the rest taken most of the way to black. Choosing
@@ -5418,7 +5552,7 @@ function menuTick(dt){
   menuPop += dt;
   if(menuPop >= MENU_POP.hold){
     menuPop = null;
-    if(MENU[menuIdx][1] === 'play'){ stage = 'run'; startMatch(1); }
+    if(MENU[menuIdx][1] === 'play') startComic();
   }
 }
 function lerpHex(a, b, t){
@@ -5923,6 +6057,9 @@ function frame(now){
   Snd.music(state==='play' || state==='over');
 
   if(state==='title'){ menuT += dt; if(menuPop!=null) menuTick(dt); drawMenu(); return; }
+  // the controls line under the canvas is noise over a comic page
+  if(hintEl) hintEl.style.display = state==='comic' ? 'none' : '';
+  if(state==='comic'){ comicTick(dt); drawComic(); return; }
   if(state==='setup'){ drawSetup(); return; }
 
   if(state==='play' && !paused && !(mapOpen && MAP_PAUSES)){

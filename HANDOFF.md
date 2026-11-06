@@ -7,7 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-06 | [Outskirts on legs 1-2, city overview on the map, logo v3 prompt](#2026-11-06--outskirts-on-legs-1-2-city-overview-on-the-map-logo-v3-prompt) | built, start here |
+| 2026-11-06 | [Story + intro comic script; new logo fitted](#2026-11-06--story--intro-comic-script-new-logo-fitted) | notes, start here |
+| 2026-11-06 | [Outskirts on legs 1-2, city overview on the map, logo v3 prompt](#2026-11-06--outskirts-on-legs-1-2-city-overview-on-the-map-logo-v3-prompt) | built |
 | 2026-11-06 | [The map (M) and the new logo](#2026-11-06--the-map-m-and-the-new-logo) | built |
 | 2026-11-06 | [Fixes: side-street dashes, hunters ignore you on foot, C skip, logo](#2026-11-06--fixes-side-street-dashes-hunters-ignore-you-on-foot-c-skip-logo) | built |
 | 2026-11-06 | [index.html: the city joined on (steps 2+3)](#2026-11-06--indexhtml-the-city-joined-on-steps-23) | built, played |
@@ -16,6 +17,28 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 | 2026-11-05 | [STREET city: state of the build](#2026-11-05--street-city-state-of-the-build) | reference |
 | 2026-11-05 | [Raycaster + ASCII performance](#2026-11-05--raycaster--ascii-performance) | reference |
 | 2026-11-04 | [STREET: walk, then a BSP city](#2026-11-04--street-walk-then-a-bsp-city) | summary |
+
+---
+
+## 2026-11-06 — Story + intro comic script; new logo fitted
+
+- **Logo:** he dropped a new transparent PNG (brush-script SCRAP HEAP, 2140x735) into
+  `assets/logo.png`. Fitted with `LOGO_CROP` [0,0,1,1], `LOGO_BLEND` 'source-over',
+  `LOGO_WIDTH` 0.80. Logo is settled - don't raise it.
+- **Story** (for an intro comic: 2 pages x 4 panels, image-model art, captions typed by the
+  game). Script + per-panel prompts: `assets/comic/COMIC_SCRIPT.md`. All nameless. Robots:
+  humans gone or super rare. Hero = mechanic robot, an older, weaker model. She = his robot friend,
+  **no origin story**. Taken for an **old chip** with code the city needs; kept intact because
+  they don't know if they'd break her. Hunters track the CAR (new tech); old models are ignored by
+  guards who only fear high-tech androids with energy attacks - the in-world reason for aiCruise.
+- **Planned, not built:** upgrades for him AND the car, improvised (HP, ammo, etc.).
+- **Intro comic BUILT** (state 'comic', after START GAME, before the run): `COMIC` in config.js
+  lists pages/panels (image, caption, caption corner). 2x2 grid of 3:2 panels, revealed one per
+  ENTER/click (fade + slight settle), captions typed into a yellow comic box; ENTER finishes the
+  typing first; ESC skips; C still jumps to the city. Missing panel = labelled empty frame; a page
+  with no images is skipped (page 2 appears once its first image exists). Panels in
+  `assets/comic/pageP-N.png`; all 8 panels delivered (2026-11-06). Caption corner `at` = t/b + l/c/r; placed off faces (p1-2 'bl', p2-2 'tc'). Originals are ~4 MB each -
+  make compressed copies for the game before shipping.
 
 ---
 
