@@ -7,7 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-06 | [The map (M) and the new logo](#2026-11-06--the-map-m-and-the-new-logo) | built, start here |
+| 2026-11-06 | [Outskirts on legs 1-2, city overview on the map, logo v3 prompt](#2026-11-06--outskirts-on-legs-1-2-city-overview-on-the-map-logo-v3-prompt) | built, start here |
+| 2026-11-06 | [The map (M) and the new logo](#2026-11-06--the-map-m-and-the-new-logo) | built |
 | 2026-11-06 | [Fixes: side-street dashes, hunters ignore you on foot, C skip, logo](#2026-11-06--fixes-side-street-dashes-hunters-ignore-you-on-foot-c-skip-logo) | built |
 | 2026-11-06 | [index.html: the city joined on (steps 2+3)](#2026-11-06--indexhtml-the-city-joined-on-steps-23) | built, played |
 | 2026-11-05 | [index.html step 1: menu, leg 1, the corner, leg 2](#2026-11-05--indexhtml-step-1-menu-leg-1-the-corner-leg-2) | built, played |
@@ -15,6 +16,30 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 | 2026-11-05 | [STREET city: state of the build](#2026-11-05--street-city-state-of-the-build) | reference |
 | 2026-11-05 | [Raycaster + ASCII performance](#2026-11-05--raycaster--ascii-performance) | reference |
 | 2026-11-04 | [STREET: walk, then a BSP city](#2026-11-04--street-walk-then-a-bsp-city) | summary |
+
+---
+
+## 2026-11-06 — Outskirts on legs 1-2, city overview on the map, logo v3 prompt
+
+- **Outskirts** (his idea: BSP on the legs too, but sparse - "the edge of the city"; no entry).
+  `cityCut`/`cityPlots` now take a parameter set (`CITY_CUT`/`CITY_PLOT` default; proven
+  unchanged: `tools/cityprint.js` fingerprint `4ebdc09c` before and after). `makeOutChunk` cuts in
+  ROAD coordinates (x = u out, y = s along) with `OUTSKIRTS_CUT/PLOT` and lays it on with
+  roadPoint - exact on the straight legs. **Sparsity is INSIDE each block, never whole empty
+  blocks** (he rejected vacant blocks): every lot is a paved block, only `BUILT0` 0.30 -> `BUILT1`
+  0.65 of its plots get a building (at least one per block), ramping toward the city gate. Dim unmarked streets + pavement blocks
+  (`drawOutskirtsGround`), buildings through the old survival renderer. The bend (within
+  `OUT_M` = W+60) keeps the old rows. Barrier never opens; nothing collides. Checked: 2348
+  outskirts + 47 bend-row buildings over the whole run, 0 overlaps, 0 touching the road.
+- **Map, in the city**: the route strip is replaced by a zoomed-out city overview
+  (`MAP_CITY_OVERVIEW`, `MAP_OVERVIEW_R` 5200): city, gate wall, leg 2 stub, hunters as dots,
+  a box for what the left panel shows. False = no right panel.
+- **Logo: LEAVE IT AS IT IS** (the metal wordmark in assets/logo.png). The v3 "route emblem"
+  prompt below produced an app icon and he threw it away - he did not want an icon. Don't
+  propose logos unless he asks. (Original note:) he disliked the metal wordmark too. Name isn't final, so: `LOGO_WITH_TITLE` draws
+  GAME_TITLE under a text-free symbol. New prompts in `assets/LOGO_PROMPT.md` (A: route
+  emblem - the L road into the city grid; B: graffiti stencil; C: with the name, once final).
+- New tool: `tools/cityprint.js` (city generator fingerprint).
 
 ---
 

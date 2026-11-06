@@ -2210,7 +2210,7 @@ function drawTrack(){
     return;
   }
 
-  if(stage === 'run'){ drawRoadPath(); drawCityGround(); }
+  if(stage === 'run'){ drawOutskirtsGround(); drawRoadPath(); drawCityGround(); }
   else if(!street) drawRoadPath();
   else {
     drawCityGround();
@@ -3023,6 +3023,13 @@ function makeBuilding(cx, cy, tx, ty, nx, ny, inner, w, d, h, tier, seed){
 let bldList = [];
 function survivalBuildings(a0, a1, out){
   out.length = 0;
+  if(ROAD.kind === 'run'){
+    // the bend keeps its rows of lots; the rest of the run is the outskirts' cut
+    const b0 = Math.max(a0, ROAD.bendS0 - OUT_M), b1 = Math.min(a1, ROAD.bendS1 + OUT_M);
+    if(b1 > b0) for(let ti=0; ti<BLD_TIERS.length; ti++) survivalTier(BLD_TIERS[ti], ti, b0, b1, out);
+    outskirtsBuildings(a0, a1, out);
+    return out;
+  }
   for(let ti=0; ti<BLD_TIERS.length; ti++) survivalTier(BLD_TIERS[ti], ti, a0, a1, out);
   return out;
 }
@@ -3049,6 +3056,9 @@ function survivalTier(T, ti, a0, a1, out){
       if(ROAD.kind === 'run' && side === -1 && c > ROAD.bendS0 - (T.in1 + T.d1 + T.w1)
          && c < ROAD.bendS1 + (T.in1 + T.d1 + T.w1)) continue;
       if(ROAD.kind === 'run' && c + w/2 > ROAD.gateS - 40) continue;   // the city takes over
+      // the run's rows only fill the bend; they stop short of the outskirts
+      if(ROAD.kind === 'run' && T !== BLD_SKY &&
+         (c - w/2 < ROAD.bendS0 - OUT_M || c + w/2 > ROAD.bendS1 + OUT_M)) continue;
       const f = roadFrame(c);                      // the lot faces the road at its slot
       out.push(makeBuilding(f.x, f.y, f.tx, f.ty, side*f.nx + 0, side*f.ny + 0, inner, w, d, h, ti, seed));
     }
@@ -3162,6 +3172,93 @@ function buildings2D(){
 }
 const bld2DScratch = [], cityBldScratch = [];
 
+// ---------------------------------------------------------------- the outskirts (legs 1-2)
+// The edge of the city, along the run's two straight legs: the city's own BSP
+// cut (cityCut / cityPlots) with sparser numbers (OUTSKIRTS*), done in ROAD
+// coordinates - x = u, distance out from the road's middle, y = s, distance
+// along it - and laid onto the road with roadPoint. On a straight leg that is
+// exact: every lot and street stays a rectangle, running along the road
+// whichever way the road runs. The bend can't take a rectangle, so within
+// OUT_M of it the old rows of lots carry on (survivalTier).
+// Scenery only: the barrier never opens and nothing here collides.
+const OUT_M = OUTSKIRTS.W + 60;
+function outZone(s){
+  return s < ROAD.bendS0 - OUT_M || (s > ROAD.bendS1 + OUT_M && s < ROAD.gateS - 40);
+}
+function makeOutChunk(k, side){
+  const O = OUTSKIRTS, rng = cityRng(hash3(k, side > 0 ? 1 : 2, O.SEED)*4294967296);
+  const S0 = k*O.CH, S1 = S0 + O.CH, XST = 60;
+  const roads = [];
+  const lots = cityCut(rng, { x0:O.IN, y0:S0 + XST, x1:O.W, y1:S1, pad:{ n:XST, s:0, w:0, e:0 } },
+                       0, roads, OUTSKIRTS_CUT);
+  roads.push({ axis:'h', w:XST, x0:O.IN, x1:O.W, y0:S0, y1:S0 + XST });   // a cross street per chunk
+  // every block is built on, sparsely; more of each block as you near the city
+  const built = lerp(O.BUILT0, O.BUILT1, clamp((S0 + S1)/2/ROAD.gateS, 0, 1));
+  // a rectangle in (u, s) as a world quad; null if it isn't wholly in the zone
+  const quad = r => {
+    if(!outZone(r.y0) || !outZone(r.y1)) return null;
+    return [roadPoint(r.y0, side*r.x0), roadPoint(r.y0, side*r.x1),
+            roadPoint(r.y1, side*r.x1), roadPoint(r.y1, side*r.x0)];
+  };
+  const out = { k, side, roads:[], blocks:[], bld:[] };
+  for(const r of roads){ const q = quad(r); if(q) out.roads.push(q); }
+  for(const lot of lots){
+    const core = { x0:lot.x0 + PAVE, y0:lot.y0 + PAVE, x1:lot.x1 - PAVE, y1:lot.y1 - PAVE };
+    const plots = cityPlots(rng, core, [], OUTSKIRTS_PLOT);
+    const bq = quad(lot); if(bq) out.blocks.push(bq);
+    const keep = (rng.next()*plots.length)|0;                  // never a block left bare
+    for(let pi=0; pi<plots.length; pi++){
+      const pl = plots[pi];
+      const up = rng.chance(built) || pi === keep, tall = rng.chance(O.TOWER);
+      const h = tall ? rng.range(O.TOWER_H0, O.TOWER_H1) : rng.range(O.H0, O.H1);
+      const seed = (rng.next()*1e9)|0, col = BLD_COLS[(rng.next()*BLD_COLS.length)|0];
+      const lit = (0.16 + rng.next()*0.36)*O.LIT;
+      if(!up) continue;
+      const q = quad(pl); if(!q) continue;
+      const f = roadFrame((pl.y0 + pl.y1)/2);
+      out.bld.push({ q, h, tier:0, seed, col, lit, out:true, s0:pl.y0, s1:pl.y1,
+                     nx:side*f.nx + 0, ny:side*f.ny + 0 });
+    }
+  }
+  return out;
+}
+const outCache = new Map();
+function outChunk(k, side){
+  const key = k*2 + (side > 0 ? 1 : 0);
+  let c = outCache.get(key);
+  if(!c){
+    c = makeOutChunk(k, side); outCache.set(key, c);
+    if(outCache.size > 40){
+      const kn = Math.floor(camS/OUTSKIRTS.CH);
+      for(const [kk, v] of outCache) if(Math.abs(v.k - kn) > 6) outCache.delete(kk);
+    }
+  }
+  return c;
+}
+function outChunks(a0, a1, fn){
+  for(let k = Math.floor(a0/OUTSKIRTS.CH); k <= Math.floor(a1/OUTSKIRTS.CH); k++)
+    for(const side of [-1, 1]) fn(outChunk(k, side));
+}
+function outskirtsBuildings(a0, a1, out){
+  outChunks(a0, a1, c => { for(const b of c.bld) if(b.s1 > a0 && b.s0 < a1) out.push(b); });
+}
+// the ground: dim unmarked streets, and pavement where a lot is built on
+// (vacant lots are left as the wasteland under everything)
+function drawOutskirtsGround(){
+  const [a, b] = roadSpan();
+  const poly = q => { ctx.beginPath(); ctx.moveTo(q[0].x*S, q[0].y*KY*S);
+    for(let i=1;i<4;i++) ctx.lineTo(q[i].x*S, q[i].y*KY*S); ctx.closePath(); };
+  const near = q => inView((q[0].x + q[2].x)/2, (q[0].y + q[2].y)/2, 700);
+  ctx.save();
+  outChunks(a, b, c => {
+    ctx.globalAlpha = 0.75; ctx.fillStyle = groundTile;
+    for(const q of c.roads) if(near(q)){ poly(q); ctx.fill(); }
+    ctx.globalAlpha = 1; ctx.fillStyle = PAVE_COL; ctx.strokeStyle = KERB_COL; ctx.lineWidth = Math.max(1, 2*S);
+    for(const q of c.blocks) if(near(q)){ poly(q); ctx.fill(); ctx.stroke(); }
+  });
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------- the city (STREET)
 // After C:\proj\the-party's src/city.js: the city is CUT, not ruled. A piece
 // of ground is halved, and each half halved, until no piece is big enough to
@@ -3204,26 +3301,29 @@ function cityRng(seed){
 }
 const snap4 = v => Math.round(v/4)*4;
 const cityRoadW = d => Math.max(CITY_ROAD_MIN, CITY_ROADS[Math.min(d, CITY_ROADS.length - 1)]);
+// the cut's numbers as one set, so the outskirts can cut the same way, sparser
+const CITY_CUT = { LOT_MIN, LOT_MAX, LOT_STOP, LOT_JITTER, LOT_ASPECT, LOT_MERGE, LOT_MERGE_MAX, roadW:cityRoadW };
+const CITY_PLOT = { PLOT_MIN, PLOT_MAX, PLOT_DEEP, PLOT_DEEP_MAX, PLOT_STOP };
 
 // the party's cut(), with x = u. `pad` is the road width on each side of the
 // piece, so a road laid across it runs into the roads at both ends.
-function cityCut(rng, node, depth, roads){
+function cityCut(rng, node, depth, roads, P = CITY_CUT){
   const w = node.x1 - node.x0, h = node.y1 - node.y0;
-  const rw = cityRoadW(depth);
-  const canV = w >= 2*LOT_MIN + rw, canH = h >= 2*LOT_MIN + rw;
-  const must = w > LOT_MAX || h > LOT_MAX;
-  if((!canV && !canH) || (!must && rng.chance(LOT_STOP))) return [node];
+  const rw = P.roadW(depth);
+  const canV = w >= 2*P.LOT_MIN + rw, canH = h >= 2*P.LOT_MIN + rw;
+  const must = w > P.LOT_MAX || h > P.LOT_MAX;
+  if((!canV && !canH) || (!must && rng.chance(P.LOT_STOP))) return [node];
   let v;
   if(canV && !canH) v = true;
   else if(canH && !canV) v = false;
-  else if(w > LOT_MAX && h <= LOT_MAX) v = true;
-  else if(h > LOT_MAX && w <= LOT_MAX) v = false;
-  else if(w > h*LOT_ASPECT) v = true;
-  else if(h > w*LOT_ASPECT) v = false;
+  else if(w > P.LOT_MAX && h <= P.LOT_MAX) v = true;
+  else if(h > P.LOT_MAX && w <= P.LOT_MAX) v = false;
+  else if(w > h*P.LOT_ASPECT) v = true;
+  else if(h > w*P.LOT_ASPECT) v = false;
   else v = rng.chance(0.5);
   const a0 = v ? node.x0 : node.y0, a1 = v ? node.x1 : node.y1;
-  const lo = a0 + LOT_MIN + rw/2, hi = a1 - LOT_MIN - rw/2;
-  const pos = snap4((lo + hi)/2 + rng.range(-1, 1)*((hi - lo)/2)*LOT_JITTER);
+  const lo = a0 + P.LOT_MIN + rw/2, hi = a1 - P.LOT_MIN - rw/2;
+  const pos = snap4((lo + hi)/2 + rng.range(-1, 1)*((hi - lo)/2)*P.LOT_JITTER);
   const b0 = pos - rw/2, b1 = pos + rw/2, p = node.pad;
   const road = v
     ? { axis:'v', w:rw, x0:b0, x1:b1, y0:node.y0 - p.n, y1:node.y1 + p.s }
@@ -3232,31 +3332,31 @@ function cityCut(rng, node, depth, roads){
                 : { x0:node.x0, y0:node.y0, x1:node.x1, y1:b0, pad:{ n:p.n, s:rw, w:p.w, e:p.e } };
   const rhs = v ? { x0:b1, y0:node.y0, x1:node.x1, y1:node.y1, pad:{ n:p.n, s:p.s, w:rw, e:p.e } }
                 : { x0:node.x0, y0:b1, x1:node.x1, y1:node.y1, pad:{ n:rw, s:p.s, w:p.w, e:p.e } };
-  const A = cityCut(rng, lhs, depth + 1, roads), B = cityCut(rng, rhs, depth + 1, roads);
+  const A = cityCut(rng, lhs, depth + 1, roads, P), B = cityCut(rng, rhs, depth + 1, roads, P);
   // undo the cut: both halves whole, so no road is stranded inside the block
-  if(A.length===1 && B.length===1 && w <= LOT_MERGE_MAX && h <= LOT_MERGE_MAX && rng.chance(LOT_MERGE))
+  if(A.length===1 && B.length===1 && w <= P.LOT_MERGE_MAX && h <= P.LOT_MERGE_MAX && rng.chance(P.LOT_MERGE))
     return [{ x0:node.x0, y0:node.y0, x1:node.x1, y1:node.y1, pad:p, merged:true }];
   roads.push(road);
   return [...A, ...B];
 }
 
 // a block's core into plots: the same cut, no roads, buildings wall to wall
-function cityPlots(rng, r, out){
+function cityPlots(rng, r, out, P = CITY_PLOT){
   const w = r.x1 - r.x0, h = r.y1 - r.y0;
-  const canV = w >= 2*PLOT_MIN, canH = h >= 2*PLOT_DEEP;
-  const must = w > PLOT_MAX || h > PLOT_DEEP_MAX;
-  if((!canV && !canH) || (!must && rng.chance(PLOT_STOP))){ out.push(r); return out; }
+  const canV = w >= 2*P.PLOT_MIN, canH = h >= 2*P.PLOT_DEEP;
+  const must = w > P.PLOT_MAX || h > P.PLOT_DEEP_MAX;
+  if((!canV && !canH) || (!must && rng.chance(P.PLOT_STOP))){ out.push(r); return out; }
   let v;
   if(canV && !canH) v = true;
   else if(canH && !canV) v = false;
-  else if(w > PLOT_MAX && h <= PLOT_DEEP_MAX) v = true;
-  else if(h > PLOT_DEEP_MAX && w <= PLOT_MAX) v = false;
+  else if(w > P.PLOT_MAX && h <= P.PLOT_DEEP_MAX) v = true;
+  else if(h > P.PLOT_DEEP_MAX && w <= P.PLOT_MAX) v = false;
   else v = rng.chance(0.5);
-  const mn = v ? PLOT_MIN : PLOT_DEEP;
+  const mn = v ? P.PLOT_MIN : P.PLOT_DEEP;
   const a0 = v ? r.x0 : r.y0, a1 = v ? r.x1 : r.y1;
   const pos = snap4((a0 + a1)/2 + rng.range(-1, 1)*((a1 - a0 - 2*mn)/2)*0.9);
-  cityPlots(rng, v ? { x0:r.x0, y0:r.y0, x1:pos, y1:r.y1 } : { x0:r.x0, y0:r.y0, x1:r.x1, y1:pos }, out);
-  cityPlots(rng, v ? { x0:pos, y0:r.y0, x1:r.x1, y1:r.y1 } : { x0:r.x0, y0:pos, x1:r.x1, y1:r.y1 }, out);
+  cityPlots(rng, v ? { x0:r.x0, y0:r.y0, x1:pos, y1:r.y1 } : { x0:r.x0, y0:r.y0, x1:r.x1, y1:pos }, out, P);
+  cityPlots(rng, v ? { x0:pos, y0:r.y0, x1:r.x1, y1:r.y1 } : { x0:r.x0, y0:pos, x1:r.x1, y1:r.y1 }, out, P);
   return out;
 }
 
@@ -5130,7 +5230,12 @@ function drawMap(){
     for(let i=1;i<Rl.xs.length;i++) ctx.lineTo(Rl.xs[i], Rl.ys[i]);
     for(let i=Ll.xs.length-1;i>=0;i--) ctx.lineTo(Ll.xs[i], Ll.ys[i]);
     ctx.closePath(); ctx.fillStyle = MAP_COL.STREET; ctx.fill();
-    // the roadside lots, flat
+    // the outskirts' little streets, then the lots, flat
+    if(run){
+      ctx.fillStyle = MAP_COL.STREET;
+      outChunks(ra, rb, c => { for(const q of c.roads){ ctx.beginPath(); ctx.moveTo(q[0].x, q[0].y);
+        for(let i=1;i<4;i++) ctx.lineTo(q[i].x, q[i].y); ctx.closePath(); ctx.fill(); } });
+    }
     ctx.fillStyle = MAP_COL.BLOCK;
     for(const b of survivalBuildings(ra, rb, mapBld)){
       ctx.beginPath(); ctx.moveTo(b.q[0].x, b.q[0].y);
@@ -5197,7 +5302,8 @@ function drawMap(){
 
   // ---- the route (the run only)
   const Q = { x:344, y:34, w:274, h:222 };
-  if(run){
+  if(run && street){ if(MAP_CITY_OVERVIEW) drawCityOverview(Q, F, R); }
+  else if(run){
     const Rr = RUN.CORNER_R, top = ROAD.gateY - 2*CITY_CH;
     const bx0 = -Rr - RUN.LEG1 - 400, bx1 = CITY_W + 400, by0 = top - 300, by1 = ROAD_HW + 400;
     const kk = Math.min(Q.w/(bx1 - bx0), Q.h/(by1 - by0));
@@ -5234,7 +5340,7 @@ function drawMap(){
 
   // ---- what to know, under the route
   ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-  let ty = run ? Q.y + Q.h + 12 : Q.y;
+  let ty = run && !(street && !MAP_CITY_OVERVIEW) ? Q.y + Q.h + 12 : Q.y;
   const say = (t, col, big) => { ctx.font = (big ? 'bold 12px' : '8px')+' monospace'; ctx.fillStyle = col; ctx.fillText(t, Q.x, ty); ty += big ? 16 : 12; };
   if(run && !street){
     const s = roadProject(me.x, me.y).s, leg = s < ROAD.bendS0 ? 1 : 2;
@@ -5250,6 +5356,43 @@ function drawMap(){
   ty = P.y + P.h - 12;
   say('M / ESC  close     -  =  zoom', NEON.DIM);
   ctx.restore();
+}
+
+// the right panel once you're in the city: the city round you, zoomed out, with
+// the left panel's reach marked on it - where the pack is, which way is clear
+function drawCityOverview(Q, F, R){
+  const me = cars[0], RO = MAP_OVERVIEW_R, k = Math.min(Q.w, Q.h)/2/RO, lw = 1/k;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(Q.x, Q.y, Q.w, Q.h); ctx.clip();
+  ctx.fillStyle = MAP_COL.GROUND; ctx.fillRect(Q.x, Q.y, Q.w, Q.h);
+  ctx.translate(Q.x + Q.w/2, Q.y + Q.h/2); ctx.scale(k, k); ctx.translate(-F.x, -F.y);
+  const ya = F.y - RO*1.4, yb = Math.min(F.y + RO*1.4, cityLimitY);
+  // leg 2's road running off the bottom, then the city's floor and blocks
+  ctx.fillStyle = MAP_COL.STREET;
+  ctx.fillRect(-ROAD_HW, ya, 2*ROAD_HW, F.y + RO*1.4 - ya);
+  if(yb > ya){
+    ctx.fillRect(-CITY_W, ya, 2*CITY_W, yb - ya);
+    ctx.fillStyle = MAP_COL.BLOCK;
+    for(const c of cityChunks(ya, yb)) for(const b of c.blocks) ctx.fillRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    ctx.strokeStyle = MAP_COL.WALL; ctx.globalAlpha = 0.7; ctx.lineWidth = 1.2*lw;
+    ctx.beginPath();
+    for(const side of [-1, 1]){ ctx.moveTo(side*CITY_W, ya); ctx.lineTo(side*CITY_W, yb); }
+    if(cityLimitY < F.y + RO*1.4){ ctx.moveTo(-CITY_W, cityLimitY); ctx.lineTo(CITY_W, cityLimitY); }
+    ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  // what the left panel shows
+  ctx.strokeStyle = NEON.INK; ctx.globalAlpha = 0.55; ctx.lineWidth = lw;
+  ctx.strokeRect(F.x - R, F.y - R, 2*R, 2*R); ctx.globalAlpha = 1;
+  if(MAP_SHOW_ENEMIES){
+    ctx.fillStyle = MAP_COL.HUNTER;
+    for(const c of cars) if(!c.isPlayer && !c.dead){ ctx.beginPath(); ctx.arc(c.x, c.y, 2.4*lw, 0, Math.PI*2); ctx.fill(); }
+  }
+  if(onFoot && !me.dead){ ctx.fillStyle = MAP_COL.CAR; ctx.fillRect(me.x - 2*lw, me.y - 2*lw, 4*lw, 4*lw); }
+  mapPip(F.x, F.y, onFoot ? walker.a : me.angle, 4.5, k, MAP_COL.YOU, 8);
+  ctx.restore();
+  ctx.strokeStyle = MAP_COL.WALL; ctx.globalAlpha = 0.35; ctx.strokeRect(Q.x + 0.5, Q.y + 0.5, Q.w - 1, Q.h - 1); ctx.globalAlpha = 1;
+  ctx.font = '8px monospace'; ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillStyle = NEON.DIM;
+  ctx.fillText('THE CITY, ZOOMED OUT', Q.x + 6, Q.y + 5);
 }
 
 // ---------------------------------------------------------------- the menu
@@ -5297,14 +5440,23 @@ function drawMenu(){
     const [cx, cy, cw, ch] = LOGO_CROP;
     const sx = cx*logoImg.naturalWidth, sy = cy*logoImg.naturalHeight;
     const sw = cw*logoImg.naturalWidth, sh = ch*logoImg.naturalHeight;
-    const k = Math.min(VW*LOGO_WIDTH/sw, VH*0.42/sh), w = sw*k, h = sh*k;
+    // with LOGO_WITH_TITLE the image is a symbol and the game writes the name
+    // under it (so a rename is one line in config.js, not a new image)
+    const boxH = LOGO_WITH_TITLE ? VH*0.30 : VH*0.42, ly = LOGO_WITH_TITLE ? VH*0.23 : VH*0.31;
+    const k = Math.min(VW*LOGO_WIDTH/sw, boxH/sh), w = sw*k, h = sh*k;
     ctx.save();
     ctx.imageSmoothingEnabled = true;
     // 'lighter' adds the image onto the menu: a black background vanishes and
     // the neon glow blends into the dark instead of sitting in a box
     ctx.globalCompositeOperation = LOGO_BLEND;
-    ctx.drawImage(logoImg, sx, sy, sw, sh, VW/2 - w/2, VH*0.31 - h/2, w, h);
+    ctx.drawImage(logoImg, sx, sy, sw, sh, VW/2 - w/2, ly - h/2, w, h);
     ctx.restore();
+    if(LOGO_WITH_TITLE){
+      ctx.font = 'bold 34px monospace';
+      ctx.shadowColor = NEON.CYAN; ctx.shadowBlur = 14;
+      ctx.fillStyle = NEON.MAGENTA; ctx.fillText(GAME_TITLE, VW/2, ly + h/2 + 34);
+      ctx.shadowBlur = 0;
+    }
   } else {
     ctx.font = 'bold 54px monospace';
     ctx.shadowColor = NEON.CYAN; ctx.shadowBlur = 18;

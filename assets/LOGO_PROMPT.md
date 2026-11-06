@@ -1,44 +1,64 @@
-# Logo prompt (for ChatGPT image generation)
+# Logo prompts (for ChatGPT image generation)
 
-Save the result as `assets/logo.png` (transparent PNG). The menu picks it up automatically;
-`LOGO_IMAGE` / `LOGO_WIDTH` in `config.js` control it. No file = the neon text fallback.
+The name isn't final, so the logo is split in two:
 
-## Main prompt
+- **a SYMBOL with no lettering** - made by the image model, survives any rename;
+- **the NAME** - written by the game itself from `GAME_TITLE` in `config.js`.
 
-> A video game logo wordmark that reads exactly "SCRAPHEAP", in one line of bold, heavy,
-> slightly condensed capital letters. The letters are built from welded scrap metal: riveted
-> steel plates, rough weld seams, small dents and bolt heads, a few jagged torn edges - like
-> they were cut from a wrecked car with a torch. Running around the outline of every letter
-> is a thin glowing neon tube in hot magenta (#ff2bd6), with a soft cyan (#22f0ff) glow
-> bleeding off the metal edges, as if the scrap sign has been rewired into a cyberpunk neon
-> sign. Lighting comes from the neon itself; the metal faces are dark gunmetal with magenta
-> and cyan reflections. Subtle details: a few sparks, a hairline crack in one letter, a
-> single flickering (dimmer) tube segment. Flat, straight-on front view, no perspective
-> tilt, letters evenly spaced and perfectly legible. Wide horizontal composition, the
-> wordmark filling about 85% of the width. Transparent background, no backdrop, no scene,
-> no cars, no characters, no extra text, no tagline. Crisp clean edges suitable for a game
-> title screen on a near-black (#07040f) background.
+Set `LOGO_WITH_TITLE = true` in `config.js` and the menu draws the symbol with the name
+under it. Save the image as `assets/logo.png`. A black background is fine (`LOGO_BLEND`
+'lighter' makes it vanish); crop with `LOGO_CROP` if the symbol only fills part of the image.
 
-Settings: landscape (1536x1024). Ask for **transparent background** explicitly.
+**Status 2026-11-06: the logo stays as it is** - the welded-metal neon wordmark in
+`assets/logo.png`. Prompt A below was tried and rejected: it produced an app icon, which is not
+what a title logo should be. Kept only as a record of what not to repeat.
 
-## If you want a variation
+---
 
-- **More pixel-art** (matches the in-game sprites):
-  > ...same description, but rendered as clean high-resolution pixel art with a limited
-  > palette (near-black, gunmetal greys, magenta #ff2bd6, cyan #22f0ff), hard pixel edges,
-  > no anti-aliasing blur, 16-bit arcade title screen style.
-- **More road/racing**: add
-  > a strip of road rumble-strip (red and white blocks) under the wordmark, and a motion
-  > streak behind the letters as if the logo is driving left to right.
-- **Cleaner/minimal**: drop the sparks, crack and flicker; keep only welded plates + neon.
+## A. The route emblem (recommended) - the game's whole journey as a badge
 
-## Follow-up messages that usually fix things
+> A minimal flat vector emblem for a video game, no text, no letters anywhere. A square
+> badge with softly rounded corners, outlined in a single glowing hot-magenta (#ff2bd6) neon
+> line. Inside the badge, seen straight from above like a map: a thick highway enters from
+> the lower left, runs to the right, turns a clean 90-degree corner and runs straight up
+> into a dense grid of small rectangular city blocks that fills the top of the badge. The
+> blocks are flat deep violet (#3b2b5e) with thin cyan (#22f0ff) outlines, irregular in
+> size like a real downtown, with narrow streets between them. On the highway, just before
+> the corner, a small bright magenta arrow-shaped car marker pointing along the road. The
+> highway has a dashed centre line. Everything is flat colour and clean geometric line art
+> with a soft neon glow, like a cyberpunk transit sign. Pure black background, centred,
+> generous empty margin around the badge. It must still read clearly when shown very small,
+> like an app icon.
 
-- Letters wrong or misspelled: "The text must read exactly S-C-R-A-P-H-E-A-P, nine letters,
-  nothing else. Keep everything else the same."
-- Background not transparent: "Same image, but with a fully transparent background (PNG
-  alpha), remove any glow haze that fills the background."
-- Too busy at small size: "Make the letter shapes simpler and thicker so the logo stays
-  readable when shown 600 pixels wide."
-- Glow too weak on dark backgrounds: "Increase the magenta neon outline brightness and the
-  cyan edge glow."
+Settings: square (1024x1024).
+
+## B. Graffiti stencil - rougher, street-level
+
+> A spray-paint stencil emblem on a black background, no text. A battered muscle car seen
+> head-on, simplified to bold flat shapes like a protest stencil, with one headlight lit.
+> Painted in hot magenta (#ff2bd6) with overspray and drips, a second offset pass in cyan
+> (#22f0ff) slightly misregistered behind it like a cheap two-colour print. Grainy, gritty,
+> but the silhouette is clean and instantly readable. Centred, empty margin, nothing else in
+> the image.
+
+Settings: square (1024x1024).
+
+## C. With the name in it (only once the name is final)
+
+Use either prompt above and add:
+
+> Below the emblem, the word "[NAME]" in a wide, heavy, geometric sans-serif typeface, all
+> capitals, flat cyan (#22f0ff) with a thin magenta outline, evenly letter-spaced. The text
+> must read exactly "[NAME]" and nothing else.
+
+Then set `LOGO_WITH_TITLE = false` (the image carries the name).
+
+---
+
+## Follow-ups that usually fix things
+
+- Text crept in: "Remove every letter, number and word from the image. Keep everything else."
+- Too detailed: "Simplify: half as many city blocks, thicker lines, so it reads at 64 pixels."
+- Glow fills the background: "Keep the background pure black (#000000); the glow should stay
+  close to the lines."
+- Corner looks wrong: "The road must make exactly one 90-degree turn: right, then straight up."

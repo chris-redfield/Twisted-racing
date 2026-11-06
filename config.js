@@ -140,6 +140,31 @@ const BLD_COLS  = ['#4a3c52','#56463e','#3e4454','#5a4a4c','#48394a','#3c3c4a','
 const FLOOR_H = 12, WIN_STEP = 13;   // storey height and window pitch, world units
 
 // -----------------------------------------------------------------------------
+// 5b. THE OUTSKIRTS (legs 1 and 2) - the same BSP cut as the city, sparse
+// -----------------------------------------------------------------------------
+// The edge of the city: the same blocks and little unmarked streets, but every
+// block is only partly built - a few low buildings with gaps between them. It
+// fills in as you go: BUILT0 of a block's plots have a building at the start of
+// leg 1, BUILT1 by the city gate (every block keeps at least one).
+// The road's barrier never opens here: it's scenery. (The bend keeps the old
+// rows of lots: a cut can't follow a curve.)
+const OUTSKIRTS = {
+  SEED:    5113,
+  CH:      1400,   // chunk length along the road
+  IN:      ROAD_HW + 34,   // lots start this far from the road's middle
+  W:       1150,   // and run out to here
+  BUILT0:  0.30,   // share of a block's plots with a building at the start...
+  BUILT1:  0.65,   // ...and at the city gate
+  H0: 16, H1: 58,  // building heights (most of them)
+  TOWER:   0.025,  // the odd taller one
+  TOWER_H0: 90, TOWER_H1: 170,
+  LIT:     0.55,   // lit windows relative to the city's (it's darker out here)
+};
+const OUTSKIRTS_CUT  = { LOT_MIN:190, LOT_MAX:560, LOT_STOP:0.40, LOT_JITTER:0.85, LOT_ASPECT:1.5,
+                         LOT_MERGE:0.45, LOT_MERGE_MAX:700, roadW: d => d < 1 ? 66 : 54 };
+const OUTSKIRTS_PLOT = { PLOT_MIN:56, PLOT_MAX:140, PLOT_DEEP:56, PLOT_DEEP_MAX:150, PLOT_STOP:0.25 };
+
+// -----------------------------------------------------------------------------
 // 6. THE CITY (part 3) - a BSP-cut strip of blocks either side of the highway
 // -----------------------------------------------------------------------------
 // Any street whose cut reaches the highway opens a gap in the barrier, which is
@@ -229,6 +254,10 @@ const MAP_PAUSES = true;               // the game holds still while you read it
 const MAP_RADII  = [700, 1300, 2400, 4200];   // how far the local map reaches (- / = step)
 let   MAP_ZOOM   = 1;                  // which of MAP_RADII it opens at
 const MAP_SHOW_ENEMIES = true;         // hunters as pips (the-party hid its monsters on purpose)
+// once you're in the city the run's route strip is done with; the right panel
+// becomes a zoomed-out overview of the city round you (false = no right panel)
+const MAP_CITY_OVERVIEW = true;
+const MAP_OVERVIEW_R    = 5200;        // how far that overview reaches
 const MAP_COL = {
   GROUND: '#0b0716',   // wasteland / off the map
   STREET: '#1e1636',   // roads and the city floor (the gaps between blocks)
@@ -260,6 +289,9 @@ const LOGO_CROP  = [0, 0.24, 1, 0.52];   // the part of the image to use: x, y, 
 // how it's laid on the menu: 'lighter' adds it (a black background disappears,
 // glow blends in); 'source-over' draws it as is (use with a transparent PNG)
 const LOGO_BLEND = 'lighter';
+// true when the image is a SYMBOL with no lettering: the menu then writes
+// GAME_TITLE under it, so renaming the game doesn't mean a new image
+const LOGO_WITH_TITLE = false;
 
 // Dev mode: your car takes no damage (I toggles it in game). Off for real runs.
 const DEV_MODE = false;
