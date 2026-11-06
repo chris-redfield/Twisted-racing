@@ -178,8 +178,11 @@ const CITY_CULL         = 2600;     // and are forgotten past this
 const CITY_FLOW_CELL    = 20;       // grid cell, world units
 const CITY_FLOW_N       = 170;      // cells across (CELL x N = the area they can path in)
 const CITY_FLOW_EVERY   = 0.35;     // seconds between refills
+const CITY_CRUISE       = 115;      // how fast they idle round the city once you're out of the car
 // the key that clears every enemy car, and brings them back (works in every part)
 const ENEMY_TOGGLE_KEY  = 'KeyN';
+// testing: jump straight to the city gate (from the menu, or anywhere in a run)
+const SKIP_TO_CITY_KEY = 'KeyC';
 
 // -----------------------------------------------------------------------------
 // 7. ON FOOT (E next to a stopped car)
@@ -200,6 +203,7 @@ const ENTER_R = 34;                  // how close to the car E puts you back in
 const WALK_HP = 40;                  // a person is not a car
 const WALK_SHOT_DMG = 6;             // an enemy round that finds you on foot
 const WALK_RUNOVER  = 0.12;          // damage per unit/s of a car that hits you on foot
+const WALK_RUNOVER_MIN = 70;         // ...but only above this speed: slower and it just shoves you
 const WALK_PITCH_UP = 0.78, WALK_PITCH_DOWN = -0.51;   // look up/down limits
 const WALK_PITCH_RATE = 1.4;         // rad/s, Up/Down arrows
 
@@ -215,6 +219,29 @@ let   CAR_MAG_MAX = 2.2;             // distant-car exaggeration in first person
 let   ASC_LO = 16, ASC_HI = 100, ASC_GAMMA = 1.0;   // ASCII: luminance -> glyph tone curve
 
 // -----------------------------------------------------------------------------
+// 8b. THE MAP (M) - a full-screen map over the game, which pauses while it's open
+// -----------------------------------------------------------------------------
+// After the-party's minimap: the city is drawn SHRUNK, every block at its real
+// size and place, and the streets are just the ground showing between them.
+const MAP_KEY   = 'KeyM';
+const SOUND_KEY = 'KeyO';              // sound on/off (moved off M for the map)
+const MAP_PAUSES = true;               // the game holds still while you read it
+const MAP_RADII  = [700, 1300, 2400, 4200];   // how far the local map reaches (- / = step)
+let   MAP_ZOOM   = 1;                  // which of MAP_RADII it opens at
+const MAP_SHOW_ENEMIES = true;         // hunters as pips (the-party hid its monsters on purpose)
+const MAP_COL = {
+  GROUND: '#0b0716',   // wasteland / off the map
+  STREET: '#1e1636',   // roads and the city floor (the gaps between blocks)
+  BLOCK:  '#3b2b5e',   // a city block / a roadside lot
+  BLOCK_EDGE: '#54427e',
+  WALL:   '#22f0ff',   // barriers and the city wall
+  YOU:    '#ff2bd6',   // the only magenta on the map
+  CAR:    '#22f0ff',   // your car, when you're out of it
+  HUNTER: '#ffb02e',   // enemy cars
+  PAD:    '#e8e0ff',   // pickups
+};
+
+// -----------------------------------------------------------------------------
 // 9. COLOURS - the cyberpunk menu and HUD
 // -----------------------------------------------------------------------------
 const NEON = {
@@ -225,6 +252,14 @@ const NEON = {
   INK:     '#e8e0ff',   // body text
 };
 const GAME_TITLE = 'SCRAPHEAP';   // the name on the menu
+// the menu logo: a PNG (transparent background) next to index.html. If the file
+// is missing the menu falls back to GAME_TITLE in neon text. '' = always text.
+const LOGO_IMAGE = 'assets/logo.png';
+const LOGO_WIDTH = 0.86;          // how much of the screen's width it may take
+const LOGO_CROP  = [0, 0.24, 1, 0.52];   // the part of the image to use: x, y, w, h as fractions
+// how it's laid on the menu: 'lighter' adds it (a black background disappears,
+// glow blends in); 'source-over' draws it as is (use with a transparent PNG)
+const LOGO_BLEND = 'lighter';
 
 // Dev mode: your car takes no damage (I toggles it in game). Off for real runs.
 const DEV_MODE = false;

@@ -15,7 +15,7 @@
 </head>
 <body>
 <div id="wrap"><canvas id="cv"></canvas></div>
-<div id="hint">WASD drive &middot; ARROWS or mouse aim/fire &middot; SPACE boost &middot; P pause &middot; M sound &middot; R resolution &middot; F fps &middot; I dev mode &middot; ESC menu</div>
+<div id="hint">WASD drive &middot; ARROWS or mouse aim/fire &middot; SPACE boost &middot; P pause &middot; M map &middot; O sound &middot; R resolution &middot; F fps &middot; I dev mode &middot; ESC menu</div>
 <script src="config.js"></script>
 <script>
 "use strict";
@@ -235,10 +235,19 @@ let showFps=false, paused=false;
 // still take fire, still die, still score.
 let devMode = DEV_MODE;
 function onPress(code){
+  // the map (M) takes the keyboard while it's open: M / ESC close, - / = zoom
+  if(state==='play' && code===MAP_KEY){ toggleMap(); return; }
+  if(mapOpen && state==='play'){
+    if(code==='Escape') mapOpen = false;
+    if(code==='Minus') MAP_ZOOM = Math.min(MAP_RADII.length-1, MAP_ZOOM+1);
+    if(code==='Equal') MAP_ZOOM = Math.max(0, MAP_ZOOM-1);
+    if(code===SOUND_KEY) Snd.toggle();
+    return;
+  }
   if(code==='KeyF') showFps=!showFps;
   if(code==='KeyI') devMode=!devMode;
   if(code==='KeyR') setRes(SCALES[(SCALES.indexOf(PX)+1)%SCALES.length]);
-  if(code==='KeyM') Snd.toggle();
+  if(code===SOUND_KEY) Snd.toggle();
   if(code==='KeyG') asciiMode = (asciiMode+1)%3;     // off -> ascii -> ascii on solid cells
   if(code==='KeyB'){ showBuildings = !showBuildings; if(race && track) buildRingsLoop(); }
   if(code==='KeyH'){ showFence = !showFence; if(race && track) buildRingsLoop(); }
@@ -262,6 +271,8 @@ function onPress(code){
   if(code==='Comma')        CAR_MAG_MAX = clamp(CAR_MAG_MAX-0.1, 1, 4);
   if(code==='Period')       CAR_MAG_MAX = clamp(CAR_MAG_MAX+0.1, 1, 4);
 
+  // testing: straight to the city gate, from the menu or anywhere in a run
+  if(code===SKIP_TO_CITY_KEY && (state==='title' || state==='play' || state==='over') && !paused){ skipToCity(); return; }
   // the menu: ENTER / SPACE starts the run. The digits are dev shortcuts to the
   // stages this engine grew out of (not shown on the menu).
   if(state==='title'){
@@ -598,7 +609,7 @@ function applyStage(){
 function startMatch(np){
   numPlayers = (np===1||np===2) ? np : numPlayers;
   if(stage==='street' || stage==='run') numPlayers = 1;   // walking is a solo thing
-  checkpoint = null; bannerT = 0; walkerDown = false; walkHurtT = 0; FLOW.ok = false;
+  checkpoint = null; bannerT = 0; mapOpen = false; walkerDown = false; walkHurtT = 0; FLOW.ok = false;
   level=1; arenaShape='rect';
   cars=[]; shots=[]; mines=[]; fx=[]; skids=[]; blocks=[]; hazards=[]; finishOrder=[]; pads=[];
   applyStage();
@@ -809,6 +820,14 @@ function restartFromCheckpoint(){
   if(cp.city){ enterCity(); checkpoint = cp; }
   else banner('CHECKPOINT');
 }
+// SKIP_TO_CITY_KEY: a fresh run that starts at the city gate, at the pace and
+// wave you'd have got there with - the same path as the city checkpoint
+function skipToCity(){
+  stage = 'run'; menuPop = null;
+  startMatch(1);
+  checkpoint = { city:true, camV:CAM_VMAX, wave:1 + Math.floor(ROAD.gateS/WAVE_DIST), kills:0 };
+  restartFromCheckpoint();
+}
 // both legs' car sheets up front, so nothing bakes mid-run (~30 ms a sheet)
 function prebakeSheets(){
   const z0 = ZOOM2D;
@@ -928,6 +947,49 @@ function aiCity(c, dt){
   if(dist < 340 && Math.abs(angDiff(c.angle, Math.atan2(dy, dx))) < 0.12 && cityClear(c.x, c.y, T.x, T.y))
     fireCannon(c);
 }
+// Out of the car you are nobody: the hunters lose interest and just drive the
+// city - down a street, a turn now and then at a junction, round at a dead end,
+// keeping to the middle of the road. No aiming, no shooting. Get back in and
+// they're on you again (aiCity).
+function aiCruise(c, dt){
+  const spd = Math.abs(c.speed||0), Q = Math.PI/2;
+  // is there road for a car this far out along heading a?
+  const open = (a, d) => flowPassable(c.x + Math.cos(a)*d*0.5, c.y + Math.sin(a)*d*0.5)
+                      && flowPassable(c.x + Math.cos(a)*d,     c.y + Math.sin(a)*d);
+  if(c.cruiseN !== footN){
+    // just lost interest: pick a street direction - away from you if close
+    c.cruiseN = footN; c.cruiseT = rnd(1.5, 3);
+    const dx = c.x - walker.x, dy = c.y - walker.y;
+    const a0 = Math.hypot(dx, dy) < 260 ? Math.atan2(dy, dx) : c.angle;
+    const opts = [0, 1, 2, 3].map(k => k*Q).filter(a => open(a, 90));
+    c.cruiseA = opts.length ? opts.reduce((b, a) => Math.abs(angDiff(a, a0)) < Math.abs(angDiff(b, a0)) ? a : b)
+                            : Math.round(c.angle/Q)*Q;   // the streets run on a grid
+  }
+  c.cruiseT = (c.cruiseT||0) - dt;
+  if(!open(c.cruiseA, 70)){
+    const side = [c.cruiseA + Q, c.cruiseA - Q].filter(a => open(a, 90));
+    c.cruiseA = side.length ? pick(side) : c.cruiseA + Math.PI;
+    c.cruiseT = 1.5;
+  } else if(c.cruiseT <= 0){
+    c.cruiseT = rnd(1.2, 2.6);
+    const side = [c.cruiseA + Q, c.cruiseA - Q].filter(a => open(a, 150));
+    if(side.length && Math.random() < 0.35) c.cruiseA = pick(side);
+  }
+  // keep to the middle: lean away from whichever side has less room
+  const room = sgn => { let d = 0; while(d < 60 && flowPassable(c.x + Math.cos(c.cruiseA + sgn*Q)*(d+10), c.y + Math.sin(c.cruiseA + sgn*Q)*(d+10))) d += 10; return d; };
+  const centre = clamp((room(1) - room(-1))*0.006, -0.3, 0.3);
+  const diff = angDiff(c.angle, c.cruiseA + centre);
+  c.aiSteer = clamp(diff*2.0, -1, 1);
+  c.aiThrottle = spd > CITY_CRUISE ? 0 : 0.8;
+  c.aiBrake = Math.abs(diff) > 0.8 && spd > 70;
+  // and they stop for a pedestrian in front of them
+  const wx = walker.x - c.x, wy = walker.y - c.y, wd = Math.hypot(wx, wy);
+  if(wd < 60 + spd*0.9 && Math.abs(angDiff(c.angle, Math.atan2(wy, wx))) < 0.7){ c.aiThrottle = 0; c.aiBrake = true; }
+  if(spd < 15){
+    c.stuckT = (c.stuckT||0) + dt;
+    if(c.stuckT > 1.2){ c.stuckT = 0; c.cruiseA += Math.PI; c.escapeAng = c.cruiseA; c.revDir = -1; c.reverseT = 0.8; }
+  } else c.stuckT = 0;
+}
 let citySpawnT = 0;
 let cityCamT = 0;                   // seconds into the scroll -> follow handover
 const cityCamOff = { x:0, y:0 }, cityCamF = { x:0, y:0 };
@@ -953,15 +1015,17 @@ function citySpawner(dt){
 }
 // on foot: rounds and bumpers hurt (dev mode: they don't)
 let walkHurtT = 0, walkerDown = false;
+let footN = 0, walkGraceT = 0;       // times you've got out; a moment's grace from bumpers
 function hurtWalker(d){
-  if(devMode || walkHurtT > 0 || state !== 'play') return;
+  if(devMode || walkHurtT > 0 || walkGraceT > 0 || state !== 'play') return;
   walker.hp -= d; walkHurtT = 0.5;
   if(walker.hp <= 0){ walker.hp = 0; walkerDown = true; winner = null; state = 'over'; Snd.engineOff(); }
 }
 function cityStep(dt){
   bannerT = Math.max(0, bannerT - dt);
   walkHurtT = Math.max(0, walkHurtT - dt);
-  if(enemiesOn && cars.length > 1){
+  walkGraceT = Math.max(0, walkGraceT - dt);
+  if(enemiesOn && cars.length > 1 && !onFoot){     // on foot nobody is hunting you
     FLOW.t -= dt;
     if(FLOW.t <= 0){ FLOW.t = CITY_FLOW_EVERY; flowRebuild(); }
   }
@@ -970,7 +1034,7 @@ function cityStep(dt){
     if(c.isPlayer || c.dead) continue;
     const d = Math.hypot(c.x - walker.x, c.y - walker.y), sp = Math.hypot(c.vx, c.vy);
     if(d < (c.rad||14) + WALK_R && sp > 30){
-      hurtWalker(sp*WALK_RUNOVER);
+      if(sp > WALK_RUNOVER_MIN) hurtWalker(sp*WALK_RUNOVER);   // a slow nudge just shoves you
       const k = (c.rad||14) + WALK_R + 2 - d;           // and it throws you clear
       walker.x += (walker.x - c.x)/(d||1)*k; walker.y += (walker.y - c.y)/(d||1)*k;
     }
@@ -1549,7 +1613,7 @@ function aiThink(c, dt){
     c.aiBrake = false;
     return;
   }
-  if(street && stage==='run'){ aiCity(c, dt); return; }
+  if(street && stage==='run'){ if(onFoot) aiCruise(c, dt); else aiCity(c, dt); return; }
   if(mode==='convoy'){
     if(c.etype==='batedor') aiFlank(c, dt);
     else if(c.role==='charger') aiCharge(c, dt);
@@ -3415,6 +3479,10 @@ function drawCityGround(){
       ctx.fillRect(b.x0*S + kerb, b.y0*KY*S + kerb, (b.x1-b.x0)*S - 2*kerb, (b.y1-b.y0)*KY*S - 2*kerb);
     }
   }
+  // offset 0: every dash run starts at a fixed world point (a road end or a
+  // junction), so the dashes stay painted on. Whatever drew before may have left
+  // a camera-dependent offset (the run's highway does) - that made them crawl.
+  ctx.lineDashOffset = 0;
   ctx.setLineDash([16*S, 14*S]); ctx.lineWidth = 2*S; ctx.strokeStyle = 'rgba(221,211,198,.45)';
   for(const c of cityChunks(ya, yb)){
     for(const r of c.roads){
@@ -4662,7 +4730,7 @@ function toggleOnFoot(){
     }
     if(!placed){ walkSay('NO ROOM TO OPEN THE DOOR'); return; }
     walker.a = me.angle; walker.pitch = 0; walker.bob = 0; walker.moving = 0; walker.hp = WALK_HP;
-    onFoot = true;
+    onFoot = true; footN++; walkGraceT = 1.5;   // the hunters lose interest (aiCruise)
     mouseFire = false; mouseFire2 = false;
     Snd.engineOff(); Snd.hit();
     // a key press counts as a user gesture, so the mouse can be grabbed right away
@@ -5017,6 +5085,173 @@ function devLine(y){
 }
 
 // ---- title: pick the STAGE
+// ---------------------------------------------------------------- the map (M)
+// After the-party's minimap, without its paper skin: the city is drawn SHRUNK -
+// every block a flat shape at its real size and place - and the streets are not
+// drawn at all: they are the floor showing between the blocks. North is up and
+// it's a true plan (no axonometric squash). Left: around you. Right: the whole
+// run as a strip, the driven part lit, you on it.
+let mapOpen = false;
+const mapBld = [];
+function toggleMap(){ mapOpen = !mapOpen; if(mapOpen && MAP_PAUSES) Snd.engineOff(); }
+function mapFocus(){ return onFoot ? walker : cars[0]; }
+// a pointed marker at (x, y) facing a, `r` in screen px (drawn under a world transform of scale k)
+function mapPip(x, y, a, r, k, col, glow){
+  const s = r/k, c = Math.cos(a), n = Math.sin(a);
+  ctx.beginPath();
+  ctx.moveTo(x + c*s*1.3, y + n*s*1.3);
+  ctx.lineTo(x - c*s*0.8 - n*s*0.8, y - n*s*0.8 + c*s*0.8);
+  ctx.lineTo(x - c*s*0.4, y - n*s*0.4);
+  ctx.lineTo(x - c*s*0.8 + n*s*0.8, y - n*s*0.8 - c*s*0.8);
+  ctx.closePath();
+  if(glow){ ctx.shadowColor = col; ctx.shadowBlur = glow; }
+  ctx.fillStyle = col; ctx.fill(); ctx.shadowBlur = 0;
+}
+function drawMap(){
+  const me = cars[0], F = mapFocus(), run = stage === 'run';
+  ctx.save(); ctx.scale(PX, PX);
+  ctx.fillStyle = 'rgba(7,4,15,.95)'; ctx.fillRect(0, 0, VW, VH);
+
+  // ---- the local map
+  const P = { x:22, y:34, w:300, h:300 };
+  const R = MAP_RADII[MAP_ZOOM], k = (P.w/2)/R, lw = 1/k;
+  const xa = F.x - R*1.1, xb = F.x + R*1.1, ya = F.y - R*1.1, yb = F.y + R*1.1;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(P.x, P.y, P.w, P.h); ctx.clip();
+  ctx.fillStyle = MAP_COL.GROUND; ctx.fillRect(P.x, P.y, P.w, P.h);
+  ctx.translate(P.x + P.w/2, P.y + P.h/2); ctx.scale(k, k); ctx.translate(-F.x, -F.y);
+  const legs = !race && !(street && !run);           // a survival road to draw
+  let ra = 0, rb = 0;
+  if(legs){
+    const q = roadProject(F.x, F.y);
+    ra = q.s - R*2.2; rb = q.s + R*2.2;
+    const Rl = roadLane(ROAD_HW, ra, rb), Ll = roadLane(-ROAD_HW, ra, rb);
+    ctx.beginPath(); ctx.moveTo(Rl.xs[0], Rl.ys[0]);
+    for(let i=1;i<Rl.xs.length;i++) ctx.lineTo(Rl.xs[i], Rl.ys[i]);
+    for(let i=Ll.xs.length-1;i>=0;i--) ctx.lineTo(Ll.xs[i], Ll.ys[i]);
+    ctx.closePath(); ctx.fillStyle = MAP_COL.STREET; ctx.fill();
+    // the roadside lots, flat
+    ctx.fillStyle = MAP_COL.BLOCK;
+    for(const b of survivalBuildings(ra, rb, mapBld)){
+      ctx.beginPath(); ctx.moveTo(b.q[0].x, b.q[0].y);
+      for(let i=1;i<4;i++) ctx.lineTo(b.q[i].x, b.q[i].y);
+      ctx.closePath(); ctx.fill();
+    }
+  } else if(street){
+    ctx.fillStyle = MAP_COL.STREET; ctx.fillRect(-ROAD_HW, ya, 2*ROAD_HW, yb - ya);
+  }
+  // the city: its floor, then the blocks on it - the gaps are the streets
+  const cityOn = street || cityLimitY < Infinity;
+  const L = cityLimitY, cy1 = Math.min(yb, L);
+  if(cityOn && cy1 > ya){
+    ctx.fillStyle = MAP_COL.STREET; ctx.fillRect(-CITY_W, ya, 2*CITY_W, cy1 - ya);
+    ctx.fillStyle = MAP_COL.BLOCK; ctx.strokeStyle = MAP_COL.BLOCK_EDGE; ctx.lineWidth = lw;
+    for(const c of cityChunks(ya, cy1)) for(const b of c.blocks){
+      if(b.x1 < xa || b.x0 > xb) continue;
+      ctx.fillRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+      if(k > 0.08) ctx.strokeRect(b.x0, b.y0, b.x1 - b.x0, b.y1 - b.y0);
+    }
+  }
+  // barriers and walls, thin and bright
+  ctx.strokeStyle = MAP_COL.WALL; ctx.lineWidth = 1.2*lw; ctx.globalAlpha = 0.75;
+  ctx.beginPath();
+  if(legs) for(const side of [-1, 1]){
+    const b = run ? Math.min(rb, ROAD.gateS) : rb;
+    if(b > ra){ const ln = roadLane(side*ROAD_HW, ra, b);
+      ctx.moveTo(ln.xs[0], ln.ys[0]); for(let i=1;i<ln.xs.length;i++) ctx.lineTo(ln.xs[i], ln.ys[i]); }
+  }
+  if(cityOn && cy1 > ya) for(const side of [-1, 1]){
+    ctx.moveTo(side*CITY_W, ya); ctx.lineTo(side*CITY_W, cy1);
+    for(const sp of barrierSpans(side, ya, cy1)){ ctx.moveTo(side*ROAD_HW, sp[0]); ctx.lineTo(side*ROAD_HW, sp[1]); }
+  }
+  if(cityOn && L < Infinity && L > ya && L < yb){
+    ctx.moveTo(-CITY_W, L); ctx.lineTo(-ROAD_HW, L); ctx.moveTo(ROAD_HW, L); ctx.lineTo(CITY_W, L);
+    if(street){ ctx.moveTo(-ROAD_HW, L + CITY_BACK); ctx.lineTo(ROAD_HW, L + CITY_BACK); }
+  }
+  ctx.stroke(); ctx.globalAlpha = 1;
+  // pickups, hunters, your car, you
+  ctx.fillStyle = MAP_COL.PAD;
+  for(const pd of pads) if(pd.item) ctx.fillRect(pd.x - 1.5*lw, pd.y - 1.5*lw, 3*lw, 3*lw);
+  if(MAP_SHOW_ENEMIES) for(const c of cars) if(!c.isPlayer && !c.dead) mapPip(c.x, c.y, c.angle, 3.2, k, MAP_COL.HUNTER, 0);
+  if(onFoot && !me.dead){
+    ctx.save(); ctx.translate(me.x, me.y); ctx.rotate(me.angle);
+    ctx.strokeStyle = MAP_COL.CAR; ctx.lineWidth = 1.2*lw; ctx.strokeRect(-5*lw, -3*lw, 10*lw, 6*lw);
+    ctx.restore();
+  }
+  mapPip(F.x, F.y, onFoot ? walker.a : me.angle, 5, k, MAP_COL.YOU, 8);
+  ctx.restore();
+  // the frame, a north mark and the scale
+  ctx.strokeStyle = MAP_COL.WALL; ctx.globalAlpha = 0.6; ctx.lineWidth = 1;
+  ctx.strokeRect(P.x + 0.5, P.y + 0.5, P.w - 1, P.h - 1); ctx.globalAlpha = 1;
+  ctx.font = '8px monospace'; ctx.textBaseline = 'top'; ctx.textAlign = 'center';
+  ctx.fillStyle = MAP_COL.WALL; ctx.fillText('N', P.x + P.w/2, P.y + 4);
+  const m100 = Math.round(R/RUN.UNITS_PER_M/50)*50 || 50;     // a round number of metres
+  const barW = m100*RUN.UNITS_PER_M*k;
+  ctx.fillStyle = NEON.DIM; ctx.fillRect(P.x + 8, P.y + P.h - 10, barW, 1);
+  ctx.textAlign = 'left'; ctx.fillText(m100+' m', P.x + 10 + barW, P.y + P.h - 14);
+
+  // ---- heading
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 16px monospace'; ctx.fillStyle = NEON.MAGENTA;
+  ctx.shadowColor = NEON.CYAN; ctx.shadowBlur = 8; ctx.fillText('MAP', P.x, 26); ctx.shadowBlur = 0;
+
+  // ---- the route (the run only)
+  const Q = { x:344, y:34, w:274, h:222 };
+  if(run){
+    const Rr = RUN.CORNER_R, top = ROAD.gateY - 2*CITY_CH;
+    const bx0 = -Rr - RUN.LEG1 - 400, bx1 = CITY_W + 400, by0 = top - 300, by1 = ROAD_HW + 400;
+    const kk = Math.min(Q.w/(bx1 - bx0), Q.h/(by1 - by0));
+    const ox = Q.x + (Q.w - (bx1 - bx0)*kk)/2 - bx0*kk, oy = Q.y + (Q.h - (by1 - by0)*kk)/2 - by0*kk;
+    const X = x => ox + x*kk, Y = y => oy + y*kk;
+    ctx.fillStyle = MAP_COL.GROUND; ctx.fillRect(Q.x, Q.y, Q.w, Q.h);
+    ctx.strokeStyle = MAP_COL.WALL; ctx.globalAlpha = 0.35; ctx.strokeRect(Q.x + 0.5, Q.y + 0.5, Q.w - 1, Q.h - 1); ctx.globalAlpha = 1;
+    // the city, a block of floor at the top
+    ctx.fillStyle = MAP_COL.BLOCK; ctx.fillRect(X(-CITY_W), Y(top), (2*CITY_W)*kk, (ROAD.gateY - top)*kk);
+    const line = (a, b, col, w) => {
+      const ln = roadLane(0, a, b);
+      ctx.beginPath(); ctx.moveTo(X(ln.xs[0]), Y(ln.ys[0]));
+      for(let i=1;i<ln.xs.length;i++) ctx.lineTo(X(ln.xs[i]), Y(ln.ys[i]));
+      ctx.strokeStyle = col; ctx.lineWidth = w; ctx.lineCap = 'round'; ctx.stroke();
+    };
+    const sNow = street ? ROAD.gateS : clamp(roadProject(me.x, me.y).s, 0, ROAD.gateS);
+    line(0, ROAD.gateS, MAP_COL.STREET, 4);
+    if(sNow > 0) line(0, sNow, MAP_COL.YOU, 2);
+    // the checkpoint at the bend: hollow until you've earned it
+    const bp = roadPoint(ROAD.bendS0, 0);
+    ctx.strokeStyle = MAP_COL.WALL; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(X(bp.x), Y(bp.y), 4, 0, Math.PI*2);
+    if(checkpoint){ ctx.fillStyle = MAP_COL.WALL; ctx.fill(); } else ctx.stroke();
+    // you
+    const yx = street ? F.x : roadPoint(sNow, 0).x, yy = street ? F.y : roadPoint(sNow, 0).y;
+    ctx.fillStyle = MAP_COL.YOU; ctx.shadowColor = MAP_COL.YOU; ctx.shadowBlur = 8;
+    ctx.beginPath(); ctx.arc(X(yx), Y(yy), 3.2, 0, Math.PI*2); ctx.fill(); ctx.shadowBlur = 0;
+    // labels
+    ctx.font = '8px monospace'; ctx.fillStyle = NEON.DIM; ctx.textBaseline = 'top';
+    const s0 = roadPoint(0, 0); ctx.textAlign = 'left'; ctx.fillText('START', X(s0.x), Y(s0.y) + 6);
+    ctx.textAlign = 'right'; ctx.fillText('CHECKPOINT', X(bp.x) - 6, Y(bp.y) + 6);
+    ctx.textAlign = 'center'; ctx.fillStyle = NEON.INK; ctx.fillText('THE CITY', X(0), Y(top) + 6);
+  }
+
+  // ---- what to know, under the route
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  let ty = run ? Q.y + Q.h + 12 : Q.y;
+  const say = (t, col, big) => { ctx.font = (big ? 'bold 12px' : '8px')+' monospace'; ctx.fillStyle = col; ctx.fillText(t, Q.x, ty); ty += big ? 16 : 12; };
+  if(run && !street){
+    const s = roadProject(me.x, me.y).s, leg = s < ROAD.bendS0 ? 1 : 2;
+    say('LEG '+leg, NEON.CYAN, true);
+    const to = leg === 1 ? ROAD.bendS0 : ROAD.gateS;
+    say(((to - s)/RUN.UNITS_PER_M/1000).toFixed(2)+' km to '+(leg === 1 ? 'the checkpoint' : 'the city'), NEON.INK);
+  } else if(street){
+    say(run ? 'THE CITY' : 'STREET', NEON.CYAN, true);
+    if(onFoot) say('your car: '+Math.round(Math.hypot(me.x - walker.x, me.y - walker.y)/RUN.UNITS_PER_M)+' m', NEON.INK);
+  }
+  const hunters = cars.length - 1;
+  say(!enemiesOn ? 'enemies off (N)' : MAP_SHOW_ENEMIES ? hunters+' hunters on the road' : '', MAP_COL.HUNTER);
+  ty = P.y + P.h - 12;
+  say('M / ESC  close     -  =  zoom', NEON.DIM);
+  ctx.restore();
+}
+
 // ---------------------------------------------------------------- the menu
 // After the-party's front door (src/hud.js drawMenu): the name, the items under
 // it, the chosen one lit and the rest taken most of the way to black. Choosing
@@ -5026,6 +5261,9 @@ const MENU = [['START GAME', 'play']];
 const MENU_POP = { amount:0.10, ms:0.26, hold:0.30 };
 const MENU_TOP = 0.62, MENU_SIZE = 22, MENU_PITCH = 1.6, MENU_DIM = 0.55;
 let menuIdx = 0, menuPop = null, menuT = 0;
+// the logo: loaded once; if the file isn't there the menu just uses the text
+const logoImg = (typeof Image !== 'undefined') ? new Image() : { complete:false, naturalWidth:0 };
+if(LOGO_IMAGE && typeof Image !== 'undefined') logoImg.src = LOGO_IMAGE;
 const easeOutBack = p => { const c = 1.70158; return 1 + (c+1)*Math.pow(p-1,3) + c*Math.pow(p-1,2); };
 function popScale(pop){
   if(pop == null) return 1;
@@ -5053,11 +5291,26 @@ function drawMenu(){
   for(let y = (menuT*12)%4; y < VH; y += 4) ctx.fillRect(0, y, VW, 1);
   ctx.globalAlpha = 1;
   ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  // the name: magenta, with a cyan glow behind it
-  ctx.font = 'bold 54px monospace';
-  ctx.shadowColor = NEON.CYAN; ctx.shadowBlur = 18;
-  ctx.fillStyle = NEON.MAGENTA; ctx.fillText(GAME_TITLE, VW/2, VH*0.36);
-  ctx.shadowBlur = 0;
+  // the name: the logo image if there is one (LOGO_IMAGE), else neon text
+  if(logoImg.complete && logoImg.naturalWidth > 0){
+    // LOGO_CROP picks the part of the image with the wordmark in it (fractions)
+    const [cx, cy, cw, ch] = LOGO_CROP;
+    const sx = cx*logoImg.naturalWidth, sy = cy*logoImg.naturalHeight;
+    const sw = cw*logoImg.naturalWidth, sh = ch*logoImg.naturalHeight;
+    const k = Math.min(VW*LOGO_WIDTH/sw, VH*0.42/sh), w = sw*k, h = sh*k;
+    ctx.save();
+    ctx.imageSmoothingEnabled = true;
+    // 'lighter' adds the image onto the menu: a black background vanishes and
+    // the neon glow blends into the dark instead of sitting in a box
+    ctx.globalCompositeOperation = LOGO_BLEND;
+    ctx.drawImage(logoImg, sx, sy, sw, sh, VW/2 - w/2, VH*0.31 - h/2, w, h);
+    ctx.restore();
+  } else {
+    ctx.font = 'bold 54px monospace';
+    ctx.shadowColor = NEON.CYAN; ctx.shadowBlur = 18;
+    ctx.fillStyle = NEON.MAGENTA; ctx.fillText(GAME_TITLE, VW/2, VH*0.36);
+    ctx.shadowBlur = 0;
+  }
   MENU.forEach(([label], i) => {
     const on = i === menuIdx;
     const y = VH*MENU_TOP + i*MENU_SIZE*MENU_PITCH;
@@ -5072,6 +5325,7 @@ function drawMenu(){
   });
   ctx.font = '9px monospace'; ctx.fillStyle = lerpHex(NEON.CYAN, NEON.BG, MENU_DIM);
   ctx.fillText('ENTER', VW/2, VH*0.9);
+  ctx.globalAlpha = 0.6; ctx.fillText('C  skip to the city (testing)', VW/2, VH*0.9 + 12); ctx.globalAlpha = 1;
   if(devMode){ ctx.fillStyle = '#e0b73c'; ctx.fillText('DEV MODE - no damage (I)', VW/2, VH*0.95); }
   ctx.restore();
 }
@@ -5138,7 +5392,7 @@ function drawTitle(){
   ctx.fillStyle='#3f3448'; ctx.font='8px monospace';
   centerText('G ascii gunner view: '+ASC_NAMES[asciiMode]+'  .  B buildings: '+(showBuildings?'ON':'OFF')+
              '  .  H fence: '+(showFence?'ON':'OFF'),'#b48ad6',264,9);
-  centerText('R resolution  .  F fps  .  M sound  .  P pause','#3f3448',280,8);
+  centerText('R resolution  .  F fps  .  O sound  .  P pause','#3f3448',280,8);
   devLine(292);
   ctx.restore();
 }
@@ -5519,12 +5773,13 @@ function frame(now){
   if(state==='title'){ menuT += dt; if(menuPop!=null) menuTick(dt); drawMenu(); return; }
   if(state==='setup'){ drawSetup(); return; }
 
-  if(state==='play' && !paused){
+  if(state==='play' && !paused && !(mapOpen && MAP_PAUSES)){
     acc+=dt;
     let guard=0;
     while(acc>=DT && guard++<5){ step(DT); acc-=DT; }
   }
   render();
+  if(mapOpen && state==='play') drawMap();
   if(state==='over') drawOver();
 }
 requestAnimationFrame(frame);

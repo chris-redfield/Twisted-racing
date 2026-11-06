@@ -7,12 +7,50 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-06 | [index.html: the city joined on (steps 2+3)](#2026-11-06--indexhtml-the-city-joined-on-steps-23) | built, start here |
+| 2026-11-06 | [The map (M) and the new logo](#2026-11-06--the-map-m-and-the-new-logo) | built, start here |
+| 2026-11-06 | [Fixes: side-street dashes, hunters ignore you on foot, C skip, logo](#2026-11-06--fixes-side-street-dashes-hunters-ignore-you-on-foot-c-skip-logo) | built |
+| 2026-11-06 | [index.html: the city joined on (steps 2+3)](#2026-11-06--indexhtml-the-city-joined-on-steps-23) | built, played |
 | 2026-11-05 | [index.html step 1: menu, leg 1, the corner, leg 2](#2026-11-05--indexhtml-step-1-menu-leg-1-the-corner-leg-2) | built, played |
 | 2026-11-05 | [NEXT: the definitive game (`index.html`)](#2026-11-05--next-the-definitive-game-indexhtml) | plan (decisions below) |
 | 2026-11-05 | [STREET city: state of the build](#2026-11-05--street-city-state-of-the-build) | reference |
 | 2026-11-05 | [Raycaster + ASCII performance](#2026-11-05--raycaster--ascii-performance) | reference |
 | 2026-11-04 | [STREET: walk, then a BSP city](#2026-11-04--street-walk-then-a-bsp-city) | summary |
+
+---
+
+## 2026-11-06 — The map (M) and the new logo
+
+- **Logo:** he generated `Scrapheap Neon Metal Wordmark.png` (repo root, kept) -> copied to
+  `assets/logo.png`. Black background, not transparent: drawn with `LOGO_BLEND` 'lighter' (black
+  adds nothing, glow blends) and cropped to the wordmark band (`LOGO_CROP`).
+- **Map (M):** full-screen overlay, pauses the game (`MAP_PAUSES`), M/ESC close, - / = zoom
+  (`MAP_RADII`). Style after the-party's minimap minus its paper skin: city blocks flat at true
+  size, streets = the floor between them, true plan, north up, neon `MAP_COL`. Left: local map
+  (road band, roadside lots, city blocks, barriers with their gaps, walls, pads, hunters as amber
+  pips - `MAP_SHOW_ENEMIES`, the-party deliberately hid its monsters - your car outline when on
+  foot, you in magenta). Right: the whole run as a strip, driven part lit, checkpoint ring filled
+  once earned. Captions: leg + km to the next landmark / THE CITY + distance to your car.
+  ~1 ms to draw. **Sound moved to O** (`SOUND_KEY`).
+
+---
+
+## 2026-11-06 — Fixes: side-street dashes, hunters ignore you on foot, C skip, logo
+
+He played the city ("getting good"). Four asks, all built:
+- **Side-street lane dashes crawled with the car** (bug). Cause: `drawRoadPath` leaves a
+  camera-dependent `lineDashOffset`, and the run draws `drawCityGround` right after it (STREET
+  drew the city first, so it never showed). Fix: reset to 0 in `drawCityGround`. Verified: the
+  offset used is 0 at every camera position.
+- **On foot, the hunters lose interest** (his call: "they stop coming for the player, just
+  follow with their lives"). `aiCruise`: grid-aligned street driving at `CITY_CRUISE` 115, turns
+  at junctions, U-turn at dead ends, keeps to the middle, brakes for a pedestrian, never fires;
+  first move after you get out is away from you. 1.5 s full grace on getting out; bumpers under
+  `WALK_RUNOVER_MIN` 70 only shove. Back in the car -> `aiCity` hunting resumes. Measured:
+  standing in the street 5 seeds x 40 s -> 1 hit total (was 1-3 per seed, and death before).
+- **C** (`SKIP_TO_CITY_KEY`) jumps to the city gate from the menu or anywhere in a run (via the
+  city-checkpoint path, pace CAM_VMAX, the wave you'd have).
+- **Logo**: menu draws `assets/logo.png` if present (`LOGO_IMAGE`, `LOGO_WIDTH`), else the neon
+  text. Prompt for ChatGPT in `assets/LOGO_PROMPT.md`. Name on it is SCRAPHEAP - confirm with him.
 
 ---
 
