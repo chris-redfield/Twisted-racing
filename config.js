@@ -284,11 +284,11 @@ const GAME_TITLE = 'SCRAPHEAP';   // the name on the menu
 // the menu logo: a PNG (transparent background) next to index.html. If the file
 // is missing the menu falls back to GAME_TITLE in neon text. '' = always text.
 const LOGO_IMAGE = 'assets/logo.png';
-const LOGO_WIDTH = 0.86;          // how much of the screen's width it may take
-const LOGO_CROP  = [0, 0.24, 1, 0.52];   // the part of the image to use: x, y, w, h as fractions
+const LOGO_WIDTH = 0.80;          // how much of the screen's width it may take
+const LOGO_CROP  = [0, 0, 1, 1];         // the part of the image to use: x, y, w, h as fractions
 // how it's laid on the menu: 'lighter' adds it (a black background disappears,
 // glow blends in); 'source-over' draws it as is (use with a transparent PNG)
-const LOGO_BLEND = 'lighter';
+const LOGO_BLEND = 'source-over';
 // true when the image is a SYMBOL with no lettering: the menu then writes
 // GAME_TITLE under it, so renaming the game doesn't mean a new image
 const LOGO_WITH_TITLE = false;
