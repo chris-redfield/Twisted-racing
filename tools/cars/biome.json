@@ -1,0 +1,48 @@
+{
+  "name": "biome",
+  "source": "assets/car-model-3/BIOME__3ds.rar -> extracted/BIOME_ 3ds/BIOME.3ds. Exploded layout: the canopy, interior and side panels sit beside the car; the canopy is moved back, the rest left out. Licence unknown; named after a real brand's concept car, so experiment only",
+  "dir": "../../assets/car-model-3/extracted/BIOME_ 3ds",
+  "nose": "-y",
+  "up": "+z",
+  "length": 31,
+  "smooth": 0,
+  "parts": [
+    {
+      "file": "BIOME.3ds",
+      "objects": [
+        "sub01",
+        "sub03",
+        "sub04",
+        "sub05",
+        "sub06",
+        "sub07",
+        "Object03_p",
+        "Object07_p"
+      ],
+      "materials": {
+        "Material__710": "body",
+        "Material__713": "body",
+        "Material__711": "tyre",
+        "Material__714": "metal",
+        "Material__722": "dark",
+        "Material__719": "tail",
+        "Material__723": "glass"
+      }
+    },
+    {
+      "file": "BIOME.3ds",
+      "objects": [
+        "Glass"
+      ],
+      "materials": {
+        "Material__720": "glass"
+      },
+      "offset": [
+        341,
+        0,
+        0
+      ],
+      "note": "the canopy is laid out 341 units beside the car in the file; this puts it back (its rim meets the body within ~4 units)"
+    }
+  ]
+}

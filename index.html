@@ -17,6 +17,10 @@
 <div id="wrap"><canvas id="cv"></canvas></div>
 <div id="hint">WASD drive &middot; ARROWS or mouse aim/fire &middot; SPACE boost &middot; P pause &middot; M map &middot; O sound &middot; R resolution &middot; F fps &middot; I dev mode &middot; ESC menu</div>
 <script src="config.js"></script>
+<!-- voxel cars for the GARAGE (tools/car_voxelize.py). A missing file just drops that car from the list. -->
+<script src="assets/voxcars/aspen-64.js"></script>
+<script src="assets/voxcars/sports-64.js"></script>
+<script src="assets/voxcars/biome-64.js"></script>
 <script>
 "use strict";
 // ---------------------------------------------------------------- constants
@@ -280,8 +284,17 @@ function onPress(code){
   if(code===SKIP_TO_CITY_KEY && (state==='title' || state==='play' || state==='over' || state==='comic') && !paused){ skipToCity(); return; }
   // the menu: ENTER / SPACE starts the run. The digits are dev shortcuts to the
   // stages this engine grew out of (not shown on the menu).
+  if(state==='garage'){
+    if(code==='ArrowLeft'||code==='KeyA') garageStep(-1);
+    else if(code==='ArrowRight'||code==='KeyD') garageStep(1);
+    else if(code==='Enter'||code==='NumpadEnter'||code==='Space') garagePick();
+    else if(code==='Escape') state='title';
+    return;
+  }
   if(state==='title'){
     if(code==='Enter'||code==='NumpadEnter'||code==='Space'){ menuChoose(); return; }
+    if(menuPop == null && (code==='ArrowUp'||code==='KeyW'))   { menuIdx = (menuIdx + MENU.length - 1) % MENU.length; return; }
+    if(menuPop == null && (code==='ArrowDown'||code==='KeyS')) { menuIdx = (menuIdx + 1) % MENU.length; return; }
     if(code==='Digit1'||code==='Numpad1'){ stage='convoy'; state='setup'; }
     else if(code==='Digit2'||code==='Numpad2'){ stage='ascent'; state='setup'; }
     else if(code==='Digit3'||code==='Numpad3'){ stage='loop';   state='setup'; }
@@ -568,6 +581,7 @@ function makeCar(id, isPlayer, x, y, angle, model){
   const hp = CAR_HP*(t ? t.hp : 1);
   return {
     id, name:pal.name, isPlayer, model,
+    mesh: isPlayer ? playerMesh() : model,   // which MODELS entry the bakes draw (the player's comes from the GARAGE)
     color:pal.body, dark:shade(pal.body,0.45), light:shade(pal.body,1.35),
     x, y, vx:0, vy:0, angle,
     etype: t ? t.kind : 'player',
@@ -2674,6 +2688,25 @@ function buildModels(){
 }
 const MODELS = buildModels();
 
+// ---- voxel cars (GARAGE). Each VOXCARS entry is integer-grid quads + origin/scale;
+// voxMesh turns it into the same {v, c:role} faces as the hand-built models, so both
+// bakes, the flash row, first person and ASCII draw it with no other change.
+function voxMesh(d){
+  const out=[], f=d.f, lo=d.lo, s=d.vox;
+  for(let i=0;i<f.length;i+=13){
+    const v=[]; for(let k=0;k<4;k++){ const o=i+1+k*3; v.push([lo[0]+f[o]*s, lo[1]+f[o+1]*s, lo[2]+f[o+2]*s]); }
+    out.push({ v, c:d.roles[f[i]] });
+  }
+  return out;
+}
+// GARAGE_CARS (config.js) -> MODELS index: classic = 0 (the muscle car), voxel cars are
+// appended. -1 = its data file didn't load, so the garage skips it.
+const GARAGE_MESH = GARAGE_CARS.map(g => !g.vox ? 0
+  : (typeof VOXCARS !== 'undefined' && VOXCARS[g.vox]) ? MODELS.push(voxMesh(VOXCARS[g.vox])) - 1 : -1);
+let garageSel = 0;                  // the car you drive (index into GARAGE_CARS), remembered
+try { const v = parseInt(localStorage.getItem('scrapheap.car'), 10); if(GARAGE_MESH[v] >= 0) garageSel = v; } catch(e){}
+function playerMesh(){ return Math.max(0, GARAGE_MESH[garageSel]); }
+
 // rasterise one rotation frame. A depth buffer rather than a painter's sort:
 // average-depth sorting puts a car's large flat body top in front of small
 // raised faces like the windshield, whatever order the model is authored in.
@@ -2733,7 +2766,9 @@ function rasterCar(sctx, mesh, yaw, col, flash, fw, fh, ax, ay, ky, kz, vsc){
     dark: '#241d2c',
     glass: '#241d38',
     tyre: '#14111a',
-    metal: '#585265'
+    metal: '#585265',
+    lamp: '#ffe7a0',     // voxel cars: headlights
+    tail: '#d8343c'      // ...and tail lights
   };
   const ox = ax*SS, oy = ay*SS, scl = vsc*SS;
 
@@ -2772,10 +2807,10 @@ function bakeCarSheet(c){
   const sc = c.scale || 1;
   const fw = Math.ceil(52*S*sc), fh = Math.ceil(52*S*sc);
   const ax = Math.round(fw/2), ay = Math.round(fh*0.62);
-  const key = (c.model||0)+'|'+c.color+'|'+S;
+  const key = (c.mesh ?? c.model ?? 0)+'|'+c.color+'|'+S;
   const cached = CAR2D.get(key);
   if(cached) return cached;
-  const mesh = MODELS[(c.model||0) % MODELS.length];
+  const mesh = MODELS[(c.mesh ?? c.model ?? 0) % MODELS.length];
 
   const cvs = document.createElement('canvas');
   cvs.width = fw*n; cvs.height = fh*2;
@@ -4276,12 +4311,12 @@ const KY_FPS = 0.16, KZ_FPS = Math.sqrt(1 - 0.16*0.16);
 const FPS_SHEETS = new Map();
 
 function bakeFpsSprites(c){
-  const key = (c.model||0)+'|'+c.color;
+  const key = (c.mesh ?? c.model ?? 0)+'|'+c.color;
   const hit = FPS_SHEETS.get(key);
   if(hit) return hit;
   const sc = c.scale || 1;
   const n=32, fw=Math.ceil(52*sc), fh=Math.ceil(52*sc), ax=fw/2, ay=Math.round(fh*0.62);
-  const mesh = MODELS[(c.model||0) % MODELS.length];
+  const mesh = MODELS[(c.mesh ?? c.model ?? 0) % MODELS.length];
   const cvs=document.createElement('canvas');
   cvs.width=fw*n; cvs.height=fh*2;
   const g=cvs.getContext('2d');
@@ -4673,6 +4708,7 @@ function bindGunnerMouse(){
     // menus are keyboard-driven; a click just advances (title -> setup -> play)
     if(state!=='play'){
       if(state==='title') menuChoose();
+      else if(state==='garage') garagePick();
       else if(state==='comic') comicAdvance();
       else if(state==='over' && stage==='run') onPress('Enter');
       else if(state==='setup') startMatch(numPlayers);
@@ -5534,7 +5570,7 @@ function drawComic(){
 // it, the chosen one lit and the rest taken most of the way to black. Choosing
 // "pops" the line - swell, overshoot, settle - and the screen holds a beat so the
 // punch is seen before it changes. Cyberpunk colours instead of the blood.
-const MENU = [['START GAME', 'play']];
+const MENU = [['START GAME', 'play'], ['GARAGE', 'garage']];
 const MENU_POP = { amount:0.10, ms:0.26, hold:0.30 };
 const MENU_TOP = 0.62, MENU_SIZE = 22, MENU_PITCH = 1.6, MENU_DIM = 0.55;
 let menuIdx = 0, menuPop = null, menuT = 0;
@@ -5553,6 +5589,7 @@ function menuTick(dt){
   if(menuPop >= MENU_POP.hold){
     menuPop = null;
     if(MENU[menuIdx][1] === 'play') startComic();
+    else if(MENU[menuIdx][1] === 'garage') openGarage();
   }
 }
 function lerpHex(a, b, t){
@@ -5610,9 +5647,224 @@ function drawMenu(){
     ctx.restore();
   });
   ctx.font = '9px monospace'; ctx.fillStyle = lerpHex(NEON.CYAN, NEON.BG, MENU_DIM);
+  ctx.fillText('driving: ' + GARAGE_CARS[garageSel].name, VW/2, VH*MENU_TOP + MENU.length*MENU_SIZE*MENU_PITCH - 6);
   ctx.fillText('ENTER', VW/2, VH*0.9);
   ctx.globalAlpha = 0.6; ctx.fillText('C  skip to the city (testing)', VW/2, VH*0.9 + 12); ctx.globalAlpha = 1;
   if(devMode){ ctx.fillStyle = '#e0b73c'; ctx.fillText('DEV MODE - no damage (I)', VW/2, VH*0.95); }
+  ctx.restore();
+}
+
+// ---------------------------------------------------------------- the garage
+// Menu -> GARAGE: pick the car you drive (GARAGE_CARS in config.js). The chosen car
+// spins in both of the game's visions: the driving camera (left) and first person
+// through the ASCII filter (right), using the same rasterCar the bakes use.
+// LEFT/RIGHT browse, ENTER takes it (remembered), ESC leaves it as it was.
+let garageIdx = 0, garageYaw = 0;
+const garageBgImg = (GARAGE_BG && typeof Image !== 'undefined') ? new Image() : null;
+if(garageBgImg) garageBgImg.src = GARAGE_BG;
+const GARAGE_TOP = { x:14,  y:62, w:240, h:214 };   // virtual px: the driving-camera panel
+const GARAGE_FP  = { x:266, y:62, w:360, h:214 };   // ...and the first-person ASCII panel
+let garageCv = null, garageRc = null, garageAscCv = null, garageAscMask = null, garageAscKey = '';
+
+function openGarage(){ garageIdx = garageSel; state = 'garage'; }
+function garageStep(d){
+  const n = GARAGE_CARS.length;
+  for(let k=0;k<n;k++){ garageIdx = (garageIdx + d + n) % n; if(GARAGE_MESH[garageIdx] >= 0) break; }
+}
+function garagePick(){
+  garageSel = garageIdx;
+  try { localStorage.setItem('scrapheap.car', String(garageSel)); } catch(e){}
+  Snd.boot(); Snd.pickup();
+  state = 'title';
+}
+
+// one frame of a mesh at device resolution: same call the sprite bakes make
+function garageRaster(mesh, yaw, col, fw, fh, ax, ay, ky, kz, vsc){
+  if(!garageCv) garageCv = document.createElement('canvas');
+  garageCv.width = fw*SS; garageCv.height = fh*SS;
+  const g = garageCv.getContext('2d');
+  g.putImageData(rasterCar(g, mesh, yaw, col, false, fw, fh, ax, ay, ky, kz, vsc), 0, 0);
+  return garageCv;
+}
+
+// The in-game asciiBlit is tied to the raycaster's frame and the screen; this is the
+// same per-cell arithmetic (luminance -> glyph, lights win their cell, tint lift,
+// solid background) over a small offscreen frame, so the garage shows what the
+// street will. Kept separate so the game's ASCII path is untouched.
+function garageAscii(src, W, H, GW, GH, solid){
+  const cols = Math.floor(W/ASC_CW), rows = Math.floor(H/ASC_CH), n = ASC_RAMP.length - 1;
+  const key = GW+'x'+GH;
+  if(garageAscKey !== key){
+    const at = document.createElement('canvas'); at.width = GW*ASC_RAMP.length; at.height = GH;
+    const a = at.getContext('2d', { willReadFrequently:true });
+    a.fillStyle = '#fff'; a.textAlign = 'center'; a.textBaseline = 'middle';
+    a.font = 'bold ' + GH + 'px ui-monospace,"DejaVu Sans Mono",monospace';
+    for(let i=1;i<ASC_RAMP.length;i++) a.fillText(ASC_RAMP[i], (i+0.5)*GW, GH*0.55);
+    const ad = a.getImageData(0, 0, at.width, GH).data;
+    garageAscMask = new Uint8Array(ASC_RAMP.length*GW*GH);
+    for(let gi=0; gi<ASC_RAMP.length; gi++) for(let y=0;y<GH;y++) for(let x=0;x<GW;x++)
+      garageAscMask[(gi*GH + y)*GW + x] = ad[(y*at.width + gi*GW + x)*4 + 3];
+    garageAscKey = key;
+  }
+  if(!garageAscCv) garageAscCv = document.createElement('canvas');
+  garageAscCv.width = cols*GW; garageAscCv.height = rows*GH;
+  const og = garageAscCv.getContext('2d');
+  const img = og.createImageData(cols*GW, rows*GH), out = new Uint32Array(img.data.buffer), OW = cols*GW;
+  const inv = 1/(ASC_CW*ASC_CH), span = 1/(ASC_HI - ASC_LO), keep = 1 - ASC_SOLID, mask = garageAscMask;
+  for(let cy=0; cy<rows; cy++) for(let cx=0; cx<cols; cx++){
+    let r=0, g=0, b=0, nl=0, lr=0, lg=0, lb=0;
+    for(let yy=0; yy<ASC_CH; yy++){
+      let o = ((cy*ASC_CH + yy)*W + cx*ASC_CW)*4;
+      for(let xx=0; xx<ASC_CW; xx++){
+        const pr=src[o], pg=src[o+1], pb=src[o+2]; r+=pr; g+=pg; b+=pb;
+        if(pr > ASC_LIGHT_R && pr - pb > ASC_LIGHT_WARM){ nl++; lr+=pr; lg+=pg; lb+=pb; }
+        o+=4;
+      }
+    }
+    r*=inv; g*=inv; b*=inv;
+    let t = (0.299*r + 0.587*g + 0.114*b - ASC_LO)*span; t = t<0 ? 0 : t>1 ? 1 : t;
+    let gi = Math.round(Math.pow(t, ASC_GAMMA)*n);
+    if(nl){ r=lr/nl; g=lg/nl; b=lb/nl; gi = Math.max(gi, Math.min(n, Math.round(3 + LIGHTS_MIX*2) + nl)); }
+    const m = Math.max(r, g, b, 1), lift = Math.min(ASC_LIFT, 235/m);
+    const tr = Math.min(255, Math.round(r*lift)), tg = Math.min(255, Math.round(g*lift)), tb = Math.min(255, Math.round(b*lift));
+    const br = solid ? Math.round(ASC_BG[0]*keep + tr*ASC_SOLID) : 0;
+    const bgc = solid ? Math.round(ASC_BG[1]*keep + tg*ASC_SOLID) : 0;
+    const bb = solid ? Math.round(ASC_BG[2]*keep + tb*ASC_SOLID) : 0;
+    const bgPix = 0xff000000 | (bb<<16) | (bgc<<8) | br;
+    let p = cy*GH*OW + cx*GW, k = gi*GW*GH;
+    for(let yy=0; yy<GH; yy++, p+=OW) for(let xx=0; xx<GW; xx++, k++){
+      const cov = gi ? mask[k] : 0;
+      if(!cov){ out[p+xx] = bgPix; continue; }
+      const R = Math.min(255, br + ((tr*cov + 127)/255|0)), G = Math.min(255, bgc + ((tg*cov + 127)/255|0)), B = Math.min(255, bb + ((tb*cov + 127)/255|0));
+      out[p+xx] = 0xff000000 | (B<<16) | (G<<8) | R;
+    }
+  }
+  og.putImageData(img, 0, 0);
+  return garageAscCv;
+}
+
+// the workshop, drawn in code until GARAGE_BG names a painted one
+function drawGarageBg(){
+  if(garageBgImg && garageBgImg.complete && garageBgImg.naturalWidth > 0){
+    const iw = garageBgImg.naturalWidth, ih = garageBgImg.naturalHeight, k = Math.max(VW/iw, VH/ih);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(garageBgImg, (VW - iw*k)/2, (VH - ih*k)/2, iw*k, ih*k);
+    ctx.imageSmoothingEnabled = false;
+    return;
+  }
+  const floorY = VH*0.70;
+  // back wall: corrugated sheet metal under a violet dusk
+  const wall = ctx.createLinearGradient(0, 0, 0, floorY);
+  wall.addColorStop(0, '#0d0818'); wall.addColorStop(1, '#1d1430');
+  ctx.fillStyle = wall; ctx.fillRect(0, 0, VW, floorY);
+  for(let x=0; x<VW; x+=6){ ctx.fillStyle = (x/6)%2 ? 'rgba(255,255,255,.025)' : 'rgba(0,0,0,.18)'; ctx.fillRect(x, 0, 3, floorY); }
+  // tool wall: a pegboard strip and shelves either side
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0, floorY - 6, VW, 6);
+  // floor: concrete with a vanishing grid
+  const fl = ctx.createLinearGradient(0, floorY, 0, VH);
+  fl.addColorStop(0, '#191320'); fl.addColorStop(1, '#2b2233');
+  ctx.fillStyle = fl; ctx.fillRect(0, floorY, VW, VH - floorY);
+  ctx.strokeStyle = 'rgba(34,240,255,.07)'; ctx.lineWidth = 1;
+  for(let i=-12; i<=12; i++){ ctx.beginPath(); ctx.moveTo(VW/2 + i*14, floorY); ctx.lineTo(VW/2 + i*90, VH); ctx.stroke(); }
+  for(let k=1; k<7; k++){ const y = floorY + (VH - floorY)*Math.pow(k/7, 1.8); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(VW, y); ctx.stroke(); }
+  // hazard stripe along the wall foot
+  for(let x=-10; x<VW; x+=16){
+    ctx.fillStyle = '#e0b73c'; ctx.beginPath();
+    ctx.moveTo(x, floorY); ctx.lineTo(x+8, floorY); ctx.lineTo(x+12, floorY+4); ctx.lineTo(x+4, floorY+4); ctx.fill();
+  }
+  // two hanging lamps throwing cones onto the panels, flickering a little
+  const flick = 0.9 + 0.1*Math.sin(menuT*23)*Math.sin(menuT*7);
+  for(const lx of [GARAGE_TOP.x + GARAGE_TOP.w/2, GARAGE_FP.x + GARAGE_FP.w/2]){
+    const cone = ctx.createRadialGradient(lx, 30, 4, lx, 30, 260);
+    cone.addColorStop(0, 'rgba(255,214,150,' + (0.16*flick) + ')'); cone.addColorStop(1, 'rgba(255,214,150,0)');
+    ctx.fillStyle = cone; ctx.fillRect(lx - 260, 0, 520, VH);
+    ctx.fillStyle = '#3a2f44'; ctx.fillRect(lx - 1, 0, 2, 24);
+    ctx.fillStyle = '#ffd696'; ctx.fillRect(lx - 9, 24, 18, 4);
+  }
+}
+
+function drawGarage(){
+  ctx.fillStyle = NEON.BG; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.save(); ctx.scale(PX, PX);
+  drawGarageBg();
+  // the neon sign
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 30px monospace';
+  ctx.shadowColor = NEON.MAGENTA; ctx.shadowBlur = 14 + 4*Math.sin(menuT*3);
+  ctx.fillStyle = NEON.MAGENTA; ctx.fillText('GARAGE', VW/2, 44);
+  ctx.shadowBlur = 0;
+
+  const ok = GARAGE_MESH[garageIdx] >= 0;
+  const mesh = MODELS[ok ? GARAGE_MESH[garageIdx] : 0], col = PALETTE[0].body;
+
+  // panels: dark glass with a thin cyan frame
+  for(const R of [GARAGE_TOP, GARAGE_FP]){
+    ctx.fillStyle = 'rgba(7,4,15,.62)'; ctx.fillRect(R.x, R.y, R.w, R.h);
+    ctx.strokeStyle = 'rgba(34,240,255,.35)'; ctx.lineWidth = 1; ctx.strokeRect(R.x + 0.5, R.y + 0.5, R.w - 1, R.h - 1);
+  }
+  ctx.font = '8px monospace'; ctx.textAlign = 'left'; ctx.fillStyle = NEON.DIM;
+  ctx.fillText('DRIVING CAMERA', GARAGE_TOP.x + 6, GARAGE_TOP.y + 11);
+  ctx.fillText('FIRST PERSON  ·  ASCII', GARAGE_FP.x + 6, GARAGE_FP.y + 11);
+
+  // left: the driving camera's view, big. Units -> virtual px so the car fills ~65% of the panel
+  {
+    const R = GARAGE_TOP, vs = R.w*0.62/32;
+    const fw = Math.round(R.w*PX), fh = Math.round((R.h - 16)*PX), ax = fw/2, ay = fh*0.6;
+    // its shadow, as the bake draws it
+    ctx.save(); ctx.translate(R.x + R.w/2 + 3*vs, R.y + 16 + (R.h - 16)*0.6 + 2*vs); ctx.scale(vs, vs*KY);
+    ctx.fillStyle = 'rgba(8,5,12,.45)'; ctx.beginPath(); ctx.ellipse(0, 0, 16, 9, garageYaw, 0, Math.PI*2); ctx.fill(); ctx.restore();
+    const img = garageRaster(mesh, garageYaw, col, fw, fh, ax, ay, KY, KZ, vs*PX);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(img, 0, 0, img.width, img.height, R.x, R.y + 16, R.w, R.h - 16);
+    ctx.imageSmoothingEnabled = false;
+  }
+  // right: the street camera's view into a small frame, then the ASCII filter.
+  // Cells match the game's: ASC_CW x ASC_CH frame px, drawn 2x (the raycaster runs at half res).
+  {
+    const R = GARAGE_FP, ih = R.h - 16;
+    const W = Math.floor(R.w/2/ASC_CW)*ASC_CW, H = Math.floor(ih/2/ASC_CH)*ASC_CH;
+    if(!garageRc){ garageRc = document.createElement('canvas'); }
+    garageRc.width = W; garageRc.height = H;
+    const g = garageRc.getContext('2d', { willReadFrequently:true });
+    const hor = Math.round(H*0.42);
+    const sky = g.createLinearGradient(0, 0, 0, hor); sky.addColorStop(0, '#120c1c'); sky.addColorStop(1, '#2a1a2e');
+    g.fillStyle = sky; g.fillRect(0, 0, W, hor);
+    const gr = g.createLinearGradient(0, hor, 0, H); gr.addColorStop(0, '#1c1620'); gr.addColorStop(1, '#3a3040');
+    g.fillStyle = gr; g.fillRect(0, hor, W, H - hor);
+    const vs = W*0.6/32, fw = W, fh = H, ax = W/2, ay = Math.min(H - 3, hor + (H - hor)*0.62);
+    const car = garageRaster(mesh, garageYaw, col, fw, fh, ax, ay, KY_FPS, KZ_FPS, vs);
+    g.imageSmoothingEnabled = true;
+    g.drawImage(car, 0, 0, car.width, car.height, 0, 0, fw, fh);
+    if(asciiMode === 0){
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(garageRc, R.x, R.y + 16, W*2, H*2);
+    } else {
+      const src = g.getImageData(0, 0, W, H).data;
+      const asc = garageAscii(src, W, H, Math.round(2*ASC_CW*PX), Math.round(2*ASC_CH*PX), asciiMode === 2);
+      ctx.drawImage(asc, 0, 0, asc.width, asc.height, R.x, R.y + 16, W*2, H*2);
+    }
+  }
+
+  // the selector
+  const G = GARAGE_CARS[garageIdx], y0 = 306;
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 22px monospace';
+  ctx.shadowColor = NEON.MAGENTA; ctx.shadowBlur = 10;
+  ctx.fillStyle = NEON.CYAN; ctx.fillText(G.name, VW/2, y0);
+  ctx.shadowBlur = 0;
+  const pulse = 0.55 + 0.45*Math.sin(menuT*5)**2;
+  ctx.globalAlpha = pulse; ctx.fillStyle = NEON.MAGENTA;
+  ctx.fillText('<', VW/2 - 110, y0); ctx.fillText('>', VW/2 + 110, y0);
+  ctx.globalAlpha = 1;
+  ctx.font = '9px monospace'; ctx.fillStyle = NEON.INK;
+  ctx.fillText(G.blurb + (garageIdx === garageSel ? '   ·   IN USE' : ''), VW/2, y0 + 15);
+  // one dot per car
+  GARAGE_CARS.forEach((c, i) => {
+    ctx.fillStyle = i === garageIdx ? NEON.CYAN : GARAGE_MESH[i] < 0 ? '#2a2238' : NEON.DIM;
+    ctx.fillRect(VW/2 - GARAGE_CARS.length*7 + i*14 + 4, y0 + 23, 6, 3);
+  });
+  ctx.fillStyle = lerpHex(NEON.CYAN, NEON.BG, MENU_DIM);
+  ctx.fillText('LEFT / RIGHT  browse      ENTER  take it      ESC  back      G  ascii mode', VW/2, VH - 9);
   ctx.restore();
 }
 
@@ -6058,8 +6310,9 @@ function frame(now){
 
   if(state==='title'){ menuT += dt; if(menuPop!=null) menuTick(dt); drawMenu(); return; }
   // the controls line under the canvas is noise over a comic page
-  if(hintEl) hintEl.style.display = state==='comic' ? 'none' : '';
+  if(hintEl) hintEl.style.display = (state==='comic' || state==='garage') ? 'none' : '';
   if(state==='comic'){ comicTick(dt); drawComic(); return; }
+  if(state==='garage'){ menuT += dt; garageYaw += dt*0.9; drawGarage(); return; }
   if(state==='setup'){ drawSetup(); return; }
 
   if(state==='play' && !paused && !(mapOpen && MAP_PAUSES)){

@@ -1,0 +1,21 @@
+{
+  "name": "aspen",
+  "source": "assets/car-model-1 (ASPEN_CAR_file.stp.zip, CATIA V5 export) - licence unknown, see HANDOFF",
+  "dir": "../../assets/car-model-1/stl",
+  "nose": "-x",
+  "length": 31,
+  "parts": [
+    {"file": "body.stl",          "role": "body"},
+    {"file": "glasses.stl",       "role": "glass"},
+    {"file": "front_glasses.stl", "role": "glass"},
+    {"file": "front_lights.stl",  "role": "lamp"},
+    {"file": "back_lights.stl",   "role": "tail"},
+    {"file": "light_box.stl",     "role": "dark"},
+    {"file": "mirrors.stl",       "role": "accent"},
+    {"file": "exoz.stl",          "role": "metal"},
+    {"file": "supports.stl",      "role": "metal"},
+    {"file": "2.stl", "role": "tyre",  "rotate": ["z", 90], "at": [[-7, 193, 52], [525, 193, 52], [-7, -193, 52], [525, -193, 52]]},
+    {"file": "3.stl", "role": "metal", "rotate": ["z", 90],  "at": [[-7, 214, 52], [525, 214, 52]]},
+    {"file": "3.stl", "role": "metal", "rotate": ["z", -90], "at": [[-7, -214, 52], [525, -214, 52]]}
+  ]
+}

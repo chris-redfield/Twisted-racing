@@ -324,3 +324,18 @@ const LOGO_WITH_TITLE = false;
 
 // Dev mode: your car takes no damage (I toggles it in game). Off for real runs.
 const DEV_MODE = false;
+
+// -----------------------------------------------------------------------------
+// GARAGE (menu -> GARAGE): the cars you can pick. `vox` names a voxel car from
+// assets/voxcars/ (built by tools/car_voxelize.py, loaded by a <script> tag in
+// index.html); no `vox` = the classic hand-built car. The choice is remembered.
+// -----------------------------------------------------------------------------
+const GARAGE_CARS = [
+  { name:'CLASSIC', vox:null,        blurb:'the old hand-built muscle car' },
+  { name:'ASPEN',   vox:'aspen@64',  blurb:'wedge sports car, rear wing' },
+  { name:'SPORTS',  vox:'sports@64', blurb:'race livery coupe' },
+  { name:'BIOME',   vox:'biome@64',  blurb:'teardrop concept, glass canopy' },
+];
+// optional painted backdrop for the garage (WebP/PNG next to index.html). While it is
+// null or missing, the garage draws its own workshop in code.
+const GARAGE_BG = null;

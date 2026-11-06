@@ -7,7 +7,10 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-06 | [Story + intro comic script; new logo fitted](#2026-11-06--story--intro-comic-script-new-logo-fitted) | notes, start here |
+| 2026-11-06 | [GARAGE: pick your car (classic / aspen / sports / biome)](#2026-11-06--garage-pick-your-car-classic--aspen--sports--biome) | built, in index.html |
+| 2026-11-05 | [Voxel car proof: CAD model -> voxels -> viewer](#2026-11-05--voxel-car-proof-cad-model---voxels---viewer) | built, not in game |
+| 2026-11-06 | [NEXT: cars from downloaded 3D models (voxelized)](#2026-11-06--next-cars-from-downloaded-3d-models-voxelized) | plan, start here |
+| 2026-11-06 | [Story + intro comic script; new logo fitted](#2026-11-06--story--intro-comic-script-new-logo-fitted) | notes |
 | 2026-11-06 | [Outskirts on legs 1-2, city overview on the map, logo v3 prompt](#2026-11-06--outskirts-on-legs-1-2-city-overview-on-the-map-logo-v3-prompt) | built |
 | 2026-11-06 | [The map (M) and the new logo](#2026-11-06--the-map-m-and-the-new-logo) | built |
 | 2026-11-06 | [Fixes: side-street dashes, hunters ignore you on foot, C skip, logo](#2026-11-06--fixes-side-street-dashes-hunters-ignore-you-on-foot-c-skip-logo) | built |
@@ -17,6 +20,108 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 | 2026-11-05 | [STREET city: state of the build](#2026-11-05--street-city-state-of-the-build) | reference |
 | 2026-11-05 | [Raycaster + ASCII performance](#2026-11-05--raycaster--ascii-performance) | reference |
 | 2026-11-04 | [STREET: walk, then a BSP city](#2026-11-04--street-walk-then-a-bsp-city) | summary |
+
+---
+
+## 2026-11-06 — GARAGE: pick your car (classic / aspen / sports / biome)
+
+**In `index.html` itself (the user's call: "in the regular game"); the `index-voxcar.html` test fork was deleted.**
+Classic stays the default.
+
+- Menu: START GAME / GARAGE (UP/DOWN or W/S), and "driving: <car>" under the items.
+- Garage (`state='garage'`): LEFT/RIGHT browse, ENTER takes it (saved to `localStorage['scrapheap.car']`),
+  ESC leaves it as it was, G cycles ASCII mode. The car spins in both visions: the driving camera (left,
+  rasterCar at KY) and first person -> ASCII (right, `garageAscii` = asciiBlit's per-cell maths over a small
+  offscreen frame; the in-game ASCII path is untouched). Backdrop drawn in code (`drawGarageBg`: corrugated
+  wall, lamps, hazard stripe, floor grid); set `GARAGE_BG` in config.js to a painted image and it's used instead.
+- Cars: `GARAGE_CARS` in config.js (`vox` = key in assets/voxcars, loaded by `<script>` tags at the top of
+  index.html). `GARAGE_MESH` maps them to MODELS (voxel cars appended); `makeCar` sets `mesh` (player ->
+  `playerMesh()`), bakes key/draw by `mesh`, so palette/enemy type still follow `model`. rasterCar has lamp/tail.
+- Verified: shots of menu + garage (classic/aspen/biome), a run after `garagePick()` drives biome; headless 60 s no errors.
+- Open: voxel cars cost ~0.1-0.35 s per bake sheet (vs ~0.02-0.05 s); the evolution/shop idea (cars change with
+  upgrades, buy new ones) would hang off GARAGE_CARS + garageSel.
+
+---
+
+## 2026-11-05 — Voxel car proof: CAD model -> voxels -> viewer
+
+**Not integrated into the game, on purpose (the user's call).** Viewer only: `voxcar-viewer.html`.
+
+- Source: `assets/car-model-1/` is a CATIA V5 CAD model (STEP B-rep, not a mesh), 11 named parts.
+  **Licence unknown** (looks like a GrabCAD student model), so it's fine for experiments; check the licence before shipping.
+- `tools/step_to_stl.py`: STEP -> STL via gmsh (OpenCascade). On WSL gmsh wants libGLU/libOpenGL: `apt download`
+  + `dpkg -x` + `LD_LIBRARY_PATH` works without sudo. STLs are in `assets/car-model-1/stl/`.
+- `tools/car_voxelize.py <recipe.json> --res N -o out.js`: parts -> roles, wheel instancing, car space,
+  surface voxelize + flood-fill solid, exposed faces greedy-merged. Recipe: `tools/cars/aspen.json`
+  (the CAD file holds ONE wheel at the origin; centres came from the arches: x -7 / 525, y ±193, z 52 source units).
+  Output `assets/voxcars/aspen-{48,64,96}.js` -> `VOXCARS["aspen@64"]` = integer grid quads + lo/vox.
+  New roles: `lamp`, `tail` (the viewer's rasterCar has them; index.html's doesn't yet).
+- Old `tools/voxelize.py` (also in ../voxel-explore) is the triangle/AABB SAT voxelizer for the voxel engine;
+  it was too slow for this and output voxels, not faces.
+- **Resolution, measured:** top-down the car is ~50 px long (S=1.6). Res 64 = 0.78 px per voxel, so more voxels
+  aren't visible top-down. FP sprite frame is 52 px; if close-ups look soft, enlarge that frame, not the voxel count.
+- **Bake cost, measured (node, raster only, 64 frames):** muscle 82 faces 22 ms; aspen@48 1630 faces 119 ms;
+  @64 2772 faces 184 ms; @96 5824 faces 375 ms. Per sheet (model+colour). That's the integration cost to fix
+  (per-face allocations in rasterCar; precompute normals; or merge coplanar faces across roles) before it goes in the game.
+- **Model 2** (`assets/car-model-2/Sports+Car.glb`, a textured low-poly game mesh): recipe `tools/cars/sports.json`,
+  output `assets/voxcars/sports-{48,64,96}.js`, in the viewer. The livery lives in a texture, so the tool reads
+  the texture colour at every sample point (paint->body, white->accent, black->dark, grey->metal, red->tail;
+  `black_lum` 82 on the wheels, whose tread is dark grey), and each voxel takes the majority. `smooth: 1` takes the 3x3x3 majority
+  (kills decal speckle), and lamp/tail are exempt so the tail lights survive. Its texture path names a real
+  production car (trademark), so it's experiment-only, like model 1's unknown licence.
+- **Model 3** (`assets/car-model-3/`, two RARs: `.max` is unusable, `.3ds` extracted to `extracted/` with
+  Windows 7-Zip): read by the new `tools/read_3ds.py` (no deps). 732k triangles, all materials black, generic
+  names, and an *exploded layout*: the canopy (`Glass`), interior (`Object05`) and side panels (`Plane06/08`) sit
+  beside the car, so the recipe `tools/cars/biome.json` uses only the assembled group (nose at -Y, Z up; +Y was a wrong guess, the user caught it) and
+  maps roles by material id (710 body, 711 tyre, 714 spokes->metal, 719 tail at the rear...), so it's open-top. Heaviest of the three:
+  5520 faces at res 64 (curved shell = many voxel steps). Named after a real brand's concept car; experiment only.
+- **(superseded by the GARAGE entry; fork deleted)** In the game (fork): `index-voxcar.html` = index.html + the player drives `biome@64`. Loads
+  `assets/voxcars/biome-64.js`; `voxMesh()` appends it to MODELS; makeCar sets `mesh` (player -> PLAYER_MESH,
+  others -> model) and the bakes key/draw by `mesh`, so palette/enemy type still follow `model`. rasterCar gained
+  lamp/tail. Swap the car via `PLAYER_VOXCAR`. Startup now bakes ~3 heavy sheets (~1 s). Screenshot note: the
+  spawn blink (`invuln`) can hide the car; the setup JS keeps `cars[0].invuln=0`.
+- Cleanup 2026-11-06 (the user's call): unused sources deleted (CATIA parts, the duplicate STEP zip, .blend/.fbx/.obj/.usdc/
+  texture zip, both RARs). What's left is exactly what the recipes read.
+- ASCII note: a red body passes the "lit window" test in asciiBlit (pr>120, pr-pb>60) so red cars render as
+  `+`/`*`. True of the game's red cars today, too.
+
+---
+
+## 2026-11-06 — NEXT: cars from downloaded 3D models (voxelized)
+
+**His idea (excited: "we have to do it"):** take a 3D car model from the internet, voxelize it
+at a reasonable resolution, and import it as a car - in BOTH views and in ASCII.
+
+**How cars render today (explained to him this session):** no images. `buildModels()` makes
+4 low-poly meshes from `prism` (extruded outlines) + `wheelMesh`; faces carry ROLES (body,
+accent, glass, tyre, metal...), not colours, so one model takes any livery. `rasterCar` is a
+small software rasteriser (backface cull, Z-buffer, one fixed `LIGHT`, 2x supersample).
+`bakeCarSprites` bakes 32 yaw frames + a white flash row from the driving camera (KY 0.62);
+`bakeFpsSprites` bakes the same mesh from a street camera (KY_FPS 0.16) for the raycaster
+(`rcSprites` picks the frame from heading vs line of sight). ASCII (`asciiBlit`) is a post-process
+over the finished raycast frame (2x3 cells -> luminance picks the glyph, colour tints it), so it
+never knows about cars. That's why it all integrates perfectly: two photos of ONE object, then a
+filter over everything.
+
+**Plan:**
+1. Source: CC0 only (Kenney "Car Kit", Quaternius car packs). No recreations of real
+   game/film cars.
+2. `tools/` script (Python): load .obj/.glb (trimesh if installable, else a tiny OBJ reader),
+   voxelize to ~32-48 voxels long (or decimate the mesh instead - rasterCar takes any polygons),
+   map materials/colours to ROLES (body/accent/glass/tyre/metal) so livery still works, emit faces
+   (greedy-merge voxel faces, skip hidden ones) as a small JS/JSON data file in car space (+x nose,
+   +y right, +z up), scaled to the current cars (~30 long, ~16 wide, wheels on z=0).
+3. Load it as an extra entry in `MODELS`; let `ENEMY_TYPE`/the player pick a model index. Both bakes,
+   the flash row, ASCII and the map pick it up with no other change.
+4. First: a proof with ONE car (player), shown top-down + first person + ASCII (tools/shot.js).
+   Watch bake time (~30 ms a sheet today; more faces = slower - measure) and the 52x52 frame size.
+- Alternative he also liked: hand-drawn sheets (two views x up to 16 angles per car;
+  mirroring halves the work; the unused `assets/car-sprite-sheet.png` seam exists).
+
+**Prompt for the next session:**
+> Read HANDOFF.md (top entry). We're importing cars from a downloaded CC0 3D model: voxelize it,
+> map its parts to our colour roles, and load it as a car model so it shows top-down, in first
+> person and in ASCII. Start with a proof on the player's car.
 
 ---
 

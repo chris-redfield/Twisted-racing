@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voxel Car Viewer</title>
+<!-- Standalone lab page: NOT part of the game. Shows a voxelized car (tools/car_voxelize.py)
+     through the game's own renderer: the top-down axonometric bake (left) and the
+     first-person bake run through the ASCII filter (right), both spinning about the
+     car's own vertical axis. rasterCar / asciiBlit are copied from index.html. -->
+<script src="assets/voxcars/aspen-48.js"></script>
+<script src="assets/voxcars/aspen-64.js"></script>
+<script src="assets/voxcars/aspen-96.js"></script>
+<script src="assets/voxcars/sports-48.js"></script>
+<script src="assets/voxcars/sports-64.js"></script>
+<script src="assets/voxcars/sports-96.js"></script>
+<script src="assets/voxcars/biome-48.js"></script>
+<script src="assets/voxcars/biome-64.js"></script>
+<script src="assets/voxcars/biome-96.js"></script>
+<style>
+  :root { --bg:#0b0810; --panel:#151020; --ink:#e8e0f0; --dim:#8a7f9c; --line:#2a2238; --hot:#ff7a3c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:13px/1.4 ui-monospace,"DejaVu Sans Mono",monospace; padding:16px; }
+  h1 { font-size:15px; margin:0 0 12px; letter-spacing:.08em; color:var(--hot); }
+  .bar { display:flex; flex-wrap:wrap; gap:8px 18px; align-items:center; margin-bottom:12px; }
+  .bar label { display:flex; gap:6px; align-items:center; color:var(--dim); }
+  select, input, button { background:var(--panel); color:var(--ink); border:1px solid var(--line); font:inherit; padding:3px 6px; }
+  button { cursor:pointer; }
+  .views { display:grid; grid-template-columns:auto minmax(0,1fr); gap:16px; align-items:start; }
+  @media (max-width:900px){ .views { grid-template-columns:minmax(0,1fr); } }
+  #asc { width:100%; height:auto; }
+  .view { background:var(--panel); border:1px solid var(--line); padding:10px; min-width:0; }
+  .view h2 { font-size:12px; margin:0 0 8px; color:var(--dim); font-weight:normal; }
+  canvas { display:block; max-width:100%; image-rendering:pixelated; background:var(--bg); }
+  .stats { margin-top:12px; color:var(--dim); white-space:pre-wrap; }
+  .stats b { color:var(--ink); font-weight:normal; }
+  .small { display:flex; gap:10px; align-items:flex-end; margin-top:8px; color:var(--dim); font-size:11px; }
+</style>
+</head>
+<body>
+<h1>VOXEL CAR VIEWER</h1>
+<div class="bar">
+  <label>model <select id="model"></select></label>
+  <label>colour <input id="color" type="color" value="#c8452a"></label>
+  <label>spin <input id="speed" type="range" min="0" max="2" step="0.05" value="0.5"></label>
+  <label><input id="snap" type="checkbox"> 32-frame snap (as baked in game)</label>
+  <label>top zoom <input id="zoom" type="range" min="1" max="6" step="1" value="4"></label>
+  <label>ASCII distance <input id="dist" type="range" min="0.3" max="2.5" step="0.05" value="0.45"></label>
+  <label>ASCII <select id="amode"><option value="2">solid</option><option value="1">on black</option><option value="0">off (raw FP)</option></select></label>
+  <button id="pause">pause</button>
+  <button id="bake">time bake</button>
+</div>
+<div class="views">
+  <div class="view">
+    <h2>TOP-DOWN · driving camera (KY 0.62)</h2>
+    <canvas id="top"></canvas>
+    <div class="small"><canvas id="top1"></canvas><span>← actual game size (S = 1.6 px/unit)</span></div>
+  </div>
+  <div class="view">
+    <h2>FIRST PERSON → ASCII · street camera (KY 0.16)</h2>
+    <canvas id="asc"></canvas>
+  </div>
+</div>
+<div class="stats" id="stats"></div>
+
+<script>
+'use strict';
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+
+// ---------------------------------------------------------------- models
+// game's mesh helpers (index.html), for the muscle car as a size reference
+function prism(outline, z0, z1, role, inset){
+  inset = inset||0;
+  let o = outline.map(p=>p.slice()); let area=0;
+  for(let i=0;i<o.length;i++){ const a=o[i], b=o[(i+1)%o.length]; area += a[0]*b[1]-b[0]*a[1]; }
+  if(area<0) o.reverse();
+  let cx=0, cy=0; for(const p of o){ cx+=p[0]; cy+=p[1]; } cx/=o.length; cy/=o.length;
+  const top = o.map(([x,y])=>{ const dx=x-cx, dy=y-cy, L=Math.hypot(dx,dy)||1, k=Math.max(0.05, L-inset)/L; return [cx+dx*k, cy+dy*k]; });
+  const faces=[{ v: top.map(([x,y])=>[x,y,z1]), c:role }];
+  for(let i=0;i<o.length;i++){ const j=(i+1)%o.length;
+    faces.push({ v:[[o[i][0],o[i][1],z0],[o[j][0],o[j][1],z0],[top[j][0],top[j][1],z1],[top[i][0],top[i][1],z1]], c:role }); }
+  return faces;
+}
+function wheelMesh(cx, cy, r, halfW, role, seg){
+  seg=seg||9; const faces=[], ring=[];
+  for(let i=0;i<seg;i++){ const a=i/seg*Math.PI*2; ring.push([cx+Math.cos(a)*r, r+Math.sin(a)*r]); }
+  for(let i=0;i<seg;i++){ const p=ring[i], q=ring[(i+1)%seg];
+    faces.push({ v:[[p[0],cy-halfW,p[1]],[q[0],cy-halfW,q[1]],[q[0],cy+halfW,q[1]],[p[0],cy+halfW,p[1]]], c:role, noCull:true }); }
+  faces.push({ v: ring.map(p=>[p[0],cy+halfW,p[1]]), c:role, noCull:true });
+  faces.push({ v: ring.map(p=>[p[0],cy-halfW,p[1]]), c:role, noCull:true });
+  return faces;
+}
+const MUSCLE = [].concat(
+  wheelMesh(-9.5,-7.6,3.4,1.5,'tyre'), wheelMesh(-9.5,7.6,3.4,1.5,'tyre'),
+  wheelMesh( 8.0,-7.4,3.0,1.4,'tyre'), wheelMesh( 8.0,7.4,3.0,1.4,'tyre'),
+  prism([[-15,-7],[8,-8],[14,-5.5],[15,0],[14,5.5],[8,8],[-15,7]], 1.6, 6.4,'body',0.9),
+  prism([[3,-6.5],[13,-4.5],[13,4.5],[3,6.5]], 6.2, 7.4,'body',0.4),
+  prism([[6,-2.6],[11.5,-2.6],[11.5,2.6],[6,2.6]], 7.4, 8.8,'shadowed',0.3),
+  prism([[-7.5,-6],[3,-5],[3,5],[-7.5,6]], 6.2, 10.4,'glass',1.8),
+  prism([[-6.5,-4.4],[0.5,-3.6],[0.5,3.6],[-6.5,4.4]], 10.4, 11.0,'body',0.3),
+  prism([[-16,-7.5],[-13.6,-7.5],[-13.6,7.5],[-16,7.5]], 6.2, 10.0,'accent',0.2),
+  prism([[13,-1.5],[19,-1.5],[19,1.5],[13,1.5]], 5.6, 7.6,'metal',0.2));
+
+// VOXCARS entry -> game mesh format {v:[[x,y,z]x4], c:role}
+function voxMesh(d){
+  const out=[], f=d.f, lo=d.lo, s=d.vox;
+  for(let i=0;i<f.length;i+=13){
+    const v=[]; for(let k=0;k<4;k++){ const o=i+1+k*3; v.push([lo[0]+f[o]*s, lo[1]+f[o+1]*s, lo[2]+f[o+2]*s]); }
+    out.push({ v, c:d.roles[f[i]] });
+  }
+  return out;
+}
+const MODELS = {};
+for(const k of Object.keys(window.VOXCARS||{}).sort((a,b)=>parseInt(a.split('@')[1])-parseInt(b.split('@')[1]))) MODELS[k+' (voxel)'] = voxMesh(VOXCARS[k]);
+MODELS['muscle (game, reference)'] = MUSCLE;
+
+// ---------------------------------------------------------------- rasterCar (index.html)
+const KY = 0.62, KZ = Math.sqrt(1-KY*KY);
+const KY_FPS = 0.16, KZ_FPS = Math.sqrt(1-KY_FPS*KY_FPS);
+const LIGHT = (function(){ const v=[-0.42,-0.58,0.70], L=Math.hypot(v[0],v[1],v[2]); return [v[0]/L,v[1]/L,v[2]/L]; })();
+const SS = 2; let ZBUF=null;
+function hexShade(hex,f){ const n=parseInt(hex.slice(1),16);
+  const r=clamp(((n>>16)&255)*f,0,255)|0, g=clamp(((n>>8)&255)*f,0,255)|0, b=clamp((n&255)*f,0,255)|0;
+  return '#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1); }
+function shadeRGB(hex, f){ const n=parseInt(hex.slice(1),16);
+  return [ clamp(((n>>16)&255)*f,0,255)|0, clamp(((n>>8)&255)*f,0,255)|0, clamp((n&255)*f,0,255)|0 ]; }
+function triangle(px, zb, w, h, a, b, c, r, g, bl){
+  const den = (b[1]-c[1])*(a[0]-c[0]) + (c[0]-b[0])*(a[1]-c[1]);
+  if(Math.abs(den) < 1e-9) return;
+  const inv = 1/den;
+  let x0=Math.max(0, Math.floor(Math.min(a[0],b[0],c[0]))), x1=Math.min(w-1, Math.ceil(Math.max(a[0],b[0],c[0]))),
+      y0=Math.max(0, Math.floor(Math.min(a[1],b[1],c[1]))), y1=Math.min(h-1, Math.ceil(Math.max(a[1],b[1],c[1])));
+  for(let y=y0;y<=y1;y++){ const cy=y+0.5;
+    for(let x=x0;x<=x1;x++){ const cx=x+0.5;
+      const l0 = ((b[1]-c[1])*(cx-c[0]) + (c[0]-b[0])*(cy-c[1])) * inv; if(l0<0) continue;
+      const l1 = ((c[1]-a[1])*(cx-c[0]) + (a[0]-c[0])*(cy-c[1])) * inv; if(l1<0) continue;
+      const l2 = 1-l0-l1; if(l2<0) continue;
+      const d = l0*a[2] + l1*b[2] + l2*c[2]; const i = y*w+x;
+      if(d <= zb[i]) continue; zb[i]=d;
+      const p=i*4; px[p]=r; px[p+1]=g; px[p+2]=bl; px[p+3]=255;
+    } }
+}
+// same as the game, plus two roles the voxel cars use: lamp (headlights) and tail
+function rasterCar(sctx, mesh, yaw, col, flash, fw, fh, ax, ay, ky, kz, vsc){
+  const w=fw*SS, h=fh*SS;
+  if(!ZBUF || ZBUF.length!==w*h) ZBUF = new Float32Array(w*h);
+  ZBUF.fill(-1e9);
+  const img = sctx.createImageData(w,h), px = img.data;
+  const cy=Math.cos(yaw), sy=Math.sin(yaw);
+  const roles = flash ? null : { body:col, accent:hexShade(col,1.32), shadowed:hexShade(col,0.62),
+    dark:'#241d2c', glass:'#241d38', tyre:'#14111a', metal:'#585265', lamp:'#ffe7a0', tail:'#d8343c' };
+  const ox=ax*SS, oy=ay*SS, scl=vsc*SS;
+  for(const f of mesh){
+    const v=f.v.map(p=>[p[0]*cy - p[1]*sy, p[0]*sy + p[1]*cy, p[2]]);
+    const ax1=v[1][0]-v[0][0], ay1=v[1][1]-v[0][1], az1=v[1][2]-v[0][2];
+    const bx1=v[2][0]-v[0][0], by1=v[2][1]-v[0][1], bz1=v[2][2]-v[0][2];
+    let nx=ay1*bz1-az1*by1, ny=az1*bx1-ax1*bz1, nz=ax1*by1-ay1*bx1;
+    const nl=Math.hypot(nx,ny,nz)||1; nx/=nl; ny/=nl; nz/=nl;
+    if(!f.noCull && (ny*kz + nz*ky) <= 0.001) continue;
+    const lam = Math.max(0, nx*LIGHT[0] + ny*LIGHT[1] + nz*LIGHT[2]);
+    const rgb = shadeRGB(flash ? '#ffffff' : roles[f.c], 0.44 + 0.72*lam);
+    const s = v.map(p=>[ ox + p[0]*scl, oy + (p[1]*ky - p[2]*kz)*scl, p[1]*kz + p[2]*ky ]);
+    for(let i=1;i+1<s.length;i++) triangle(px, ZBUF, w, h, s[0], s[i], s[i+1], rgb[0], rgb[1], rgb[2]);
+  }
+  return img;
+}
+
+// one frame of a car into a canvas, the way bakeCarSheet / bakeFpsSprites do it
+function frameCanvas(mesh, yaw, col, scale, ky, kz, shadow){
+  const fw=Math.ceil(52*scale), fh=Math.ceil(52*scale), ax=Math.round(fw/2), ay=Math.round(fh*0.62);
+  const out=document.createElement('canvas'); out.width=fw; out.height=fh;
+  const g=out.getContext('2d'); g.imageSmoothingEnabled=true;
+  if(shadow){ g.save(); g.translate(ax+3*scale, ay+2*scale); g.scale(scale, scale*KY);
+    g.fillStyle='rgba(8,5,12,.40)'; g.beginPath(); g.ellipse(0,0,15,8,yaw,0,Math.PI*2); g.fill(); g.restore(); }
+  const sc=document.createElement('canvas'); sc.width=fw*SS; sc.height=fh*SS;
+  const sctx=sc.getContext('2d');
+  sctx.putImageData(rasterCar(sctx, mesh, yaw, col, false, fw, fh, ax, ay, ky, kz, scale), 0, 0);
+  g.drawImage(sc, 0,0,sc.width,sc.height, 0,0,fw,fh);
+  return out;
+}
+
+// ---------------------------------------------------------------- ASCII (index.html asciiBlit)
+const RC_W=320, RC_H=90;                 // the game's P2 raycast frame (640x180 pane at half res)
+const ASC_RAMP=' .:-=+*%#@', ASC_CW=2, ASC_CH=3, ASC_LIFT=2.6, ASC_SOLID=0.24;
+const ASC_LIGHT_R=120, ASC_LIGHT_WARM=60, ASC_LO=16, ASC_HI=100, ASC_GAMMA=1.0, LIGHTS_MIX=0.5;
+const ASC_BG=[11,8,16];
+const ascCols=RC_W/ASC_CW|0, ascRows=RC_H/ASC_CH|0, GW=8, GH=12;   // cell = 2*ASC_CW*PX wide at PX 2
+const rc=document.createElement('canvas'); rc.width=RC_W; rc.height=RC_H;
+const rcCtx=rc.getContext('2d', { willReadFrequently:true });
+let ascMask=null;
+(function ascInit(){
+  const at=document.createElement('canvas'); at.width=GW*ASC_RAMP.length; at.height=GH;
+  const a=at.getContext('2d', { willReadFrequently:true });
+  a.fillStyle='#fff'; a.textAlign='center'; a.textBaseline='middle';
+  a.font='bold '+GH+'px ui-monospace,"DejaVu Sans Mono",monospace';
+  for(let i=1;i<ASC_RAMP.length;i++) a.fillText(ASC_RAMP[i], (i+0.5)*GW, GH*0.55);
+  const ad=a.getImageData(0,0,at.width,GH).data;
+  ascMask=new Uint8Array(ASC_RAMP.length*GW*GH);
+  for(let gi=0;gi<ASC_RAMP.length;gi++) for(let y=0;y<GH;y++) for(let x=0;x<GW;x++)
+    ascMask[(gi*GH+y)*GW+x]=ad[(y*at.width+gi*GW+x)*4+3];
+})();
+function asciiBlit(ctx, mode){
+  const src=rcCtx.getImageData(0,0,RC_W,RC_H).data, n=ASC_RAMP.length-1;
+  const inv=1/(ASC_CW*ASC_CH), span=1/(ASC_HI-ASC_LO), OW=ascCols*GW;
+  const img=ctx.createImageData(OW, ascRows*GH), out=new Uint32Array(img.data.buffer);
+  const solid=mode===2, keep=1-ASC_SOLID;
+  for(let cy=0;cy<ascRows;cy++) for(let cx=0;cx<ascCols;cx++){
+    let r=0,g=0,b=0,nl=0,lr=0,lg=0,lb=0;
+    for(let yy=0;yy<ASC_CH;yy++){ let o=((cy*ASC_CH+yy)*RC_W+cx*ASC_CW)*4;
+      for(let xx=0;xx<ASC_CW;xx++){ const pr=src[o],pg=src[o+1],pb=src[o+2]; r+=pr; g+=pg; b+=pb;
+        if(pr>ASC_LIGHT_R && pr-pb>ASC_LIGHT_WARM){ nl++; lr+=pr; lg+=pg; lb+=pb; } o+=4; } }
+    r*=inv; g*=inv; b*=inv;
+    const lum=0.299*r+0.587*g+0.114*b;
+    let t=(lum-ASC_LO)*span; t=t<0?0:t>1?1:t;
+    let gi=Math.round(Math.pow(t,ASC_GAMMA)*n);
+    if(nl){ r=lr/nl; g=lg/nl; b=lb/nl; gi=Math.max(gi, Math.min(n, Math.round(3+LIGHTS_MIX*2)+nl)); }
+    const m=Math.max(r,g,b,1), lift=Math.min(ASC_LIFT, 235/m);
+    const tr=Math.min(255,Math.round(r*lift)), tg=Math.min(255,Math.round(g*lift)), tb=Math.min(255,Math.round(b*lift));
+    const br=solid?Math.round(ASC_BG[0]*keep+tr*ASC_SOLID):0, bgc=solid?Math.round(ASC_BG[1]*keep+tg*ASC_SOLID):0, bb=solid?Math.round(ASC_BG[2]*keep+tb*ASC_SOLID):0;
+    const bgPix=0xff000000|(bb<<16)|(bgc<<8)|br;
+    let p=cy*GH*OW+cx*GW;
+    if(!gi){ for(let yy=0;yy<GH;yy++,p+=OW) for(let xx=0;xx<GW;xx++) out[p+xx]=bgPix; continue; }
+    let k=gi*GW*GH;
+    for(let yy=0;yy<GH;yy++,p+=OW) for(let xx=0;xx<GW;xx++,k++){
+      const cov=ascMask[k]; if(!cov){ out[p+xx]=bgPix; continue; }
+      let R=br+((tr*cov+127)/255|0), G=bgc+((tg*cov+127)/255|0), B=bb+((tb*cov+127)/255|0);
+      out[p+xx]=0xff000000|(Math.min(B,255)<<16)|(Math.min(G,255)<<8)|Math.min(R,255);
+    }
+  }
+  ctx.putImageData(img,0,0);
+}
+
+// ---------------------------------------------------------------- UI + loop
+const $=id=>document.getElementById(id);
+const sel=$('model');
+for(const k of Object.keys(MODELS)){ const o=document.createElement('option'); o.value=k; o.textContent=k+' · '+MODELS[k].length+' faces'; sel.appendChild(o); }
+if([...sel.options].some(o=>o.value.startsWith('aspen@64'))) sel.value=[...sel.options].find(o=>o.value.startsWith('aspen@64')).value;
+
+const SGAME=1.6;                          // PX 2 x ZOOM_H 0.8
+const topCv=$('top'), tctx=topCv.getContext('2d');
+const top1=$('top1'), t1ctx=top1.getContext('2d');
+const asc=$('asc'), actx=asc.getContext('2d');
+asc.width=ascCols*GW; asc.height=ascRows*GH;
+let paused=false, yaw=0, last=performance.now(), frameMs=0;
+$('pause').onclick=()=>{ paused=!paused; $('pause').textContent=paused?'play':'pause'; };
+// rotate by dragging either view
+for(const c of [topCv, asc]){ let dx=null;
+  c.addEventListener('pointerdown', e=>{ dx=e.clientX; c.setPointerCapture(e.pointerId); });
+  c.addEventListener('pointermove', e=>{ if(dx==null) return; yaw-=(e.clientX-dx)*0.01; dx=e.clientX; });
+  c.addEventListener('pointerup', ()=>dx=null); }
+
+let bakeInfo='';
+$('bake').onclick=()=>{
+  // what the game pays: 32 yaw frames x 2 rows (colour + white flash) per sheet, both cameras
+  const mesh=MODELS[sel.value], col=$('color').value;
+  const t0=performance.now();
+  for(let f=0;f<64;f++) frameCanvas(mesh, f/32*Math.PI, col, SGAME, KY, KZ, true);
+  const t1=performance.now();
+  for(let f=0;f<64;f++) frameCanvas(mesh, f/32*Math.PI, col, 1, KY_FPS, KZ_FPS, false);
+  const t2=performance.now();
+  bakeInfo=`bake (${sel.value}): top-down sheet ${(t1-t0).toFixed(0)} ms · FP sheet ${(t2-t1).toFixed(0)} ms  (64 frames each, game today ~30 ms a sheet)`;
+};
+
+function draw(now){
+  const dt=Math.min(0.1,(now-last)/1000); last=now;
+  if(!paused) yaw += dt*parseFloat($('speed').value)*Math.PI;
+  const mesh=MODELS[sel.value], col=$('color').value;
+  const shown = $('snap').checked ? Math.round(yaw/(Math.PI*2)*32)/32*Math.PI*2 : yaw;
+  const t0=performance.now();
+
+  // top-down: the game-size frame, then enlarged
+  const z=parseInt($('zoom').value);
+  const f=frameCanvas(mesh, shown, col, SGAME, KY, KZ, true);
+  top1.width=f.width; top1.height=f.height; t1ctx.drawImage(f,0,0);
+  const big=frameCanvas(mesh, shown, col, SGAME*z, KY, KZ, true);
+  topCv.width=f.width*z; topCv.height=f.height*z;
+  tctx.imageSmoothingEnabled=false; tctx.drawImage(big,0,0,topCv.width,topCv.height);
+
+  // first person: a street backdrop like the raycaster's, the FP bake magnified by distance, then ASCII
+  rcCtx.fillStyle='#0b0810'; rcCtx.fillRect(0,0,RC_W,RC_H);
+  const hor=Math.round(RC_H*0.42);
+  const sky=rcCtx.createLinearGradient(0,0,0,hor); sky.addColorStop(0,'#120c1c'); sky.addColorStop(1,'#2a1a2e');
+  rcCtx.fillStyle=sky; rcCtx.fillRect(0,0,RC_W,hor);
+  const gr=rcCtx.createLinearGradient(0,hor,0,RC_H); gr.addColorStop(0,'#1c1620'); gr.addColorStop(1,'#3a3040');
+  rcCtx.fillStyle=gr; rcCtx.fillRect(0,hor,RC_W,RC_H-hor);
+  const mag=1/parseFloat($('dist').value);
+  const fp=frameCanvas(mesh, shown, col, 1, KY_FPS, KZ_FPS, false);
+  const w=fp.width*mag*1.6, h=fp.height*mag*1.6, gy=Math.min(RC_H-3, hor+(RC_H-hor)*0.3*mag);
+  rcCtx.imageSmoothingEnabled=false;
+  rcCtx.drawImage(fp, RC_W/2-w/2, gy-h*0.62, w, h);
+  const mode=parseInt($('amode').value);
+  if(mode) asciiBlit(actx, mode);
+  else { actx.imageSmoothingEnabled=false; actx.drawImage(rc,0,0,asc.width,asc.height); }
+
+  frameMs = frameMs*0.9 + (performance.now()-t0)*0.1;
+  const d=VOXCARS[sel.value.split(' ')[0]];
+  $('stats').innerHTML =
+    `<b>${sel.value}</b> · ${mesh.length} faces` + (d ? ` · voxel ${d.vox.toFixed(3)} units = ${(d.vox*SGAME).toFixed(2)} px top-down` : '') +
+    `\nyaw ${(((shown*180/Math.PI)%360+360)%360).toFixed(0)}°  ·  view cost ${frameMs.toFixed(1)} ms/frame (3 rasters + ASCII)` +
+    (bakeInfo ? '\n'+bakeInfo : '\n[time bake] measures what the game would pay to bake this car');
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

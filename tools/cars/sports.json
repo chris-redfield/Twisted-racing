@@ -1,0 +1,16 @@
+{
+  "name": "sports",
+  "source": "assets/car-model-2/Sports+Car.glb - licence unknown; its texture path names a real production car, check before shipping",
+  "dir": "../../assets/car-model-2",
+  "nose": "+z",
+  "up": "+y",
+  "length": 31,
+  "smooth": 1,
+  "parts": [
+    {"file": "Sports+Car.glb", "nodes": ["Body_Glass"], "role": "glass"},
+    {"file": "Sports+Car.glb", "nodes": ["Body_Textures"],
+     "classes": {"paint": "body", "white": "accent", "black": "dark", "grey": "metal", "red": "tail"}},
+    {"file": "Sports+Car.glb", "nodes": ["Wheel_"],
+     "classes": {"paint": "metal", "white": "metal", "black": "tyre", "grey": "metal", "red": "tail", "black_lum": 82}}
+  ]
+}
