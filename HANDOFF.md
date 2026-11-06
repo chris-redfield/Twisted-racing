@@ -37,8 +37,9 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
   ENTER/click (fade + slight settle), captions typed into a yellow comic box; ENTER finishes the
   typing first; ESC skips; C still jumps to the city. Missing panel = labelled empty frame; a page
   with no images is skipped (page 2 appears once its first image exists). Panels in
-  `assets/comic/pageP-N.png`; all 8 panels delivered (2026-11-06). Caption corner `at` = t/b + l/c/r; placed off faces (p1-2 'bl', p2-2 'tc'). Originals are ~4 MB each -
-  make compressed copies for the game before shipping.
+  `assets/comic/pageP-N.png`; all 8 panels delivered (2026-11-06). Caption corner `at` = t/b + l/c/r; placed off faces (p1-2 'bl', p2-2 'tc'). The game loads WebP copies (q92,
+  `tools/webp.py`; 35 MB of PNG -> 7.4 MB; visually identical at game size, checked side by side);
+  the PNG originals stay next to them. New/replaced art: `python3 tools/webp.py <file.png>`.
 
 ---
 

@@ -283,14 +283,14 @@ const MAP_COL = {
 const COMIC = {
   ENABLED: true,
   PAGES: [
-    [ { img:'assets/comic/page1-1.png', at:'tl', caption:'The humans are gone. They left us the world, and nothing to do in it.' },
-      { img:'assets/comic/page1-2.png', at:'bl', caption:'Out here, we had nothing they wanted. Almost.' },
-      { img:'assets/comic/page1-3.png', at:'tl', caption:'' },
-      { img:'assets/comic/page1-4.png', at:'br', caption:"They didn't want her. They wanted what she carries." } ],
-    [ { img:'assets/comic/page2-1.png', at:'tl', caption:'' },
-      { img:'assets/comic/page2-2.png', at:'tc', caption:'One road in. Every hunter they own on it.' },
-      { img:'assets/comic/page2-3.png', at:'tl', size:6.5, caption:'They hunt only new tech. An old model like me? Beneath their notice.' },
-      { img:'assets/comic/page2-4.png', at:'br', caption:"Hold on. I'm coming." } ],
+    [ { img:'assets/comic/page1-1.webp', at:'tl', caption:'The humans are gone. They left us the world, and nothing to do in it.' },
+      { img:'assets/comic/page1-2.webp', at:'bl', caption:'Out here, we had nothing they wanted. Almost.' },
+      { img:'assets/comic/page1-3.webp', at:'tl', caption:'' },
+      { img:'assets/comic/page1-4.webp', at:'br', caption:"They didn't want her. They wanted what she carries." } ],
+    [ { img:'assets/comic/page2-1.webp', at:'tl', caption:'' },
+      { img:'assets/comic/page2-2.webp', at:'tc', caption:'One road in. Every hunter they own on it.' },
+      { img:'assets/comic/page2-3.webp', at:'tl', size:6.5, caption:'They hunt only new tech. An old model like me? Beneath their notice.' },
+      { img:'assets/comic/page2-4.webp', at:'br', caption:"Hold on. I'm coming." } ],
   ],
   TYPE_SPEED:  38,      // caption letters per second
   PANEL_FADE:  0.45,    // seconds a panel takes to come in
@@ -310,9 +310,9 @@ const NEON = {
   INK:     '#e8e0ff',   // body text
 };
 const GAME_TITLE = 'SCRAPHEAP';   // the name on the menu
-// the menu logo: a PNG (transparent background) next to index.html. If the file
+// the menu logo: an image (WebP/PNG, transparent background) next to index.html. If the file
 // is missing the menu falls back to GAME_TITLE in neon text. '' = always text.
-const LOGO_IMAGE = 'assets/logo.png';
+const LOGO_IMAGE = 'assets/logo.webp';
 const LOGO_WIDTH = 0.80;          // how much of the screen's width it may take
 const LOGO_CROP  = [0, 0, 1, 1];         // the part of the image to use: x, y, w, h as fractions
 // how it's laid on the menu: 'lighter' adds it (a black background disappears,
