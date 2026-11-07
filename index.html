@@ -578,7 +578,7 @@ function makeCar(id, isPlayer, x, y, angle, model){
   const t = (isPlayer || race) ? null : ENEMY_TYPE[model];
   const scale = t ? (meshWidth(0)*t.size)/meshWidth(model) : 1;
   const size  = t ? t.size : 1;      // on-screen size relative to the player's car
-  const hp = CAR_HP*(t ? t.hp : 1);
+  const hp = isPlayer ? playerMaxHp() : ENEMY_HP_BASE*(t ? t.hp : 1);
   return {
     id, name:pal.name, isPlayer, model,
     mesh: isPlayer ? playerMesh() : model,   // which MODELS entry the bakes draw (the player's comes from the GARAGE)
@@ -696,18 +696,26 @@ function buildRacePads(){
 // back through the frame, pursuers appear behind and chase. Both are culled once
 // they fall well out of view, so the road always feels populated without an
 // ever-growing car list. Everything scales with `wave`, which climbs with distance.
-function enemyCap(){ return Math.min(9, 3 + Math.floor(wave*0.9)); }
+function enemyCap(){
+  const cap = Math.min(9, 3 + Math.floor(wave*0.9));
+  return onLeg1() ? Math.max(1, Math.round(cap*LEG1.DENSITY)) : cap;
+}
+// the run's first leg (before the bend) has its own, gentler rules: LEG1 in config.js
+function onLeg1(){ return ROAD && ROAD.kind === 'run' && camS < ROAD.bendS0; }
+function pickWeighted(w){ let r = Math.random()*w.reduce((a,b)=>a+b,0); for(let i=0;i<w.length;i++){ r -= w[i]; if(r < 0) return i; } return w.length-1; }
 
 function spawnEnemy(){
   const enemies = cars.length - 1;
   if(enemies >= enemyCap()) return;
   if(inQuiet(camS)) return;                       // the corner is a breather
   const aheadBias = clamp(0.72 - wave*0.03, 0.45, 0.72);   // more pursuers as it heats up
-  const charger = Math.random() < aheadBias;
+  const allBehind = onLeg1() && !LEG1.FROM_FRONT;
+  const charger = !allBehind && Math.random() < aheadBias;
   // the side picks the type, not the other way round, so the ahead/behind mix
-  // stays the tuned one: the two front-runners are blue and yellow, and green is
-  // the only thing that comes up behind you
-  const model = charger ? 3 : (Math.random()<0.45 ? 1 : 2);
+  // stays the tuned one: the front-runner is the yellow tanque, and blue and green
+  // come up behind you. On leg 1 (LEG1.FROM_FRONT false) everything comes from
+  // behind, the tanque included, in LEG1.BACK_MIX shares.
+  const model = charger ? 3 : allBehind ? 1 + pickWeighted(LEG1.BACK_MIX) : (Math.random()<0.45 ? 1 : 2);
   const lat = rnd(-ROAD_HW+26, ROAD_HW-26);
   const reach = halfExtent(roadFrame(camS));                // how far up/along the road you see
   const spd = charger ? (150 + wave*6 + rnd(0,40)) : (camV + 40 + wave*3);
@@ -733,7 +741,8 @@ function updateSpawner(dt){
   spawnT -= dt;
   if(spawnT<=0){
     spawnEnemy();
-    spawnT = Math.max(SPAWN_GAP_MIN, SPAWN_GAP0 - wave*SPAWN_GAP_WAVE) * rnd(0.7,1.3);
+    spawnT = Math.max(SPAWN_GAP_MIN, SPAWN_GAP0 - wave*SPAWN_GAP_WAVE) * rnd(0.7,1.3)
+           / (onLeg1() ? LEG1.DENSITY : 1);          // leg 1: arrivals that much further apart
   }
   // Rank the tail chasers by who is closest, so only PURSUE_SQUAD of them press
   // the attack and the overflow forms its own pack (see aiPursue).
@@ -1227,8 +1236,21 @@ function popBarrel(b, owner){
 // swallows a car that a shot could not scratch.
 function untouchable(c){ return c.invuln>0 || (devMode && c.isPlayer); }
 
+// ---- player upgrades (config.js 3b). Levels are clamped to 0..UPGRADE_MAX.
+function upgradeLv(k){ return clamp(Math.round(UPGRADES[k] || 0), 0, UPGRADE_MAX); }
+// share of each hit the armor takes away: 0 at level 0, ARMOR_MIN..ARMOR_MAX over levels 1..UPGRADE_MAX
+function armorCut(){
+  const lv = upgradeLv('armor');
+  if(lv <= 0) return 0;
+  return UPGRADE_MAX > 1 ? ARMOR_MIN + (ARMOR_MAX - ARMOR_MIN)*(lv - 1)/(UPGRADE_MAX - 1) : ARMOR_MAX;
+}
+function playerMaxHp(){ return CAR_HP + HEALTH_PER_LEVEL*upgradeLv('health'); }
+function gunDmg(c){ return GUN_DMG + (c.isPlayer ? GUN_DMG_PER_LEVEL*upgradeLv('gun') : 0); }
+function missileDmg(c){ return MISSILE_DMG*(1 + (c.isPlayer ? MISSILE_DMG_PER_LEVEL*upgradeLv('missile') : 0)); }
+
 function damage(c, amount, ownerId){
   if(c.dead || untouchable(c)) return;
+  if(c.isPlayer) amount *= 1 - armorCut();       // ARMOR upgrade
   c.hp -= amount;
   c.hurtFlash = 0.12;
   if(ownerId!=null && ownerId!==c.id) c.lastHitBy = ownerId;
@@ -1287,7 +1309,7 @@ function fireCannon(c){
   const a = aim + rnd(-spread,spread);
   shots.push({ kind:'bullet', x:c.x+fx0*18, y:c.y+fy0*18, z:6,
     vx:Math.cos(a)*430 + c.vx*0.3, vy:Math.sin(a)*430 + c.vy*0.3,
-    life:1.0, owner:c.id, dmg:7 });
+    life:1.0, owner:c.id, dmg:gunDmg(c) });
   c.vx -= fx0*8; c.vy -= fy0*8;
   Snd.shot();
   particles(c.x+fx0*20,c.y+fy0*20,6,2,{col:['#ffe9a8'],spd0:10,spd1:40,size:1,life0:0.05,life1:0.12,grav:0});
@@ -1298,7 +1320,7 @@ function fireMissile(c){
   const aim = aimAngle(c);
   const fx0=Math.cos(aim), fy0=Math.sin(aim);
   shots.push({ kind:'missile', x:c.x+fx0*18, y:c.y+fy0*18, z:7,
-    vx:fx0*190, vy:fy0*190, angle:aim, life:2.6, owner:c.id, dmg:34, smoke:0 });
+    vx:fx0*190, vy:fy0*190, angle:aim, life:2.6, owner:c.id, dmg:missileDmg(c), smoke:0 });
   Snd.missile();
 }
 // SPACE. Refuses while a charge is still recharging, while the burn is already
@@ -4972,7 +4994,7 @@ let gunnerHit=0, gunnerKill=0;
 // reads "three left" rather than "about a third". Spent pips stay as faint
 // ghosts so the full capacity is still legible. `ceil` keeps the last pip lit
 // until the value is actually zero - alive should never look empty.
-const BAR_PIPS = 20;               // CAR_HP is 130, so a pip is ~6 hull
+const BAR_PIPS = 20;               // a pip is maxHp/20: 10 hull at the base 200
 function bar(x,y,w,h,v,col,bg,n){
   n = n || BAR_PIPS;
   ctx.fillStyle=bg||'rgba(10,7,14,.8)'; ctx.fillRect(x-1,y-1,w+2,h+2);

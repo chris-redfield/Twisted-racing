@@ -21,13 +21,15 @@
 // The road is one path: leg 1 runs left to right (+x), a quarter circle turns it
 // to run up the screen (-y), and leg 2 carries straight on into the city.
 // Lengths are measured along the middle of the road. The scroll starts at CAM_V0
-// and creeps up to CAM_VMAX, so 90 s of driving is ~15500 units on leg 1 and
-// ~18800 on leg 2 (it starts faster).
+// and creeps up to CAM_VMAX. Measured in game (2026-11-07): LEG1 11725 = 70.0 s,
+// the bend 3.7 s, LEG2 13580 = 66.9 s. Leg 2's end is rounded on to the next city
+// chunk (CITY_CH, ~6.5 s of road), so it moves in steps: 13580 -> 66.9 s, anything
+// up to 14980 -> 73.4 s. (Before: 15500 / 18800 = 89.9 s / 91.1 s.)
 const RUN = {
-  LEG1:          15500,  // horizontal survival, start -> corner
+  LEG1:          11725,  // horizontal survival, start -> corner (70 s)
   CORNER_R:        420,  // radius of the 90-degree bend (middle of the road); the
                          // inside edge is CORNER_R - ROAD_HW, so keep it > ROAD_HW
-  LEG2:          18800,  // vertical survival, corner -> city gate
+  LEG2:          13580,  // vertical survival, corner -> city gate (66.9 s, see above)
   QUIET:           650,  // no enemies spawn this close (before/after) to the corner
   UNITS_PER_M:      10,  // HUD distance: world units per metre shown
   // the framing of each leg. Leg 1 is CONVOY's, leg 2 ASCENT's; through the bend
@@ -89,15 +91,46 @@ const BOOST_EASE_IN = 0.001, BOOST_EASE_OUT = 0.37;
 // -----------------------------------------------------------------------------
 // 3. THE PLAYER'S CAR
 // -----------------------------------------------------------------------------
-const CAR_HP  = 130;             // hull points (enemies scale theirs off this)
+const CAR_HP  = 200;             // the player's hull points, before HEALTH upgrades (was 130)
+const ENEMY_HP_BASE = 130;       // enemies' hull: ENEMY_TYPE.hp multiplies this (kept apart from CAR_HP,
+                                 // so the player can get tougher without the enemies following)
 const CAR_TOP = 232;             // top speed off the scroll (city, and enemies x pace)
 const CAR_ACC = 330;             // acceleration
+// base weapon damage, the same for everyone (enemies never get upgrades)
+const GUN_DMG     = 7;           // machine gun, per bullet (one every 0.14 s)
+const MISSILE_DMG = 34;          // missile, at the centre of its blast (radius 62, falls off to the edge)
+
+// -----------------------------------------------------------------------------
+// 3b. PLAYER UPGRADES - the effects. HOW they are earned isn't decided yet.
+// -----------------------------------------------------------------------------
+// Four tracks, each with levels 0..UPGRADE_MAX. Level 0 = no upgrade. Only the
+// player's car uses them. UPGRADES below holds the current levels; set a number
+// there to try a level out (it is read when a run starts).
+//
+//   armor    cuts every hit the car takes by a percentage. Level 1 = ARMOR_MIN,
+//            level UPGRADE_MAX = ARMOR_MAX, evenly spaced between
+//            (6/12/18/24/30/36 % as set). Change the range here, nothing else.
+//   health   + HEALTH_PER_LEVEL hull points each (6 x 40 = 240 more, so 440 max)
+//   gun      + GUN_DMG_PER_LEVEL machine-gun damage per bullet each
+//            (6 x 1.5 = +9, so 7 -> 16 per bullet)
+//   missile  + MISSILE_DMG_PER_LEVEL of the BASE missile damage each, added, not
+//            compounded (6 x 20% = +120%, so 34 -> 74.8)
+//
+// Armor and health stack: what it takes to wreck the car is HP / (1 - armor).
+// Base 200; all 6 health + all 6 armor = 440 / 0.64 = 687, 3.4x the base car
+// (with the old 10..60 % armor it was 1100, 5.5x - which is why it came down).
+const UPGRADE_MAX = 6;
+const ARMOR_MIN = 0.06, ARMOR_MAX = 0.36;   // +6 % a level (was 10..60 %)
+const HEALTH_PER_LEVEL      = 40;
+const GUN_DMG_PER_LEVEL     = 1.5;
+const MISSILE_DMG_PER_LEVEL = 0.20;
+let   UPGRADES = { armor:0, health:0, gun:0, missile:0 };
 
 // -----------------------------------------------------------------------------
 // 4. ENEMIES AND THE SPAWNER
 // -----------------------------------------------------------------------------
 // One entry per model/colour. `size` is relative to the player's car, `hp` to
-// CAR_HP, `pace` to the scroll speed. `from` is which end of the road they enter.
+// ENEMY_HP_BASE, `pace` to the scroll speed. `from` is which end of the road they enter.
 //   1 VULTURE  blue    BATEDOR - smaller, fast, fragile; comes up from behind,
 //                                overtakes down one side, then turns on you
 //   2 GRAVA    green   SOLDADO - normal size, the one that chases from behind
@@ -114,6 +147,14 @@ const WAVE_DIST      = 1400;
 const SPAWN_GAP0     = 2.0;
 const SPAWN_GAP_WAVE = 0.12;
 const SPAWN_GAP_MIN  = 0.5;
+// LEG 1 is the gentle leg. Elsewhere the spawner sends 72% of arrivals (at wave 1)
+// from the FRONT, and every one of those is a yellow tanque driving at you. Here:
+const LEG1 = {
+  DENSITY:    0.5,     // share of the usual enemy count AND arrival rate (0.5 = half as many)
+  FROM_FRONT: false,   // false: nothing comes from the front; the tanque comes up from behind
+  // with FROM_FRONT false, the mix of what comes up behind: batedor, soldado, tanque
+  BACK_MIX:   [0.35, 0.40, 0.25],
+};
 const PURSUE_SQUAD = 4;            // greens working the player at once; the rest queue
 const BOMB_DMG = 46, BOMB_R = 96;  // what the yellow one lets go when it dies
 const GUN_BURST = 4.0;             // seconds of fire an enemy gets

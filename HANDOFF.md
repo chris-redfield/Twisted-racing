@@ -7,6 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-07 | [Legs 70 s each; leg 1 half as dense, no oncoming trucks](#2026-11-07--legs-70-s-each-leg-1-half-as-dense-no-oncoming-trucks) | built, measured |
+| 2026-11-07 | [Player HP 200 + upgrade effects (armor/health/gun/missile)](#2026-11-07--player-hp-200--upgrade-effects-armorhealthgunmissile) | built; earning them not designed |
 | 2026-11-06 | [GARAGE: pick your car (classic / aspen / sports / biome)](#2026-11-06--garage-pick-your-car-classic--aspen--sports--biome) | built, in index.html |
 | 2026-11-05 | [Voxel car proof: CAD model -> voxels -> viewer](#2026-11-05--voxel-car-proof-cad-model---voxels---viewer) | built, not in game |
 | 2026-11-06 | [NEXT: cars from downloaded 3D models (voxelized)](#2026-11-06--next-cars-from-downloaded-3d-models-voxelized) | plan, start here |
@@ -20,6 +22,41 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 | 2026-11-05 | [STREET city: state of the build](#2026-11-05--street-city-state-of-the-build) | reference |
 | 2026-11-05 | [Raycaster + ASCII performance](#2026-11-05--raycaster--ascii-performance) | reference |
 | 2026-11-04 | [STREET: walk, then a BSP city](#2026-11-04--street-walk-then-a-bsp-city) | summary |
+
+---
+
+## 2026-11-07 — Legs 70 s each; leg 1 half as dense, no oncoming trucks
+
+- Measured (in-game fixed-step sim, enemies off): before, leg 1 89.9 s, bend 3.4 s, leg 2 91.1 s.
+  Now `RUN.LEG1 = 11725` -> **70.0 s**, `RUN.LEG2 = 13580` -> **66.9 s** (leg 2's end snaps to a city chunk,
+  CITY_CH 1400 = ~6.5 s steps; the next step up is 73.4 s). Whole run to the gate: 184 s -> 141 s.
+- Why leg 1 was brutal: every spawn "from the front" is a yellow tanque, and at wave 1 that's 72 % of spawns.
+- `LEG1` in config.js: `DENSITY 0.5` (enemy cap and arrival rate x0.5), `FROM_FRONT false` (everything comes
+  from behind, tanque included, as a pursuer: it can catch you, top 209 vs scroll <=185 on leg 1),
+  `BACK_MIX [batedor .35, soldado .40, tanque .25]`. Code: `onLeg1()`, `enemyCap()`, `spawnEnemy()`, `updateSpawner()`.
+- Measured (one run each, dev mode): leg 1 avg enemies on screen 5.27 -> **3.16**, arrivals 38 -> 11, from the
+  front 21 -> 0. Leg 2 unchanged in feel: 8.15 -> 8.23 on screen (cap-bound). Note the wave counter runs on
+  distance, so leg 2 now starts at a lower wave (~9 instead of ~12); the wave system is to be redone.
+- Both legs still feel too hard to the user; a new wave system is next.
+
+---
+
+## 2026-11-07 — Player HP 200 + upgrade effects (armor/health/gun/missile)
+
+- `CAR_HP` 130 -> **200**. Enemies were `CAR_HP x type.hp`, so they'd have grown too: split out as
+  `ENEMY_HP_BASE = 130` (enemies unchanged: batedor 97.5, soldado/tanque 130). Race rivals also use it.
+- **Upgrade effects** (config.js section 3b), 4 tracks x levels 0..`UPGRADE_MAX` (6), player only:
+  armor = damage cut, `ARMOR_MIN`..`ARMOR_MAX` over levels 1..6 (**6..36 %** since 2026-11-07, was 10..60 %; range is a knob); health +40/level
+  (200 -> 440); gun +1.5/level per bullet (7 -> 16); missile +20 % of base/level, linear (34 -> 74.8).
+  Current levels live in `let UPGRADES = {armor, health, gun, missile}` (all 0); read at run start / per shot.
+  Code: `upgradeLv`, `armorCut`, `playerMaxHp`, `gunDmg`, `missileDmg` next to `damage()`; armor applies in
+  `damage()` (cars only; the walker has its own HP).
+  Base damages are now named: `GUN_DMG` 7, `MISSILE_DMG` 34.
+- **How upgrades are EARNED is not decided yet** (shop? pickups? per-car evolution with the GARAGE?).
+- Found: **mines can't be used by the player.** No key calls `dropMine` for the player; the `*` pad is
+  collected into `minesLeft` (max 3) but nothing spends it, and the HUD doesn't show it. Run/city enemies have 0 mines.
+- Verified in Chrome: base 200/0 %/7/34; armor steps 0,10..60 %; all-6 = 440/60 %/16/74.8, enemy gun stays 7;
+  enemies spawn at 97.5/130. Headless 60 s, no errors.
 
 ---
 
