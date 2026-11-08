@@ -124,7 +124,27 @@ const ARMOR_MIN = 0.06, ARMOR_MAX = 0.36;   // +6 % a level (was 10..60 %)
 const HEALTH_PER_LEVEL      = 40;
 const GUN_DMG_PER_LEVEL     = 1.5;
 const MISSILE_DMG_PER_LEVEL = 0.20;
-let   UPGRADES = { armor:0, health:0, gun:0, missile:0 };
+let   UPGRADES = { armor:0, health:0, gun:0, missile:0 };   // levels every run STARTS with (testing)
+
+// -----------------------------------------------------------------------------
+// 3c. THE SCRAP SAINTS - cash per kill, and their garage at the checkpoint
+// -----------------------------------------------------------------------------
+// A rogue robot outfit that pays you for destroying state robot property. Every
+// enemy YOU wreck (gun, missile, ram) pays its BOUNTY. At the checkpoint (the
+// start of the bend) the game stops at their garage: spend it on upgrades
+// (section 3b) or a repair, then carry on into leg 2. Wreck on leg 2 and you
+// restart at the checkpoint with what you left the garage with.
+//
+// Leg 1 shows ~6-13 enemies (10 on average, measured), ~$25 a kill, so ~4 kills
+// buy one upgrade, ~8 buy two, ~12 three.
+const SAINTS = {
+  BOUNTY: { batedor:20, soldado:25, tanque:35 },   // cash per kill, by enemy type
+  PRICE0:        100,  // an upgrade's first level...
+  PRICE_STEP:     50,  // ...and every next level of the same track costs this much more (100, 150, 200...)
+  REPAIR0:        40,  // a full repair...
+  REPAIR_PER_LV:   5,  // ...plus this for every upgrade level you own, all tracks (light on purpose)
+  DEV_CASH:      500,  // dev mode (I): K adds this much; J opens the garage anywhere on the run
+};
 
 // -----------------------------------------------------------------------------
 // 4. ENEMIES AND THE SPAWNER
@@ -290,6 +310,8 @@ let   ASC_LO = 16, ASC_HI = 100, ASC_GAMMA = 1.0;   // ASCII: luminance -> glyph
 // After the-party's minimap: the city is drawn SHRUNK, every block at its real
 // size and place, and the streets are just the ground showing between them.
 const MAP_KEY   = 'KeyM';
+const MINE_KEY  = 'KeyQ';              // drop a mine behind the car (player)
+const MINES_START = 2;                // mines the run starts with (pickups add more, max 3)
 const SOUND_KEY = 'KeyO';              // sound on/off (moved off M for the map)
 const MAP_PAUSES = true;               // the game holds still while you read it
 const MAP_RADII  = [700, 1300, 2400, 4200];   // how far the local map reaches (- / = step)

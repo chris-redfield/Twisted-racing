@@ -7,6 +7,10 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-07 | [Mines on Q](#2026-11-07--mines-on-q) | built, verified in Chrome |
+| 2026-11-07 | [Store: select, then confirm](#2026-11-07--store-select-then-confirm) | built, verified in Chrome |
+| 2026-11-07 | [ESC pauses, never ends a run](#2026-11-07--esc-pauses-never-ends-a-run) | built |
+| 2026-11-07 | [The Scrap Saints: bounties + store at the checkpoint](#2026-11-07--the-scrap-saints-bounties--store-at-the-checkpoint) | built, verified; balance untested by a human |
 | 2026-11-07 | [Legs 70 s each; leg 1 half as dense, no oncoming trucks](#2026-11-07--legs-70-s-each-leg-1-half-as-dense-no-oncoming-trucks) | built, measured |
 | 2026-11-07 | [Player HP 200 + upgrade effects (armor/health/gun/missile)](#2026-11-07--player-hp-200--upgrade-effects-armorhealthgunmissile) | built; earning them not designed |
 | 2026-11-06 | [GARAGE: pick your car (classic / aspen / sports / biome)](#2026-11-06--garage-pick-your-car-classic--aspen--sports--biome) | built, in index.html |
@@ -22,6 +26,65 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 | 2026-11-05 | [STREET city: state of the build](#2026-11-05--street-city-state-of-the-build) | reference |
 | 2026-11-05 | [Raycaster + ASCII performance](#2026-11-05--raycaster--ascii-performance) | reference |
 | 2026-11-04 | [STREET: walk, then a BSP city](#2026-11-04--street-walk-then-a-bsp-city) | summary |
+
+---
+
+
+
+
+## 2026-11-07 — Mines on Q
+
+Before this the player had no mine key at all (`dropMine` was only called by enemy AI) and the run
+started with 0 mines. Now **Q** (`MINE_KEY` in config.js) drops a mine 20 px behind the car. The run
+starts with `MINES_START` = 2, pickups add more (max 3), and there is a 0.5 s cooldown. The mine arms
+after 0.6 s, does 40 damage in a 72 px blast, and expires after 16 s. The HUD weapon box shows
+"MINE n (Q)". Verified in Chrome by stepping `step(DT)`: Q 2→1, a second Q in the cooldown does
+nothing, and an enemy on the armed mine went from 130 to 92 HP. (Headless Chrome throttles rAF, so tests must
+call `step(DT)` themselves; `menuT` and frame timers don't advance there.)
+
+## 2026-11-07 — Store: select, then confirm
+
+Every Scrap Saints purchase is now two steps (`storeChoose` in `index.html`): ENTER or a click
+selects the row and arms it (gold outline, "BUY X LV n FOR $p?  ENTER yes  ESC no"); a second
+ENTER or click on the same row buys (`storeBuy`). ESC or moving the cursor cancels. CONTINUE asks
+too ("LEAVE THE GARAGE? you cannot come back"). ESC now only cancels; it no longer leaves the store.
+SPACE was removed from the store keys (it's boost, so it was often held on arrival). Input is ignored for
+`STORE_LOCK` 0.5 s after the store opens, timed with `performance.now()` so a held fire click or
+ENTER can't land. Clicks hit-test the rows (`storeRowY`); a click off the rows does nothing.
+Verified in Chrome by driving `onPress`/`storeClick` step by step and checking the cash and levels.
+
+## 2026-11-07 — ESC pauses, never ends a run
+
+In `index.html` `onPress`, ESC during `state==='play'` now toggles `paused` (same as P) instead of
+dropping to the title. Quitting a run to the menu is **BACKSPACE while paused**; the PAUSED overlay
+says so. ESC still means "back" on the menus, garage, store (continue), comic (skip), map (close) and
+the game-over screen. The `#hint` bar lost "ESC menu" and now reads "P / ESC pause".
+
+## 2026-11-07 — The Scrap Saints: bounties + store at the checkpoint
+
+**The user's idea:** the Scrap Saints, a rogue robot organization that hates the robot state, pay you for
+every state robot you destroy. Their garage opens at the checkpoint (end of leg 1) as a store; test the
+upgrades on leg 2.
+
+- Config `SAINTS` (config.js 3c): bounty batedor $20 / soldado $25 / tanque $35; upgrade level n costs
+  100 + 50*n (100, 150, 200...); repair = 40 + 5 per upgrade level owned (kept light, the user's ask);
+  dev cash 500.
+  Sized from measurement: leg 1 shows 6-13 enemies (avg 10, 8 sims), ~$25 a kill -> ~4 kills = 1 upgrade,
+  ~8 = 2, ~12 = 3.
+- Only player kills pay (gun/missile/ram via `lastHitBy`); a tanque's own blast has no owner, so its
+  victims don't pay. HUD: `$cash` plate under the run plate + a merging "+$N SCRAP SAINTS" toast.
+- Store = `state 'store'` drawn over the frozen road (`drawStore`). Rows ARMOR/HEALTH/MACHINE GUN/
+  MISSILE (pips, now -> next, price), REPAIR, CONTINUE. UP/DOWN, ENTER buy, ESC continue, click = buy.
+  Buying HEALTH adds the 40 to current hull too.
+- Run state: `runUp` (levels, starts from config `UPGRADES`), `cash`; reset in startMatch. The checkpoint
+  stores `cash` + `up` (written again on leaving the store); `restartFromCheckpoint` restores both and the
+  hull to `playerMaxHp()`. The store doesn't reopen on restart. The city checkpoint carries them too.
+- Dev mode (I) on the run: **K** = +$500, **J** = open the store anywhere.
+- The fixed-step loop now stops stepping the moment state leaves 'play' (store/wreck).
+- Verified in Chrome: kills paid $45 (20+25); store opened at camS = bendS0 exactly; health buy
+  245->145, max 240, hull +40; armor 6 %; repair $50 refused at $45; restart restored $45 + levels + 240 hull.
+  Headless 60 s no errors.
+- Still open: mines have no key (see the HP entry); upgrades/cash reset per run.
 
 ---
 
