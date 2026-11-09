@@ -156,6 +156,42 @@ const SAINTS = {
 };
 
 // -----------------------------------------------------------------------------
+// 3d. THE SENTRY'S RIG - posing the voxel model (foe.js)
+// -----------------------------------------------------------------------------
+// The enemy is one voxel model carved from one drawing (tools/sprite_voxelize.py),
+// so it has no animation of its own. Instead the faces are split into groups by
+// where they sit in the model, each group is rotated about a pivot, and the result
+// is baked like any other frame. Both views get it for free, because both bakes
+// call the same posing function.
+//
+// LEGS ONLY for now. Arms are a worse bet on this model: the sentry was drawn with
+// its arms against its body, so the carve merged them into the torso slab and an
+// "arm" group would drag part of the chest with it. Legs sell a walk anyway.
+//
+// Measured off sentry@96: the model is 22.0 tall, 12.4 wide, 4.4 deep; the legs
+// part below z = 11. If a future enemy is a different shape, these move.
+const FOE_RIG = {
+  POSES:     6,      // frames in the cycle. 6 reads at the sizes this draws at
+  YAWS:     16,      // directions baked per pose. The cars use 32, but a car turns
+                     // constantly and is read at speed; a sentry turns rarely and
+                     // is 9 character rows tall, where 22.5-degree steps are not
+                     // visible. Bake cost is POSES x YAWS x faces, so this halves
+                     // it - raise it if a turning sentry ever looks like it pops.
+  HIP_Z:     11.0,   // world units: the height the legs swing about
+  KNEE_Z:     6.5,   // ...and the height the shin folds back at
+  SWING:     0.35,   // radians at the extreme of the stride (20 degrees)
+  KNEE:      0.50,   // radians the knee folds at mid-swing (29 degrees).
+                     // Not decoration: with a straight leg the cycle is a pure
+                     // scissor, and sin() sampled at POSES points then gives
+                     // mirror-image duplicates - 6 poses that are really 3. The
+                     // knee bends only on the leg swinging FORWARD, which breaks
+                     // that symmetry and makes every pose distinct.
+  STRIDE:    26,     // world units walked per FULL cycle - this is what stops the
+                     // feet skating, so it belongs with WALK_SPD, not with a timer
+  WALK_SPD:  30,     // units/s when a sentry is walking (the player walks at 46)
+};
+
+// -----------------------------------------------------------------------------
 // 4. ENEMIES AND THE SPAWNER
 // -----------------------------------------------------------------------------
 // One entry per model/colour. `size` is relative to the player's car, `hp` to

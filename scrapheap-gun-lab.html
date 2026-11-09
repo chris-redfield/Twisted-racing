@@ -322,6 +322,13 @@ function onPress(code){
   // one until something spawns them for real
   // X: voxel model <-> the flat picture, to compare them in place
   if(code==='KeyX' && state==='play'){ walkSay('FOE: ' + foeCycleRender()); return; }
+  // Y: set every sentry walking (there is no AI yet - this is how you see the rig)
+  if(code==='KeyY' && state==='play'){
+    const on = !foes.some(f => f.walk);
+    for(const f of foes) f.walk = on;
+    walkSay('SENTRIES ' + (on ? 'WALKING' : 'STOPPED'));
+    return;
+  }
   if(code==='KeyZ' && state==='play' && onFoot){
     spawnFoe(walker.x + Math.cos(walker.a)*120, walker.y + Math.sin(walker.a)*120, walker.a + Math.PI);
     return;
@@ -6570,6 +6577,7 @@ let acc=0, last=performance.now(), fpsVal=60, fpsAcc=0, fpsN=0;
 function step(dt){
   matchTime+=dt;
   const me=cars[0];
+  updateFoes(dt);                 // foe.js - one place, so every stage gets it
 
   if(race){
     // a race: no forced scroll, no spawner. The camera just chases the player and

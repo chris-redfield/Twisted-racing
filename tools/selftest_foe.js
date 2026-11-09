@@ -88,8 +88,9 @@ ok('it registers into MODELS', E('foeMesh()') >= 0, String(E('foeMesh()')));
 // the right shape even though nothing was painted
 let bakeErr = null;
 try { E('bakeFoeSheet(FOE_COL)'); } catch (e) { bakeErr = e; }
-ok('baking 32 frames does not throw', bakeErr === null, bakeErr && bakeErr.message);
-ok('the sheet has 32 frames', E('bakeFoeSheet(FOE_COL).n') === 32);
+ok('baking does not throw', bakeErr === null, bakeErr && bakeErr.message);
+ok('the sheet has FOE_RIG.YAWS directions',
+   E('bakeFoeSheet(FOE_COL).n') === E('FOE_RIG.YAWS'), String(E('bakeFoeSheet(FOE_COL).n')));
 ok('the frame is tall enough for a 22-unit sentry',
    E('bakeFoeSheet(FOE_COL).fh') >= 22*Math.sqrt(1 - 0.16*0.16),
    String(E('bakeFoeSheet(FOE_COL).fh')));
@@ -106,15 +107,75 @@ E('const m = cars[0]; spawnFoe(m.x + 40, m.y, 0)');
 let d2Err = null;
 try { E('bakeFoe2D(FOE_COL)'); } catch (e) { d2Err = e; }
 ok('the 2D sheet bakes', d2Err === null, d2Err && d2Err.message);
-ok('32 frames here as well', E('bakeFoe2D(FOE_COL).n') === 32);
-ok('it is baked at the current S, so the zoom ease can scale it',
-   E('bakeFoe2D(FOE_COL).S') === E('S'));
+ok('the same directions here', E('bakeFoe2D(FOE_COL).n') === E('FOE_RIG.YAWS'));
+// Pinned to the zoom the CAR sheets bake at, never to the live S. Through the
+// bend the zoom eases every frame; baking at S rebuilt all six strips per frame.
+ok('it is baked at homeZoom, like the car sheets',
+   E('bakeFoe2D(FOE_COL).S') === E('PX*homeZoom()'),
+   `${E('bakeFoe2D(FOE_COL).S')} vs ${E('PX*homeZoom()')}`);
+const sheetId = E('bakeFoe2D(FOE_COL).cv');
+E('S = S*1.37');                                   // pretend the zoom is easing
+const sameSheet = E('bakeFoe2D(FOE_COL).cv') === sheetId;
+E('S = S/1.37');
+ok('a changing S does NOT rebuild it (drawFoe2D scales by zk instead)', sameSheet);
 ok('a rescale drops it (same hook that clears CAR2D)',
    E('clearFoeSheets(); Object.keys(foeSheets2D).length') === 0);
 let drawErr = null;
 try { frame(20); } catch (e) { drawErr = e; }
 ok('20 frames driving past a sentry, no runtime error', drawErr === null, drawErr && drawErr.message);
 ok('and it is still there', E('foes.length') === 1);
+E('clearFoes()');
+
+head('the walk rig (FOE_RIG in config.js)');
+E('foeMesh()');
+ok('pose 0 is the carve itself, untouched',
+   E('posedMesh(MODELS[foeMesh()], 0) === MODELS[foeMesh()]') === true);
+const sigs = [];
+for (let p = 0; p < E('FOE_RIG.POSES'); p++)
+  sigs.push(E(`(() => { let s = 0; for(const f of posedMesh(MODELS[foeMesh()], ${p}))
+    for(const v of f.v) s += v[0]*7.1 + v[2]*3.3; return Math.round(s*100); })()`));
+ok('every pose is a different shape', new Set(sigs).size === sigs.length,
+   `${new Set(sigs).size} distinct of ${sigs.length}`);
+// this is what the knee is FOR: without it sin() sampled at POSES points gives
+// mirror-image duplicates and half the cycle is wasted
+const zr = (p) => E(`(() => { let lo = 1e9, hi = -1e9;
+    for(const f of posedMesh(MODELS[foeMesh()], ${p})) for(const v of f.v){
+      if(v[2] < lo) lo = v[2]; if(v[2] > hi) hi = v[2]; } return [lo, hi]; })()`);
+const z0 = zr(0);
+ok('standing, the feet are exactly on the ground', Math.abs(z0[0]) < 1e-9, String(z0[0]));
+let worst = 0, tallest = 0;
+for (let p = 0; p < E('FOE_RIG.POSES'); p++) {
+  const [lo, hi] = zr(p);
+  if (lo < worst) worst = lo;
+  if (hi > tallest) tallest = hi;
+}
+// the hip HAS to drop when the legs spread or the sentry walks on tiptoe; what is
+// left under the floor is the corner of a rotating foot box, and it is sub-pixel
+ok('no pose sinks more than a fraction of a unit into the road', worst > -1.0, String(worst));
+ok('and the body dips over the cycle rather than rising',
+   tallest <= z0[1] + 1e-9, `${tallest} vs standing ${z0[1]}`);
+
+head('the phase runs on distance, not time');
+E('clearFoes(); const m = cars[0]; const f = spawnFoe(m.x + 60, m.y, 0); f.walk = true');
+ok('a standing sentry shows pose 0', E('(foes[0].walk = false, foePose(foes[0]))') === 0);
+E('foes[0].walk = true; foes[0].phase = 0');
+const x0 = E('foes[0].x');
+E('updateFoes(1/60)');
+const moved = E('foes[0].x') - x0, ph = E('foes[0].phase');
+ok('walking moves it along its facing', moved > 0, String(moved));
+ok('and the phase advanced by exactly distance/STRIDE',
+   Math.abs(ph - moved/E('FOE_RIG.STRIDE')) < 1e-9, `${ph} vs ${moved/E('FOE_RIG.STRIDE')}`);
+E('foes[0].phase = 0.999');
+E('updateFoes(1/60)');
+ok('the phase wraps instead of running away', E('foes[0].phase') < 0.5, String(E('foes[0].phase')));
+E('foes[0].phase = 0.99');
+ok('the pose index stays inside the sheet',
+   E('foePose(foes[0])') < E('FOE_RIG.POSES') && E('foePose(foes[0])') >= 0);
+ok('the first-person sheet has a row per pose',
+   E('bakeFoeSheet(FOE_COL).poses') === E('FOE_RIG.POSES'));
+ok('the last pose row is inside the sheet',
+   E('foeRow(bakeFoeSheet(FOE_COL), FOE_RIG.POSES - 1, true) + bakeFoeSheet(FOE_COL).fh')
+     <= E('bakeFoeSheet(FOE_COL).cv.height'));
 E('clearFoes()');
 
 console.log(`\n${total - fails}/${total} passed`);

@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-09 | [The sentry walks: a rig on the voxel model](#2026-11-09--the-sentry-walks-a-rig-on-the-voxel-model) | built, 47 headless checks + screenshots; **reads side-on, barely reads head-on** |
 | 2026-11-09 | [One drawing -> a voxel model: sprite_voxelize.py](#2026-11-09--one-drawing---a-voxel-model-sprite_voxelizepy) | built, 35 headless checks + screenshots; rotates, and is the only version the top-down view can draw |
 | 2026-11-09 | [The first on-foot enemy: a SENTRY billboard](#2026-11-09--the-first-on-foot-enemy-a-sentry-billboard) | built, 35 headless checks + screenshots; **art reads as a solid block in ASCII** |
 | 2026-11-09 | [BOOST upgrade: the recharge, not the shove](#2026-11-09--boost-upgrade-the-recharge-not-the-shove) | built, 30 headless checks + screenshot |
@@ -47,6 +48,86 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-09 — The sentry walks: a rig on the voxel model
+
+**Goal:** a walk cycle without drawing one. The faces are split into groups by where
+they sit in the model, each group is rotated about a pivot, and the result is baked like any
+other frame. Knobs: **`FOE_RIG` in config.js §3d**. Legs only — the arms are welded to the torso
+by the carve, so an "arm" group would drag the chest with it.
+
+**One posing function, both cameras.** `posedMesh(mesh, pose)` returns a new face list; both
+`bakeFoeSheet` (first person) and `bakeFoe2D` (top-down) loop over poses and call it. There is no
+per-view animation code, and that is the whole reason to pose the mesh rather than the sprite.
+A face is assigned to a group by its CENTRE, so a quad never splits across a joint.
+
+**The knee is load-bearing, not decoration.** With straight legs the cycle is a pure scissor:
+`sin()` sampled at `POSES` points gives mirror-image duplicates, so 6 poses are really 3 shapes.
+Bending the knee **only on the leg swinging forward** (`K*max(0, cos(ph))`) breaks that symmetry.
+The selftest asserts all six poses are distinct shapes — that check is what stops someone
+"simplifying" the knee away and quietly halving the animation.
+
+**The body's dip is derived, not tuned.** Legs rotating about a hip lift the feet, so the body has
+to come down or the sentry walks on tiptoe and bobs the wrong way. Rather than add a BOB constant,
+`foeDrop()` puts a foot through the same transform and reads its height off. Pose 0 is exactly the
+carve, feet at z=0. What is left is ≤0.65 units of a rotating foot BOX's corner under the road —
+0.03 of the model's height, sub-pixel at every size this draws at. Tested, not fixed: an ankle
+group would cost a tearing seam for an invisible gain.
+
+**Poses bake lazily, one at a time** (`foeSheetEnsure`), and are **warmed one strip per frame**
+once anything is walking (`foeWarm`, called from `updateFoes`). **Note for whoever measures this
+next: you cannot time it in headless Chrome** — `--virtual-time-budget` freezes the clock, so
+synchronous work always reads 0 ms. The numbers here come from node with the stubbed canvas,
+which over-states Chrome; the project's own figure is ~30 ms for a 64-frame car sheet.
+
+### The first-walk stutter, and what it cost (reported from play)
+
+Lazy baking put a **387 ms strip bake on the frame where each pose was first shown** — six times
+per view, in the middle of the walk, which is the worst possible moment. The work is
+`YAWS x rows x faces` and is vertex-bound (the frames are 15x26 and 23x43; fill is nothing).
+Two of those three multipliers were waste:
+
+- **The flash row was dead weight.** Nothing can damage a sentry yet, so half of every bake drew
+  a white silhouette that is never shown. Gone - `foeRow` is now one strip per pose. When damage
+  arrives, prefer `hitFrame()`-style recolour at draw time, which is what the ASCII pane already
+  does for cars, over baking the row back.
+- **32 yaws is a car's number.** A car turns constantly and is read at speed; a sentry turns
+  rarely and is 9 character rows tall. `FOE_RIG.YAWS` is **16** - 22.5-degree steps, invisible at
+  this size.
+
+**387 ms -> 96 ms a strip.** Then `foeWarm` moves the remaining five strips to the frames right
+after a sentry starts moving (verified: all six done within six frames) instead of stuttering
+through the cycle. If it still bites, the knobs in order of bluntness are `FOE_RIG.YAWS`,
+`FOE_RIG.POSES`, and switching `FOE_VOX` to `sentry@64` (2008 faces against 4520).
+
+### A worse bug found while investigating, which was NOT the cause
+
+`bakeFoe2D` keyed its cache on the live `S`. `S` is constant in the city and through the run
+stage, which is why this never fired - but **the bend eases the zoom frame by frame**, and there
+it would have rebuilt all six strips every frame. `bakeCarSprites` has always avoided this by
+pinning `S` to `homeZoom()` and letting `drawCar` scale by `zk`; the foe sheet now does the same,
+and a selftest asserts that changing `S` does not rebuild it.
+
+**The phase runs on DISTANCE, not time** (`f.phase += d/FOE_RIG.STRIDE`), so the feet don't skate
+when the walk speed changes later. There is no AI: `f.walk` makes a sentry step forward and **Y**
+toggles it on every sentry, which is how you look at the rig.
+
+**The weakness, and it is the common case.** Seen side-on or three-quarter the walk reads well.
+Seen HEAD-ON it barely moves — legs scissoring fore/aft are almost invisible from the front. That
+is physically honest and completely wrong for a game, where the enemy walking straight at you is
+what you will look at most. Candidate fixes, none tried: a little lateral sway, a slight lateral
+splay on the legs, or arm swing once an enemy is drawn with its arms clear of its body.
+
+**Correction worth keeping:** raising the voxel resolution does NOT separate the arms. The carve
+walks each row and finds runs of non-background pixels; arms touching the torso are one run and
+get one capped depth, at any resolution. What fixes it is a gap of background in the drawing, or
+teaching the carve to split runs at the drawn black outline.
+
+**Verified:** `node tools/selftest_foe.js` → 47/47 (pose 0 is the untouched carve, all poses are
+distinct, feet exactly on the ground when standing, nothing sinks, the body dips rather than
+rises, phase advances by exactly distance/STRIDE and wraps, the pose index stays inside the
+sheet). Chrome: a 6-pose × 4-yaw contact sheet, and six sentries in the lab each frozen at a
+different phase.
 
 ## 2026-11-09 — One drawing -> a voxel model: sprite_voxelize.py
 
