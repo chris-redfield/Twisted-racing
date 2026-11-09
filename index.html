@@ -317,11 +317,14 @@ function onPress(code){
     if(code==='KeyK'){ cash += SAINTS.DEV_CASH; saintsPay = { amt:SAINTS.DEV_CASH, t:1.8 }; }
     if(code==='KeyJ'){ openStore(); return; }
   }
-  // Z drops a sentry 120 units ahead of you, facing back: the only way to look at
-  // one until something spawns them for real
+  // Z drops a sentry 120 units ahead of you, facing back. The city places its own
+  // now (citySentries), but one dropped by hand has no chunk, so it is never
+  // culled and is still the quickest way to get a sentry in front of the camera.
   // X: voxel model <-> the flat picture, to compare them in place
   if(code==='KeyX' && state==='play'){ walkSay('FOE: ' + foeCycleRender()); return; }
-  // Y: set every sentry walking (there is no AI yet - this is how you see the rig)
+  // Y: set every sentry marching in a straight line. Not the AI - this is how you
+  // look at the RIG. The AI only writes `walk` on a sentry it has provoked, which
+  // is what leaves this switch working.
   if(code==='KeyY' && state==='play'){
     const on = !foes.some(f => f.walk);
     for(const f of foes) f.walk = on;
@@ -727,6 +730,7 @@ function startMatch(np){
   numPlayers = (np===1||np===2) ? np : numPlayers;
   if(stage==='street' || stage==='run') numPlayers = 1;   // walking is a solo thing
   checkpoint = null; bannerT = 0; mapOpen = false; walkerDown = false; walkHurtT = 0; FLOW.ok = false;
+  clearFoes(); clearFoeWorld();             // foe.js - and forget which ones you wrecked
   runUp = Object.assign({}, UPGRADES); cash = 0; saintsPay = null;   // restartFromCheckpoint puts its own back
   level=1; arenaShape='rect';
   cars=[]; shots=[]; mines=[]; fx=[]; skids=[]; blocks=[]; hazards=[]; finishOrder=[]; pads=[];
@@ -979,6 +983,7 @@ let enemiesOn = true;
 function toggleEnemies(){
   enemiesOn = !enemiesOn;
   if(!enemiesOn){
+    cityFoesOff();                  // foe.js: and the sentries the city placed
     for(let i=cars.length-1;i>=1;i--){
       const c = cars[i];
       particles(c.x, c.y, 8, 10, {col:[NEON.CYAN, NEON.MAGENTA], spd0:20, spd1:90, size:1, life0:0.2, life1:0.5});
@@ -1159,11 +1164,17 @@ function cityStep(dt){
   bannerT = Math.max(0, bannerT - dt);
   walkHurtT = Math.max(0, walkHurtT - dt);
   walkGraceT = Math.max(0, walkGraceT - dt);
-  if(enemiesOn && cars.length > 1 && !onFoot){     // on foot nobody is hunting you
+  // Both the hunters and a provoked sentry steer by the flow field. Out of the
+  // car no hunter is interested in you, which used to mean nothing refilled it -
+  // but a sentry you have SHOT is hunting you on foot, and it is the one thing
+  // that needs the field with no hunter car around to ask for it.
+  if(enemiesOn && ((cars.length > 1 && !onFoot) || foeMadN > 0)){
     FLOW.t -= dt;
     if(FLOW.t <= 0){ FLOW.t = CITY_FLOW_EVERY; flowRebuild(); }
   }
   citySpawner(dt);
+  citySentries();                  // foe.js: scatter them by block, cull what you left
+  foeRam();                        // ...and a car that drives into one
   if(onFoot) for(const c of cars){
     if(c.isPlayer || c.dead) continue;
     const d = Math.hypot(c.x - walker.x, c.y - walker.y), sp = Math.hypot(c.vx, c.vy);
@@ -1326,6 +1337,19 @@ function explode(x,y,power,owner,dmg,radius,opt){
       const a=Math.atan2(c.y-y,c.x-x);
       c.vx += Math.cos(a)*220*f; c.vy += Math.sin(a)*220*f;
     }
+  }
+  // The sentries take blast as well: the user's rule is that the car's weapons
+  // kill them, and a missile or a mine is how a driver reaches one.
+  //
+  // `dmg` is read RAW here, not through the cars' `dmg||30` fallback above. A
+  // wrecked car - and a wrecked sentry - passes 0 on purpose, and two things turn
+  // on that: 0 must not splash the sentry standing next to it, and a 0-damage
+  // blast must not PROVOKE it either, which would quietly break "shooting one
+  // does not turn the others on you". foeDamage ignores a non-positive amount.
+  if(foes.length) for(const f of foes){
+    if(f.dead) continue;
+    const d=Math.hypot(f.x-x,f.y-y);
+    if(d<R) foeDamage(f, (dmg||0)*(1-d/R), owner);
   }
   for(const b of blocks){
     if(b.type==='barrel' && b.hp>0 && Math.hypot(b.x-x,b.y-y)<R+18){ b.hp-=40; if(b.hp<=0) popBarrel(b,owner); }
@@ -2124,6 +2148,20 @@ function updateShots(dt){
           if(c.isPlayer) [kx,ky]=playerImpulse(c,kx,ky);
           c.vx+=kx; c.vy+=ky;
           particles(s.x,s.y,7,3,{col:['#ffe9a8','#ff8a4a'],spd0:20,spd1:80,size:1,life0:0.08,life1:0.22});
+        }
+        gone=true; break;
+      }
+    }
+    // ...and the sentries, with their own radius: a sentry is about 12 wide
+    // where a car is 38 long, so the cars' 15 would hit from a body's width away.
+    if(!gone && foes.length) for(const f of foes){
+      if(f.dead) continue;
+      if(Math.hypot(f.x-s.x,f.y-s.y)<FOE.SHOT_R){
+        // a missile does its damage through the blast (see explode), a round directly
+        if(s.kind==='missile') explode(s.x,s.y,1,s.owner,s.dmg,62);
+        else {
+          foeDamage(f,s.dmg,s.owner);
+          particles(s.x,s.y,10,3,{col:['#ffe9a8','#ff8a4a'],spd0:20,spd1:80,size:1,life0:0.08,life1:0.22});
         }
         gone=true; break;
       }
@@ -4604,11 +4642,23 @@ function gatherBillboards(camX, camY, bearing){
 // cell, so red trips that path and brings back the very '@'s this avoids. Grey
 // sits at `pr - pb` of nil and never does.
 const HIT_TINT = '#ffffff';
+// `row` is the y of the strip the frame sits in, for a sheet that has more than
+// one. A car sheet's normal frames are all in row 0, so it is omitted there; a
+// foe sheet is one strip per walk pose, and a flashing sentry has to be
+// recoloured from the pose it is actually showing.
+//
+// `lift` brightens the result, and is for the PIXEL panes only. The recolour
+// above is the right flash for ASCII and a poor one for pixels: against a white
+// tint the `color` blend only takes the colour OUT, and a sentry is already
+// near-grey, so the flash all but vanishes. A car never had this problem because
+// the pixel panes draw its baked white row and only ASCII recolours; a sentry
+// has no baked row, so the one path has to serve both and the brightness is
+// what has to differ. Pass 0 in ASCII - see the lift's own note below.
 let hitCv=null, hitCtx=null;
-function hitFrame(sp, f){
+function hitFrame(sp, f, row, lift){
   if(!hitCv){ hitCv=document.createElement('canvas'); hitCtx=hitCv.getContext('2d'); }
   if(hitCv.width!==sp.fw || hitCv.height!==sp.fh){ hitCv.width=sp.fw; hitCv.height=sp.fh; }
-  const draw=()=>hitCtx.drawImage(sp.cv, f*sp.fw, 0, sp.fw, sp.fh, 0, 0, sp.fw, sp.fh);
+  const draw=()=>hitCtx.drawImage(sp.cv, f*sp.fw, row||0, sp.fw, sp.fh, 0, 0, sp.fw, sp.fh);
   hitCtx.globalCompositeOperation='source-over';
   hitCtx.clearRect(0, 0, sp.fw, sp.fh);
   draw();
@@ -4617,6 +4667,21 @@ function hitFrame(sp, f){
   hitCtx.fillRect(0, 0, sp.fw, sp.fh);
   hitCtx.globalCompositeOperation='destination-in';   // back to the car's outline
   draw();
+  if(lift){
+    // 'source-atop' paints only where the frame is already opaque, so this stays
+    // inside the silhouette the mask just cut - the sprites are hard-edged
+    // (alpha 0 or 255), so that boundary is exact.
+    //
+    // NEVER do this for the ASCII pane. asciiBlit picks a glyph from a cell's
+    // LUMINANCE, so lifting the silhouette maxes every cell to '@' and the shape
+    // of the thing you are shooting disappears - which is the whole reason this
+    // function recolours instead of relighting in the first place.
+    hitCtx.globalCompositeOperation='source-atop';
+    hitCtx.globalAlpha=lift;
+    hitCtx.fillStyle=HIT_TINT;
+    hitCtx.fillRect(0, 0, sp.fw, sp.fh);
+    hitCtx.globalAlpha=1;
+  }
   hitCtx.globalCompositeOperation='source-over';
   return hitCv;
 }
@@ -5050,6 +5115,7 @@ function updateWalker(dt){
     w.bob += dt*(run ? 13 : 9);
   }
   walkCollide(w);
+  foeBlock(w);                     // foe.js: a sentry is solid, and will not let you past
   if(WALK_ARMED && (held('Space') || (padMode() && padHeld('R1')))) walkFire();
 }
 
@@ -5136,6 +5202,12 @@ function drawWalkHUD(){
   plate(6, 6, 104, 28);
   ctx.fillStyle='#9d8ea5'; ctx.fillText('ON FOOT', 11, 10);
   if(devMode){ ctx.textAlign='right'; ctx.fillStyle='#e0b73c'; ctx.fillText('DEV', 105, 10); ctx.textAlign='left'; }
+  // dev: the sentry count. FOE_POP.MEAN is the knob the user will want to turn
+  // and it cannot be turned blind - this is the number it comes out as.
+  if(devMode && foes.length){
+    ctx.fillStyle = foeMadN ? '#f0503c' : '#6b5c72';
+    ctx.fillText('SENTRIES ' + foes.filter(f => !f.dead).length + (foeMadN ? '  ON YOU ' + foeMadN : ''), 11, 52);
+  }
   if(c){
     const dx = c.x - walker.x, dy = c.y - walker.y, d = Math.hypot(dx, dy);
     const rel = Math.atan2(dy, dx) - walker.a;      // 0 = straight ahead, + = to the right

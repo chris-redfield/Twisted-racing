@@ -41,8 +41,12 @@ end of one. `README.md` holds the stable stuff (how it works, conventions); this
   `C:\proj\the-party`'s `src/city.js`); streets join the highway through gaps in the barrier, so the
   car can drive into the city; every building has all four walls in first person. Not played yet.
 - `tools/headless.js` runs any build in node with a stubbed canvas.
-- `tools/shot.js` takes **real-browser screenshots** (Windows Chrome from WSL, `--screenshot` +
-  virtual time; the game file is never modified). Shots land in `.shots/` (git-ignored).
+- `tools/shot.js` takes **real-browser screenshots** (`--screenshot` + virtual time; the game file
+  is never modified). It finds Windows Chrome from WSL **or** a Chrome/Chromium on `PATH`, since
+  this project has been worked on from both. Shots land in `.shots/` (git-ignored).
+  Note (2026-11-09): virtual time does not only freeze `performance.now()` — only about **12 game
+  frames** run in a 4.5 s budget, all of them early, so a screenshot's setup must set the state it
+  wants **synchronously** rather than on a timer. See HANDOFF's sentry entry.
 
 ## GAME JAM (2026-09-25) — Halloween, separate game in `game-jam/`
 

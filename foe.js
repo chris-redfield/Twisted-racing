@@ -1,9 +1,13 @@
 // foe.js - enemies on foot, as billboards in the first-person view.
 //
-// First cut, deliberately dumb: a sentry is a position and a picture. It does not
-// move, think, or shoot. The point of this file is to get one through
-// gatherBillboards -> rcSprites -> asciiBlit and see what the ASCII pass does to
-// it, before any of that is worth writing.
+// A sentry is a position, a picture, a walk cycle and - since 2026-11-09 - an AI
+// of its own: it stands in the city ignoring you until you shoot it, and then it
+// follows you until you get away. It never shoots back (the user's rule, asked
+// and settled). The rules and the knobs are FOE_AI and FOE_POP in config.js 3e.
+//
+// Three things in here are deliberately NOT the car versions, and each one says
+// why at its definition: foeDamage (not damage()), foeDie (not damage()'s death
+// branch) and foeCollide (not walkCollide).
 //
 // The picture comes from assets/enemies/enemies-2d.js (made by
 // tools/enemy_images.py), already keyed, cropped and shrunk - so unlike the
@@ -16,19 +20,50 @@ const FOE = {
   H:    22,     // world units tall. The player's eye is WALK_EYE (16), so a sentry
                 // stands a good head over him - which is the point of him being an
                 // old model nobody rates.
-  R:     6,     // body radius (WALK_R is 5) - unused until they can be walked into
-  HP:   60,     // WALK_HP is 40: a sentry takes more than a person
+  R:     6,     // body radius (WALK_R is 5). It is solid: you walk into one, and a
+                // provoked one will not let you past (foeCollide, and the clause
+                // foeBlock adds to the walker).
+  HP:   90,     // FIVE pistol hits, which is the number the user asked for:
+                // PISTOL.DMG is 18, so 4x18 = 72 < 90 <= 5x18 = 90.
+                // This is the PISTOL's number ONLY. The car's cannon (7 a round)
+                // and its missile (34) land on whatever counts they land on -
+                // there is no single HP that makes every weapon come out round,
+                // so do not go hunting for one.
+  HIT_R:   8,   // the pistol's lateral tolerance on a sentry. PISTOL.HIT_R is 14,
+                // tuned for a car 38 x 20; a sentry is about 12 wide, so it gets
+                // its own number rather than being hit from a body's width away.
+  SHOT_R:  9,   // ...and a cannon round or a missile counts as a contact inside
+                // this (the cars' own number is 15, for the same reason)
+  RAM:   0.9,   // damage per unit/s of a car that drives into one, so about 100
+  RAM_MIN:  40, // units/s is lethal. Below this it is only shoved aside.
   FADE: 1100,   // same fog distance the car billboards use
 };
 
 let foes = [];
+let foeMadN = 0;        // how many are provoked right now; counted in updateFoes.
+                        // cityStep reads it: a sentry hunting you on foot is the
+                        // one case where the flow field has to be refilled and
+                        // there is no hunter car to ask for it.
 
 function spawnFoe(x, y, a, vox){
-  const f = { x, y, a:a||0, hp:FOE.HP, dead:false, hurtFlash:0, vox:vox||null };
+  const f = { x, y, a:a||0, hp:FOE.HP, dead:false, hurtFlash:0, vox:vox||null,
+    // The AI's whole state. `mad` is all of it: a sentry is either ignoring you
+    // or following you, and only a bullet of YOURS flips it on.
+    mad:false, loseT:0, walk:false, phase:0,
+    // `ck` is the city chunk it belongs to and `key` its name within the run.
+    // Both are null on one dropped by hand (the Z key), which is what keeps the
+    // test sentry out of the spawner's culling.
+    ck:null, key:null,
+    stuckT:0, lastX:x, lastY:y, side:0 };
   foes.push(f);
   return f;
 }
-function clearFoes(){ foes.length = 0; }
+// Every sentry loses its body. foeLive goes with them - it is the index of
+// "who has a body right now", so leaving keys in it would tell citySentries that
+// sentries it can no longer see are still out there, and they would never come
+// back. What this does NOT clear is foeKilled (who you wrecked) or the plans;
+// clearFoeWorld does that, and startMatch calls both.
+function clearFoes(){ foes.length = 0; foeMadN = 0; foeLive.clear(); }
 
 // ---------------------------------------------------------------- the picture
 // One Image per ENEMY_IMAGES entry. Nothing is resized: the packer already did
@@ -74,6 +109,9 @@ function foeCycleRender(){ FOE_RENDER = FOE_RENDER === 'vox' ? 'image' : 'vox'; 
 const FOE_COL = '#a8b6d4';
 const FOE_LIFT = 1.9;             // first person's lift (see foeSheetEnsure)
 const FOE_LIFT_2D = 1.4;          // the driving view needs less (see bakeFoe2D)
+// how far the hit flash brightens a sentry in the PIXEL panes. Zero in ASCII,
+// where brightness is what picks the glyph - see hitFrame in index.html.
+const FOE_HIT_LIFT = 0.5;
 // which carve a sentry uses when it doesn't name one. 96 is the detailed cut,
 // 'sentry@64' the coarse one kept beside it for comparison (see HANDOFF).
 let FOE_VOX = 'sentry@96';
@@ -204,9 +242,14 @@ function drawFoe2D(f){
   const fr = Math.round(a/TAU*sp.n) % sp.n;
   const pose = foePose(f);
   foeSheetEnsure(sp, pose);
-  ctx.drawImage(sp.cv, fr*sp.fw, foeRow(sp, pose, f.hurtFlash > 0), sp.fw, sp.fh,
-                Math.round(p.x - sp.ax*zk), Math.round(p.y - sp.ay*zk),
-                Math.round(sp.fw*zk), Math.round(sp.fh*zk));
+  const row = foeRow(sp, pose, false);
+  const dx = Math.round(p.x - sp.ax*zk), dy = Math.round(p.y - sp.ay*zk);
+  const w = Math.round(sp.fw*zk), h = Math.round(sp.fh*zk);
+  // the hit flash, recoloured from this pose's strip rather than baked as a
+  // second row - see foeRow. hitFrame takes a row because of this.
+  // the driving pane is always pixels, so it always takes the lift
+  if(f.hurtFlash > 0) ctx.drawImage(hitFrame(sp, fr, row, FOE_HIT_LIFT), 0, 0, sp.fw, sp.fh, dx, dy, w, h);
+  else                ctx.drawImage(sp.cv, fr*sp.fw, row, sp.fw, sp.fh, dx, dy, w, h);
 }
 
 // ------------------------------------------------------------------- the rig
@@ -268,16 +311,17 @@ function foePose(f){
   if(!f.walk) return 0;
   return Math.floor((f.phase || 0)*FOE_RIG.POSES) % FOE_RIG.POSES;
 }
-// a sheet row: one strip per pose.
-// No white flash row, unlike the car sheets. Nothing can hurt a sentry yet, so it
-// was doubling every bake to draw something never shown. When damage arrives,
-// either bake the second row back here or - better, and what the ASCII pane
-// already does for cars - recolour at draw time with hitFrame().
+// a sheet row: one strip per pose, and no white flash row unlike the car sheets.
+// Something CAN hurt a sentry now, and the flash is still not baked: both views
+// recolour at draw time with hitFrame() instead. Baking the row back would double
+// every strip's bake cost (the thing that caused the first-walk stutter) to draw
+// a white silhouette, and a white silhouette is exactly what destroys the glyph
+// read in the ASCII pane - which is why hitFrame exists for the cars already.
 function foeRow(sp, pose, flash){ return pose*sp.fh; }
 
-// There is no AI yet. `walk` makes a sentry step forward so the rig can be looked
-// at (Y toggles it); the phase advances with DISTANCE, not time, so the feet keep
-// still against the ground whatever the speed becomes later.
+// `walk` is the one flag that means "stepping". The AI owns it while a sentry is
+// provoked; while a sentry is ignoring you it is left alone, which is what keeps
+// the Y key (set every sentry marching, to look at the rig) working.
 // Bake ONE not-yet-baked pose strip per frame, as soon as anything is walking.
 // Without this a strip is baked at the moment its pose is first shown, which is
 // in the middle of the walk - the worst possible time, and six times over. This
@@ -294,17 +338,324 @@ function foeWarm(){
   }
 }
 
+// ------------------------------------------------------------------- damage
+// NOT damage() in index.html. That one is car-only all the way through -
+// untouchable(), armorCut(), respawn, deaths, the death clip, the bounty - and a
+// sentry shares none of it. Bending it to take a pedestrian would mean carrying
+// car bookkeeping on something that has no car in it.
+//
+// Being shot is the ONLY thing that provokes a sentry, and it provokes THAT one.
+// The others carry on ignoring you however loud it gets: each one is on its own,
+// by the user's decision, so there is nothing here that touches its neighbours.
+function foeDamage(f, amount, ownerId){
+  if(f.dead || !(amount > 0)) return;   // a 0-damage blast must not anger anybody
+  f.hp -= amount;
+  f.hurtFlash = 0.12;
+  // ...but only YOUR fire wakes it up. A hunter's stray round still hurts a
+  // sentry; it just does not make the sentry blame you for it.
+  if(ownerId === 0){ f.mad = true; f.loseT = 0; }
+  if(f.hp <= 0) foeDie(f, ownerId);
+  else if(typeof Snd !== 'undefined') Snd.hit();
+}
+// The cars' explosion, which is what the user asked for: explode() plus two
+// particles() bursts in the sentry's own colours. NOT a copy of damage()'s death
+// branch - that branch is the tanque's bomb, lastHitBy, frags, convoyKills, the
+// respawn timer and the down-a-pit clip, and none of it means anything here.
+//
+// dmg 0 on the blast, so a sentry going off never chains into the one down the
+// street. (explode() reads 0 as 0 for sentries on purpose; for CARS its old
+// `dmg||30` fallback still applies, exactly as a wrecked car's blast always has.)
+function foeDie(f, ownerId){
+  f.hp = 0; f.dead = true; f.walk = false; f.mad = false;
+  if(f.key) foeKilled.add(f.key);       // and it stays wrecked if you come back
+  explode(f.x, f.y, 1.2, null, 0, 10);
+  particles(f.x, f.y, 8, 14, {col:[FOE_COL, '#ffa820', '#3a3040'],
+    spd0:50, spd1:190, size:2, life0:0.3, life1:0.9});
+  particles(f.x, f.y, 2,  8, {col:['#4a3f50', '#6b5c72'],
+    spd0:10, spd1:60, size:3, life0:0.5, life1:1.2, grav:20});
+  if(ownerId === 0) gunnerKill = 1.1;   // the driving pane's kill flash
+}
+
+// ---------------------------------------------------------------- collision
+// walkCollide's job, for a sentry. Not walkCollide itself: that one is hard-wired
+// to WALK_R, carries a wasteland branch a sentry never stands in, and clamps to
+// the walker's wander limit instead of the city wall.
+//
+// The parked-car clause IS right for a sentry, for the same reason it is right
+// for the player: it should walk round the thing rather than through it. A car
+// that is MOVING catches one instead (foeRam).
+function foeCollide(f){
+  for(const c of cityChunks(f.y - FOE.R, f.y + FOE.R, f.x < 0 ? -1 : 1))
+    for(const b of c.cores) circleBox(f, b.x0, b.y0, b.x1, b.y1, FOE.R, false);
+  const c = cars[0];
+  if(c && !c.dead){
+    const ca = Math.cos(c.angle), sa = Math.sin(c.angle);
+    const lp = { x:(f.x - c.x)*ca + (f.y - c.y)*sa, y:-(f.x - c.x)*sa + (f.y - c.y)*ca };
+    if(pushOutBox(lp, -CAR_HL, -CAR_HW, CAR_HL, CAR_HW, FOE.R)){
+      f.x = c.x + lp.x*ca - lp.y*sa;
+      f.y = c.y + lp.x*sa + lp.y*ca;
+    }
+  }
+  f.x = clamp(f.x, -(CITY_W - FOE.R), CITY_W - FOE.R);
+}
+// Two sentries coming down the same street would otherwise stack into one
+// sprite. Only the PROVOKED ones are compared against each other, which is
+// almost always none or one or two: foes[] has no spatial index, and that is the
+// reason not to run an O(n^2) pass over every sentry in the city.
+function foeSeparate(){
+  if(foeMadN < 2) return;
+  const m = foes.filter(f => f.mad && !f.dead), R = FOE.R*2;
+  for(let i = 0; i < m.length; i++) for(let j = i + 1; j < m.length; j++){
+    const a = m[i], b = m[j];
+    let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+    if(d >= R) continue;
+    if(d < 1e-4){ dx = 1; dy = 0; d = 1; }
+    const k = (R - d)/2/d;
+    a.x -= dx*k; a.y -= dy*k;
+    b.x += dx*k; b.y += dy*k;
+  }
+}
+// The player on foot, pushed out of any sentry he walks into. Kept OUT of
+// walkCollide deliberately: toggleOnFoot uses walkCollide as a "is this spot
+// free?" probe for the driver's door, and a sentry loitering by the car would
+// then report NO ROOM TO OPEN THE DOOR, which is both wrong and baffling.
+// A sentry does not hurt you by touching you - it has no weapon, by decision.
+// It simply will not let you through, which is the whole of the threat.
+function foeBlock(p){
+  const R = FOE.R + WALK_R;
+  for(const f of foes){
+    if(f.dead) continue;
+    const dx = p.x - f.x, dy = p.y - f.y;
+    if(dx > R || dx < -R || dy > R || dy < -R) continue;
+    const d = Math.hypot(dx, dy);
+    if(d >= R || d < 1e-6) continue;
+    p.x = f.x + dx/d*R; p.y = f.y + dy/d*R;
+  }
+}
+// A car that drives into a sentry. Nobody asked for this; a car passing clean
+// THROUGH one reads as a bug, and the game already does the same thing to the
+// player on foot (WALK_RUNOVER). Slow, and it is only shoved out of the way.
+function foeRam(){
+  if(!foes.length) return;
+  for(const c of cars){
+    if(c.dead) continue;
+    const sp = Math.hypot(c.vx, c.vy), R = (c.rad || 14) + FOE.R;
+    for(const f of foes){
+      if(f.dead) continue;
+      const dx = f.x - c.x, dy = f.y - c.y;
+      if(dx > R || dx < -R || dy > R || dy < -R) continue;   // cheap reject first
+      const d = Math.hypot(dx, dy);
+      if(d > R) continue;
+      const k = (R + 2 - d)/(d || 1);
+      f.x += dx*k; f.y += dy*k;                              // thrown clear either way
+      if(sp > FOE.RAM_MIN) foeDamage(f, sp*FOE.RAM, c.id);
+    }
+  }
+}
+
+// -------------------------------------------------------------------- the AI
+// Each sentry on its own, two states, and one thing that moves between them:
+//
+//   ignoring you  --you shoot it-->  following you  --you get away-->  ignoring you
+//
+// It never shoots. Following IS the threat, which is why it walks faster than you
+// do (FOE_AI.CHASE_SPD against WALK_SPD 46) and why it is solid.
+//
+// The route is the hunters' flow field - FLOW / flowNext in index.html - a BFS of
+// the streets filled outward from wherever you are, so a sentry comes down the
+// street that actually leads to you instead of grinding into a wall. That field
+// is built with CAR clearances; the only cost of borrowing it is that a sentry
+// keeps to the roadway, and a pedestrian variant is a later nicety.
+function foeThink(f, dt){
+  if(!f.mad) return;              // ignoring you: whatever `walk` is, it is not the AI's
+  const T = cityTarget();
+  const dx = T.x - f.x, dy = T.y - f.y, dist = Math.hypot(dx, dy);
+  if(dist > FOE_AI.GIVE_UP){
+    f.loseT += dt;
+    if(f.loseT > FOE_AI.LOSE_T){ f.mad = false; f.loseT = 0; f.walk = false; f.side = 0; return; }
+  } else f.loseT = 0;
+  // Where to put its feet next. Close and in the open: straight at you.
+  // Otherwise a few cells down the flow field. If even that comes back empty
+  // (off the grid, or walled off from you) head your way anyway and let the
+  // collision shove it round whatever is in front.
+  //
+  // Outside the city there is no street to route along, so skip the lot: that is
+  // the Z key in a lab or on a straight leg, and cityClear would otherwise reach
+  // into cityGround, which happily generates city chunks at any y once
+  // cityLimitY is Infinity.
+  const inCity = typeof street !== 'undefined' && street;
+  const aim = (!inCity || (dist < FOE_AI.NEAR && cityClear(f.x, f.y, T.x, T.y))) ? T
+            : (flowNext(f.x, f.y) || T);
+  let want = Math.atan2(aim.y - f.y, aim.x - f.x);
+  if(f.side) want += f.side*1.2;                  // wedged: shoulder past it
+  f.a += clamp(angDiff(f.a, want), -FOE_AI.TURN*dt, FOE_AI.TURN*dt);
+  f.walk = dist > FOE_AI.STOP;                    // stops at arm's length
+}
+// Wedged on a corner the field routed it into, or shouldering the car: lean off
+// to ONE side for a while - the same side until it comes free, so it does not
+// jitter left and right against a wall - and straighten up once it is moving.
+function foeStuck(dt){
+  for(const f of foes){
+    if(f.dead || !f.mad){ f.stuckT = 0; f.side = 0; continue; }
+    f.stuckT += dt;
+    if(f.stuckT < FOE_AI.STUCK_T) continue;
+    const moved = Math.hypot(f.x - f.lastX, f.y - f.lastY);
+    f.side = moved < FOE_AI.STUCK_D ? (f.side || (Math.random() < 0.5 ? -1 : 1)) : 0;
+    f.stuckT = 0; f.lastX = f.x; f.lastY = f.y;
+  }
+}
+
 function updateFoes(dt){
   foeWarm();
+  // The city's geometry only exists in the city; everywhere else (the straight
+  // legs, the labs) a walking sentry just walks.
+  const walled = typeof street !== 'undefined' && street;
+  foeMadN = 0;
   for(const f of foes){
     if(f.dead) continue;
     if(f.hurtFlash > 0) f.hurtFlash = Math.max(0, f.hurtFlash - dt);
+    foeThink(f, dt);
+    if(f.mad) foeMadN++;
     if(!f.walk) continue;
-    const d = FOE_RIG.WALK_SPD*dt;
+    const x0 = f.x, y0 = f.y;
+    const d = (f.mad ? FOE_AI.CHASE_SPD : FOE_RIG.WALK_SPD)*dt;
     f.x += Math.cos(f.a)*d;
     f.y += Math.sin(f.a)*d;
-    f.phase = ((f.phase || 0) + d/FOE_RIG.STRIDE) % 1;
+    if(walled) foeCollide(f);
+    // the phase runs on the distance it ACTUALLY covered, not the distance it
+    // meant to: a sentry pressed against a wall should not paddle its feet.
+    f.phase = ((f.phase || 0) + Math.hypot(f.x - x0, f.y - y0)/FOE_RIG.STRIDE) % 1;
   }
+  foeSeparate();
+  foeStuck(dt);
+}
+
+// ------------------------------------------------------- how many, and where
+// Scattered over the whole city, by DENSITY PER BLOCK rather than at a flat
+// rate: every BSP lot draws its own count from a normal distribution, so some
+// blocks are busy and most are empty. Knobs: FOE_POP in config.js 3e.
+//
+// A sentry belongs to the city chunk it was placed in and lives as long as that
+// chunk is near you. Walk away past FOE_POP.DROP and it is forgotten; come back
+// and it is generated again in exactly the same spot, because the draw is seeded
+// from (chunk, side) alone - the same contract the city itself has, where nothing
+// is saved and the same stretch of road is always the same streets.
+//
+// The one thing that IS remembered is which ones you WRECKED. Without it a
+// sentry you killed would be standing there again on the way back, which reads
+// as the kill not having counted.
+// A chunk's PLAN: every sentry it would hold, drawn once and kept. Deterministic
+// from (chunk, side) alone - the same plan every time the same stretch of city
+// is asked for, which is the contract the city itself has.
+//
+// Drawing and MATERIALISING are separate on purpose. The draw is per block over
+// the whole city, which is the rule. What actually gets a body is decided by
+// DISTANCE from you: a chunk is 1400 long but the full 4000-unit width of the
+// city, so seeding a whole chunk spends most of its sentries three or four
+// thousand units out to the side, in blocks you will never walk down. The first
+// cut did exactly that and put 20 of 26 sentries where nobody could ever meet
+// them - 1 inside 600 units, 5 inside the 1500-unit billboard cull.
+const foePlans = new Map();       // chunk key -> [{key, x, y, a}]
+const foeLive = new Set();        // sentry keys that have a body right now
+const foeKilled = new Set();      // ...and the ones wrecked this run
+function clearFoeWorld(){ foeLive.clear(); foeKilled.clear(); foePlans.clear(); }
+
+// Somewhere to stand on a block: its PAVEMENT, the band between the lot's edge
+// and the building's footprint. Picked ON an edge by construction rather than by
+// rejection-sampling the box - the band is about a sixth of a block's area, so
+// rejection would miss more often than it hit.
+function foeSpot(b, rng){
+  const inset = CITY_STYLE.PAVE*0.5;
+  // WHICH EDGE is the whole game here. A block has four, and only one of them
+  // faces the highway - so picking uniformly put three sentries in four down
+  // interior side streets, where nothing the player ever does brings him past
+  // them. That is what made the first cut read as "there are no enemies in the
+  // city": there were seventeen, scattered exactly as asked, at 500-1400 units
+  // down streets nobody walks, three to ten pixels tall. Density was no help -
+  // MEAN 0.22 and MEAN 0.8 both left ONE sentry within 600 units - because the
+  // highway is a 360-wide corridor with no blocks in it and only one or two
+  // blocks within 600 units of it at all.
+  //
+  // So FOE_POP.ROADSIDE of them stand on the FRONTAGE: the edge nearest the
+  // road, which for a block beside the highway is the barrier you drive past.
+  // The rest keep to the back streets, which is what stops it reading as a
+  // guard of honour lining the route.
+  const inner = Math.abs(b.x0) < Math.abs(b.x1) ? 0 : 1;
+  for(let t = 0; t < FOE_POP.TRIES; t++){
+    const e = rng.chance(FOE_POP.ROADSIDE) ? inner : (rng.next()*4)|0;
+    const u = rng.next();
+    let x, y;
+    if(e === 0)      { x = b.x0 + inset;               y = b.y0 + u*(b.y1 - b.y0); }
+    else if(e === 1) { x = b.x1 - inset;               y = b.y0 + u*(b.y1 - b.y0); }
+    else if(e === 2) { y = b.y0 + inset;               x = b.x0 + u*(b.x1 - b.x0); }
+    else             { y = b.y1 - inset;               x = b.x0 + u*(b.x1 - b.x0); }
+    // pavement only (cityGround 2). On a small block a corner inset lands inside
+    // the footprint, and a lot's inner edge can fall on the highway barrier.
+    if(cityGround(x, y) === 2) return { x, y };
+  }
+  return null;
+}
+function foeChunkPlan(k, side){
+  const key = k + ':' + (side > 0 ? 1 : -1);
+  let plan = foePlans.get(key);
+  if(plan) return plan;
+  const ch = cityChunk(k, side);
+  const rng = cityRng(hash3(k, side > 0 ? 1 : 2, FOE_POP.SEED)*4294967296);
+  plan = [];
+  ch.blocks.forEach((b, bi) => {
+    // Box-Muller: two uniforms make one normal. Rounded and clamped at nought,
+    // and that clamp is what empties most blocks - the curve's whole left half
+    // lands on none - while the right tail is what makes a few of them busy.
+    const u1 = Math.max(1e-9, rng.next()), u2 = rng.next();
+    const g = Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
+    const n = Math.min(FOE_POP.MAX, Math.max(0, Math.round(FOE_POP.MEAN + g*FOE_POP.SD)));
+    for(let i = 0; i < n; i++){
+      const p = foeSpot(b, rng), a = rng.range(0, Math.PI*2);   // drawn either way,
+      if(p) plan.push({ key: key + ':' + bi + ':' + i, x:p.x, y:p.y, a, ck:key });
+    }                                        // so one bad spot cannot shift the rest
+  });
+  foePlans.set(key, plan);
+  return plan;
+}
+// Keep the sentries around you: give a body to every planned one inside KEEP,
+// take it away again past DROP. At most one NEW chunk is planned per frame -
+// planning one walks its blocks and samples the pavement, and may have to
+// generate the city chunk itself.
+function citySentries(){
+  if(!enemiesOn) return;
+  const T = cityTarget();
+  for(let i = foes.length - 1; i >= 0; i--){
+    const f = foes[i];
+    if(!f.key) continue;                              // dropped by hand (Z): not ours
+    if(Math.hypot(f.x - T.x, f.y - T.y) > FOE_POP.DROP){ foeLive.delete(f.key); foes.splice(i, 1); }
+  }
+  const k0 = Math.floor((T.y - FOE_POP.KEEP)/CITY_CH);
+  const k1 = Math.min(Math.floor((T.y + FOE_POP.KEEP)/CITY_CH), Math.floor(cityLimitY/CITY_CH) - 1);
+  let planned = 0;
+  for(let k = k0; k <= k1; k++) for(const side of [-1, 1]){
+    if(!foePlans.has(k + ':' + side)){
+      if(planned) continue;                           // one new plan a frame, no more
+      planned++;
+    }
+    for(const p of foeChunkPlan(k, side)){
+      if(foeLive.has(p.key) || foeKilled.has(p.key)) continue;
+      if(Math.hypot(p.x - T.x, p.y - T.y) > FOE_POP.KEEP) continue;
+      const f = spawnFoe(p.x, p.y, p.a);
+      f.key = p.key; f.ck = p.ck;
+      foeLive.add(p.key);
+    }
+  }
+  // forget the plans for city you are nowhere near, exactly as cityCache does
+  if(foePlans.size > 32){
+    const kn = Math.floor(T.y/CITY_CH);
+    for(const key of foePlans.keys()) if(Math.abs(parseInt(key, 10) - kn) > 6) foePlans.delete(key);
+  }
+}
+// the N key, with the cars: forget every sentry the city put there, and let
+// citySentries lay them out again from scratch when it comes back on.
+function cityFoesOff(){
+  for(let i = foes.length - 1; i >= 0; i--) if(foes[i].key) foes.splice(i, 1);
+  foeLive.clear();
 }
 
 // ---------------------------------------------------------------- the billboard
@@ -329,9 +680,15 @@ function drawFoeBillboard(f, sx, ground, scale, perp, camX, camY){
       const fr = Math.round(yaw/TAU*sp.n) % sp.n;
       const pose = foePose(f);
       foeSheetEnsure(sp, pose);
+      const row = foeRow(sp, pose, false);
+      const dx = sx - sp.ax*scale, dy = ground - sp.ay*scale;
+      const w = sp.fw*scale, h = sp.fh*scale;
       rcCtx.globalAlpha = 1 - fog0*0.55;
-      rcCtx.drawImage(sp.cv, fr*sp.fw, foeRow(sp, pose, f.hurtFlash > 0), sp.fw, sp.fh,
-                      sx - sp.ax*scale, ground - sp.ay*scale, sp.fw*scale, sp.fh*scale);
+      // unlike a car, this recolours in BOTH panes: a car has a white flash row
+      // baked and a sentry has none, so there is nothing else to show here.
+      if(f.hurtFlash > 0) rcCtx.drawImage(hitFrame(sp, fr, row, asciiMode ? 0 : FOE_HIT_LIFT),
+                                          0, 0, sp.fw, sp.fh, dx, dy, w, h);
+      else                rcCtx.drawImage(sp.cv, fr*sp.fw, row, sp.fw, sp.fh, dx, dy, w, h);
       rcCtx.globalAlpha = 1;
       return;
     }

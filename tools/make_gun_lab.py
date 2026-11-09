@@ -9,6 +9,9 @@ cycles ASCII, and the top-right box shows each method's draw cost.
 It also plants a row of SENTRIES (foe.js) down the street at known distances, so
 the enemy sprite can be judged against the ASCII pass at every size it will be
 drawn at. Z drops another one 120 units ahead; that key is in index.html.
+The city's own scattered sentries and its hunter cars are switched OFF in the
+lab (enemiesOn = false): this is a controlled row, not a street scene. Their AI
+is looked at in the game.
 index.html is never touched; re-run after it changes:
 
     python3 tools/make_gun_lab.py
@@ -41,6 +44,11 @@ rep("  gunMarker();\n  // crosshair", "  gunMarker();\n  gunHud();\n  // crossha
 rep('function rcSprites(camX, camY, bearing){',
     'const LAB_VOX = ["sentry@96", "sentry@64"];   // left column, right column\n'
     'function labSpawnFoes(){\n'
+    '  // The city scatters sentries of its own now (citySentries, 2026-11-09) and\n'
+    '  // its hunters drive through them. The lab wants ONLY its row, at known\n'
+    '  // distances, with nothing walking across the comparison - so both are off\n'
+    '  // here. Z still drops one, and the GAME is where the AI is looked at.\n'
+    '  clearFoes(); enemiesOn = false;\n'
     '  const w = walker, fx = Math.cos(w.a), fy = Math.sin(w.a), lx = -fy, ly = fx;\n'
     '  // the same four distances twice, one carve each side, facing you\n'
     '  [70, 130, 260, 520].forEach((d, i) => {\n'

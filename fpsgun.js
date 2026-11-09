@@ -58,29 +58,41 @@ function gunTick(dt){
 }
 
 // ---------------------------------------------------------------- firing
-// Hit-scan along where you face: the nearest enemy car whose centre passes within
-// HIT_R of the line, unless a wall (the raycaster's depth down the centre column)
-// is nearer. Your own car (cars[0]) is never a target.
+// Hit-scan along where you face: the nearest enemy whose centre passes within a
+// hit radius of the line, unless a wall (the raycaster's depth down the centre
+// column) is nearer. Your own car (cars[0]) is never a target.
+//
+// Cars and sentries are two passes over one running nearest-hit, so whichever is
+// in front takes the round - and each uses its own radius, because PISTOL.HIT_R
+// is 14 for a car 38 x 20 and a sentry is about 12 wide (FOE.HIT_R).
 function gunFire(){
   if(gunCool > 0) return;
   gunCool = PISTOL.RATE; gunKick = PISTOL.KICK; gunFlash = PISTOL.FLASH; gunShots++; casingPending = true;
   if(typeof Snd !== 'undefined') Snd.shot();
   const w = walker, fx = Math.cos(w.a), fy = Math.sin(w.a);
   const wall = (typeof rcZ !== 'undefined' && rcZ && RC_W) ? rcZ[RC_W >> 1] : PISTOL.RANGE;
-  let best = null, bd = Math.min(PISTOL.RANGE, wall || PISTOL.RANGE);
+  let best = null, bestFoe = null, bd = Math.min(PISTOL.RANGE, wall || PISTOL.RANGE);
   for(let i = 1; i < cars.length; i++){
     const c = cars[i];
     if(c.dead) continue;
     const dx = c.x - w.x, dy = c.y - w.y;
     const along = dx*fx + dy*fy, lat = Math.abs(-dx*fy + dy*fx);
-    if(along > 0 && along < bd && lat < PISTOL.HIT_R){ best = c; bd = along; }
+    if(along > 0 && along < bd && lat < PISTOL.HIT_R){ best = c; bestFoe = null; bd = along; }
   }
-  if(best){
-    damage(best, PISTOL.DMG, 0);
+  if(typeof foes !== 'undefined') for(const f of foes){
+    if(f.dead) continue;
+    const dx = f.x - w.x, dy = f.y - w.y;
+    const along = dx*fx + dy*fy, lat = Math.abs(-dx*fy + dy*fx);
+    if(along > 0 && along < bd && lat < FOE.HIT_R){ bestFoe = f; best = null; bd = along; }
+  }
+  if(best || bestFoe){
+    // five of these kills a sentry, which is the number FOE.HP is set from
+    if(best) damage(best, PISTOL.DMG, 0);
+    else     foeDamage(bestFoe, PISTOL.DMG, 0);
     gunHits++; gunMarkT = 0.15;
     if(typeof Snd !== 'undefined') Snd.hit();
   }
-  gunImpact = { t:0.14, d:bd, hit:!!best };
+  gunImpact = { t:0.14, d:bd, hit:!!(best || bestFoe) };
 }
 
 // ---------------------------------------------------------------- drawing

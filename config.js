@@ -192,6 +192,78 @@ const FOE_RIG = {
 };
 
 // -----------------------------------------------------------------------------
+// 3e. THE SENTRIES: THEIR AI, AND HOW MANY THERE ARE
+// -----------------------------------------------------------------------------
+// The rules, all the user's and all settled (HANDOFF 2026-11-09), so that nobody
+// re-litigates them from the code:
+//   * scattered over the whole city, not spawned at a point
+//   * each one is on its OWN. Shooting one does not turn the others on you
+//   * they IGNORE you to begin with. That is the comic's rule, not a stub: he is
+//     an old model and the city's guards are beneath caring
+//   * being shot is what provokes one - that one, nobody else
+//   * a provoked sentry FOLLOWS you, and NEVER shoots (asked and settled: the
+//     brief's "they just follow you for now" is the rule, in the car and out of it)
+//   * it gives up when you get far enough away, and then ignores you again
+const FOE_AI = {
+  CHASE_SPD: 52,    // units/s once provoked. He WALKS at 46 and RUNS at 92, so a
+                    // sentry out-paces a stroll and loses a sprint - which is the
+                    // whole reason GIVE_UP means anything. The rig does not care
+                    // what this is: the walk phase runs on DISTANCE, so the feet
+                    // keep still against the ground at any speed.
+  TURN:     3.2,    // rad/s its heading can swing, so it arcs round a corner
+                    // instead of snapping to face you
+  NEAR:     170,    // inside this, with nothing in the way, it comes straight at
+                    // you instead of following the street grid (aiCity's number)
+  STOP:      18,    // ...and stops here, at arm's length, rather than treading on you
+  GIVE_UP:  900,    // loses you past this. The pistol reaches 1600, so you can
+                    // always start a fight from outside the range it will follow
+                    // you to - which is what makes the first shot a decision.
+  LOSE_T:    1.2,   // but only once it has been that far away for this long. THIS
+                    // is the anti-flicker, not a second wider radius: a radius
+                    // still flickers when you jog along its boundary, where a time
+                    // debounce cannot. And giving up is one-way - only another
+                    // bullet re-provokes it - so afterwards there are no two
+                    // states left to oscillate between.
+  STUCK_T:   1.0,   // provoked, but gone nowhere for this long: shoulder past
+  STUCK_D:   10,    // "nowhere" being less than this far in that time
+};
+
+// How many there are, and where they stand. Density is drawn PER CITY BLOCK from
+// a normal distribution rather than laid down at a flat rate, so some blocks are
+// busy and most are empty. Deliberately thin to start - the user's words were
+// "make it small for now, otherwise it will be crowded" - and MEAN is the one
+// number to raise.
+//
+// A block is one BSP lot, ~500-750 units a side, and a chunk of city holds about
+// 14 of them per side. MEAN 0.22 with SD 0.80 rounds and clamps to roughly: six
+// blocks in ten empty, three with one sentry, one with two or three.
+const FOE_POP = {
+  MEAN:    0.4,    // sentries per block, on average
+  SD:     0.80,    // the spread about it. Rounded and clamped at nought, and that
+                   // clamp is what leaves most blocks empty - the whole left half
+                   // of the curve lands on none.
+  MAX:       3,    // never more than this on one block
+  SEED:   4231,    // its own seed, NOT CITY_SEED: changing the city's layout seed
+                   // should not also shuffle where its guards are standing
+  KEEP:   1800,    // a sentry gets a BODY inside this radius of you...
+  DROP:   2400,    // ...and loses it past here. A RADIUS, not a band of chunks:
+                   // a chunk is 1400 long but the city's whole 4000-unit width,
+                   // so giving a body to a whole chunk spent twenty sentries in
+                   // twenty-six three thousand units out to the side, in blocks
+                   // nobody will ever walk down. Both sit outside the 1500-unit
+                   // billboard cull so nothing appears while you are looking at
+                   // it, and DROP > KEEP so the boundary cannot thrash.
+  TRIES:     8,    // tries at finding a pavement spot on a block before giving up
+  ROADSIDE: 0.6,   // share that stand on the block's ROAD-FACING edge rather than
+                   // anywhere on its perimeter. Not decoration - see foeSpot: a
+                   // block has four pavement edges and only one faces the
+                   // highway, so picking uniformly hides three sentries in four
+                   // down streets the player never walks. At 0 they are
+                   // invisible however high MEAN goes; at 1 they line the route
+                   // like a guard of honour.
+};
+
+// -----------------------------------------------------------------------------
 // 4. ENEMIES AND THE SPAWNER
 // -----------------------------------------------------------------------------
 // One entry per model/colour. `size` is relative to the player's car, `hp` to

@@ -7,7 +7,9 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-09 | [The sentry walks: a rig on the voxel model](#2026-11-09--the-sentry-walks-a-rig-on-the-voxel-model) | built, 47 headless checks + screenshots; **reads side-on, barely reads head-on** |
+| 2026-11-09 | [Sentries in the city, with their own AI](#2026-11-09--sentries-in-the-city-with-their-own-ai) | **built — START HERE**; 107 headless checks + screenshots; **played, and the first cut was invisible — read "the one that got away"** |
+| 2026-11-09 | [NEXT: sentries in the city, with their own AI](#2026-11-09--next-sentries-in-the-city-with-their-own-ai) | plan, done (this is what shipped) |
+| 2026-11-09 | [The sentry walks: a rig on the voxel model](#2026-11-09--the-sentry-walks-a-rig-on-the-voxel-model) | built, 48 headless checks + screenshots; **reads side-on, barely reads head-on** |
 | 2026-11-09 | [One drawing -> a voxel model: sprite_voxelize.py](#2026-11-09--one-drawing---a-voxel-model-sprite_voxelizepy) | built, 35 headless checks + screenshots; rotates, and is the only version the top-down view can draw |
 | 2026-11-09 | [The first on-foot enemy: a SENTRY billboard](#2026-11-09--the-first-on-foot-enemy-a-sentry-billboard) | built, 35 headless checks + screenshots; **art reads as a solid block in ASCII** |
 | 2026-11-09 | [BOOST upgrade: the recharge, not the shove](#2026-11-09--boost-upgrade-the-recharge-not-the-shove) | built, 30 headless checks + screenshot |
@@ -26,7 +28,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 | 2026-11-07 | [Player HP 200 + upgrade effects (armor/health/gun/missile)](#2026-11-07--player-hp-200--upgrade-effects-armorhealthgunmissile) | built; earning them not designed |
 | 2026-11-06 | [GARAGE: pick your car (classic / aspen / sports / biome)](#2026-11-06--garage-pick-your-car-classic--aspen--sports--biome) | built, in index.html |
 | 2026-11-05 | [Voxel car proof: CAD model -> voxels -> viewer](#2026-11-05--voxel-car-proof-cad-model---voxels---viewer) | built, not in game |
-| 2026-11-06 | [NEXT: cars from downloaded 3D models (voxelized)](#2026-11-06--next-cars-from-downloaded-3d-models-voxelized) | plan, start here |
+| 2026-11-06 | [NEXT: cars from downloaded 3D models (voxelized)](#2026-11-06--next-cars-from-downloaded-3d-models-voxelized) | plan, done (the voxel cars shipped) |
 | 2026-11-06 | [Story + intro comic script; new logo fitted](#2026-11-06--story--intro-comic-script-new-logo-fitted) | notes |
 | 2026-11-06 | [Outskirts on legs 1-2, city overview on the map, logo v3 prompt](#2026-11-06--outskirts-on-legs-1-2-city-overview-on-the-map-logo-v3-prompt) | built |
 | 2026-11-06 | [The map (M) and the new logo](#2026-11-06--the-map-m-and-the-new-logo) | built |
@@ -48,6 +50,314 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-09 — Sentries in the city, with their own AI
+
+**Start here.** The plan below is what this was built from; everything under that is older and
+done. Built, checked, and **playtested — which is the only reason it works**: the first cut
+passed 103 checks and put seventeen sentries in the city that the player could not see at all.
+Read *the one that got away* before touching the placement.
+
+### The rules, as decided. Do not re-litigate these.
+
+| rule | where it lives |
+|---|---|
+| scattered all over the city, by density, not spawned at a point | `citySentries` / `foeSeedChunk`, foe.js |
+| each one is on its own; shooting one does not turn the others on you | `foeDamage` touches only `f` |
+| they ignore you until you shoot them (the comic's rule) | `foeThink` returns at once unless `f.mad` |
+| being shot is what provokes one — that one | `foeDamage`, and **only when `ownerId === 0`** |
+| a provoked one FOLLOWS you and **never shoots** | `foeThink`; there is no foe weapon anywhere |
+| five of your pistol shots kill one | `FOE.HP` 90 against `PISTOL.DMG` 18 |
+| the car's weapons kill one too | `updateShots`, `explode`, `foeRam` |
+| it gives up when you get far enough away | `FOE_AI.GIVE_UP` + `LOSE_T` |
+
+**The open question was asked and answered: it never shoots.** The brief said "they just follow
+you for now" and a later answer said it chases the car "and shoots it as well"; asked which, the
+user chose **follows only, never shoots — in the car or out of it**. So there is no sentry
+weapon in the code at all, and adding one is a new decision, not a gap to be filled in.
+
+### Where the knobs are
+
+**`config.js` §3e** — two blocks, both new:
+
+- **`FOE_AI`** — `CHASE_SPD 52` (he walks 46, runs 92, so a sentry out-paces a stroll and loses a
+  sprint — that is the whole reason `GIVE_UP` means anything), `TURN 3.2`, `NEAR 170`, `STOP 18`,
+  `GIVE_UP 900`, `LOSE_T 1.2`, `STUCK_T/STUCK_D`.
+- **`FOE_POP`** — `MEAN 0.22` sentries per block, `SD 0.80`, `MAX 3`, `SEED 4231`, `KEEP 3000`,
+  `DROP 4200`, `TRIES 8`.
+
+**`foe.js`** — `FOE.HP 90`, `FOE.HIT_R 8` (the pistol's tolerance on a sentry; `PISTOL.HIT_R` 14
+is a car's number), `FOE.SHOT_R 9`, `FOE.RAM 0.9` / `RAM_MIN 40`, `FOE_HIT_LIFT 0.5`.
+
+### The one that got away: they were there, and they were invisible
+
+Worth more than the rest of this entry, because every check passed and the feature did not work.
+The user playtested it and said: *"I tried both index and the gunlab and I see no sentries."*
+
+**What was wrong, in two layers.**
+
+1. **The live set was a band of chunks, not a radius.** A chunk is 1400 long but the city's whole
+   **4000-unit width**. The player only ever occupies the highway corridor at x≈0, so giving a
+   body to a whole chunk spent **20 of 26 sentries three to four thousand units out to the side**,
+   in blocks nobody will ever walk down. 5 of 26 were inside the 1500-unit billboard cull; **1**
+   was inside 600 units.
+2. **And the deeper one: a block has four pavement edges, and only ONE faces the highway.**
+   `foeSpot` picked uniformly, so three sentries in four stood on interior side streets. This is
+   why the obvious fix did not work — **raising the density changed nothing**. Measured:
+   `MEAN 0.22` → 7 live, 1 inside 600; `MEAN 0.8` → 10 live, **still 1 inside 600**. The highway
+   is a 360-wide corridor with no blocks in it and only one or two blocks within 600 units at all,
+   so per-block density cannot put anybody near the road however high you wind it.
+
+**The fix is `FOE_POP.ROADSIDE` (0.6)** — that share stand on their block's road-facing edge, the
+rest keep to the back streets so it does not read as a guard of honour lining the route — plus
+`KEEP`/`DROP` as a **radius** (1800/2400) instead of a chunk band. Nearest sentry on arrival went
+from 485 units to **183**, and sentries met on a 32-second walk from **1 to 6**.
+
+**Three lessons, in the order they cost time:**
+
+- **"It exists in the array" is not "it is in the game."** Every check passed because every check
+  asked whether the sentry was *placed, drawn, and culled correctly*. None asked whether the
+  player would ever be near one. There are now three that do, under *the regression that bit* —
+  nearest-under-400 and the road-facing share. If those fail, the enemies are unmeetable again.
+- **A screenshot with the subject teleported in front of the camera proves nothing.** The original
+  shots moved the nearest sentry to 78 units to get a good picture of it. That is the right shot
+  for judging the *art* and worthless for judging the *placement*, and it is what let this ship.
+  The honest shot is `shots/real-arrival.png`: stand where the player stands, face the heading
+  with the most sentries in view, move nothing.
+- **Two false trails, both mine, both from bad instrumentation.** A "the hunters are mowing them
+  down" theory came from a diagnostic whose car was still moving — it wrecked itself and I spent
+  the run measuring a dead game. A "the barrier occludes them" theory came from reading a
+  screenshot instead of testing: at 200 units a sentry draws 16 px in a 180-tall pane, barrier or
+  no barrier. Both were disproved in one command each. Test the mechanism, do not infer it.
+
+### How many there actually are — measured, not guessed
+
+At `MEAN 0.4` / `ROADSIDE 0.6` / `KEEP 1800`, from the spot you arrive at:
+
+| | |
+|---|---|
+| sentries with a body | **15** |
+| nearest | **183 units** (readable; past ~600 one is a speck 3-10 px tall) |
+| inside 300 / inside 600 | 2 / 2 |
+| most visible in one first-person view | 9 |
+| met on a 32-second walk down the road | **6** (it was 1) |
+| visible in the driving pane from the car | 3 |
+
+The clamp at nought is what lifts the realised rate above `MEAN`: the whole left half of the
+normal lands on "none", so the mean of what is *kept* is higher than the mean you asked for.
+
+**Two knobs, and `ROADSIDE` is the one that matters.** `MEAN` scales the total; `ROADSIDE`
+decides whether you ever meet any of them. Winding `MEAN` up with `ROADSIDE` at 0 just fills the
+back streets. `devMode` (I) prints `SENTRIES n` — and `ON YOU n` in red when any are provoked —
+on the on-foot HUD, so both can be turned by looking rather than by guessing.
+
+### What is reused, and the one thing that is not
+
+- **The flow field is the hunters' own** (`FLOW`/`flowNext`), so a sentry comes down the street
+  that leads to you instead of grinding into a wall. It is built with *car* clearances; the only
+  cost of borrowing it is that a sentry keeps to the roadway. A pedestrian variant is still a
+  later nicety.
+- **One line of `cityStep` had to change.** The field was only refilled while a hunter car was
+  interested in you, which on foot is never. A provoked sentry hunting you on foot is the one
+  thing that needs it with no car to ask — hence `foeMadN`, counted in `updateFoes` and read by
+  `cityStep`.
+- **Planning and materialising are separate** (`foeChunkPlan` / `citySentries`). The per-block
+  normal draw is done once per chunk and cached — deterministic from `(chunk, side)` alone, so
+  the same stretch of city always holds the same sentries. What gets a *body* is then decided by
+  distance. That split is what lets the scatter stay "all over the city" while the live set stays
+  small and near you. `foeLive` is the index of who has a body; `clearFoes` clears it, or the
+  spawner would think sentries it can no longer see are still out there and never bring them back.
+- **`foeDamage` / `foeDie` / `foeCollide` are NOT `damage()` / its death branch / `walkCollide`.**
+  Each says why at its own definition. `damage()` is car-only the whole way down (`untouchable`,
+  `armorCut`, respawn, deaths, the pit clip, the bounty); its death branch is the tanque's bomb,
+  `lastHitBy`, `frags`, `convoyKills`. `foeDie` takes the reusable core the user asked for —
+  `explode()` plus two `particles()` bursts in the sentry's colours — and nothing else.
+- **A sentry's own death blast does not chain.** `explode` now has a foes loop, and it reads
+  `dmg` **raw** rather than through the cars' old `dmg||30` fallback. Two things turn on that: a
+  wrecked sentry passes 0 on purpose and must not splash its neighbour, and a 0-damage hit must
+  not *provoke* one either, which would quietly break "no coordination". The cars' line is
+  untouched, so nothing about car wrecks changed.
+
+### Four things I did that nobody asked for
+
+Each is small, each is flagged here because it is a decision and not an instruction:
+
+1. **Sentries are solid** (`foeBlock`). A follow-only enemy that you can walk through is not a
+   threat, it is a ghost. It does **not** hurt you by touching you — it simply will not let you
+   past. Deliberately **not** inside `walkCollide`: `toggleOnFoot` uses `walkCollide` as a "is
+   this spot free?" probe for the driver's door, and a sentry loitering by the car would have
+   reported `NO ROOM TO OPEN THE DOOR`. There is a check that pins that.
+2. **A car that drives into one runs it down** (`foeRam`, `FOE.RAM` 0.9 a unit/s above
+   `RAM_MIN` 40, so ~100 u/s is lethal; slower just shoves it clear). A car passing clean
+   *through* a sentry reads as a bug, and the game already does this to the player on foot
+   (`WALK_RUNOVER`). It applies to hunter cars too, which means the city's own traffic thins
+   them out.
+3. **The hit flash brightens in the pixel panes** (`hitFrame`'s new `lift`, 0 in ASCII). The
+   handoff said to use `hitFrame`'s recolour rather than bake the flash row back, and that was
+   right — but a white *tint* through a `color` blend only takes the colour **out**, and a
+   sentry is already near-grey, so the flash was all but invisible in pixels. A car never had
+   this problem because the pixel panes draw its baked white row and only ASCII recolours. The
+   lift is `source-atop` inside the silhouette, and **must stay 0 in ASCII**: `asciiBlit` picks a
+   glyph by luminance, so lifting a silhouette fills every cell with `@` and the shape of the
+   thing you are shooting disappears — which is the whole reason the recolour exists.
+4. **The gun lab now switches the city's sentries and hunters off** (`enemiesOn = false` in
+   `labSpawnFoes`). The lab is a controlled row at known distances; 26 extra sentries wandering
+   through it is not that. Rebuilt with `python3 tools/make_gun_lab.py`.
+
+### Two tooling notes worth more than they look
+
+- **`tools/shot.js` was WSL-only** and this machine is native Linux, so it could not take a
+  screenshot at all. It now falls back to a Chrome/Chromium on `PATH` (and skips `wslpath` and
+  the Windows profile path). The WSL route is unchanged and still tried first.
+- **You cannot *simulate* in headless Chrome either**, not just time it. The existing note says
+  `--virtual-time-budget` freezes the clock so `performance.now()` reads 0; the stronger fact is
+  that only **12 game frames run in a 4.5-second budget, and all of them before 2.6 s**. Anything
+  set on a later timer is drawn but never stepped. Every screenshot setup here therefore sets the
+  state it wants **synchronously** — including driving `citySentries()` in a loop to seed the
+  city, since it seeds one chunk per call. Measured, not assumed: wrap `step` and count.
+
+### What is checked
+
+`node tools/selftest_foe.js` — **107 checks, ~31 s** (48 before). It covers the five-shot count,
+the ignore→provoke→chase→give-up cycle, "only your fire angers it", no coordination through the
+death blast, the stop distance, solidity (and the door probe *not* seeing them), every car weapon,
+the flow-field refill on foot, the per-block density shape, determinism of the layout, that a
+wrecked one stays wrecked across a cull, that a hand-dropped one (Z) is never culled, and a soak
+in both panes.
+
+**One flake worth knowing about, now fixed:** hunter cars cruise at `CITY_CRUISE` 115, which is
+over `RAM_MIN`, so they were running the *test* sentry over mid-assertion. The behaviour tests now
+call `quietStreet()` (clear the hunters, push `citySpawnT` out of reach) — note it does **not**
+touch `enemiesOn`, because `citySentries` reads that too. If a check here ever goes intermittent,
+suspect traffic before you suspect the AI.
+
+Screenshots taken (pixel + ASCII first person, idle / hit, and the driving pane): the sentry
+reads in the street, the ASCII flash keeps its glyphs rather than going to a block of `@`, and
+the top-down sheet draws them at mixed yaws and poses.
+
+### Weak spots, in the order I would look at them
+
+- **The barrier cuts them off at the waist.** A sentry on the frontage stands behind the highway
+  barrier, so from the road you see its chest and head over the top. It reads, but it is not
+  flattering, and it is worth deciding whether the frontage ones should stand at the barrier
+  *gaps* instead, where you see the whole figure.
+- **`CHASE_SPD` and `GIVE_UP` are still first guesses** — only the placement has been played.
+- **The walk still barely reads head-on**, and head-on is exactly how you will meet a chasing
+  sentry. This is the same weakness recorded below for the rig, and the chase has made it the
+  common case rather than a corner. Parked by the user ("lets do that later") — but it is now
+  worth more than it was.
+- **A chase has no sound.** Nothing announces a sentry behind you, and it never fires, so the
+  only warning is seeing it.
+- **The flow field keeps them on the roadway.** Two sentries chasing you separate (`foeSeparate`)
+  but they both come down the middle of the street.
+- **Sentries only exist in the run's city** (`cityStep` runs for `stage === 'run'` only). The
+  STREET sandbox stage still has none; `STREET_ENEMIES` remains the unused switch it was.
+
+### Still parked, still not this task
+
+**Hunter cars carrying a sentry — but not always.** "Lots of times the cars are basically drones,
+so there is no one inside." Wrecking a hunter would sometimes put a sentry on the street and
+sometimes nothing, which is a reason to look at what you killed. It needs a spawn-on-death hook
+in `damage()`'s death branch and a per-car "is anyone home" flag. The sentries now stand on their
+own, which was the condition for picking this up — so it is ready whenever he wants it.
+
+## 2026-11-09 — NEXT: sentries in the city, with their own AI
+
+**Done — this is the brief the entry above was built from.** Kept because it records *why* each
+rule is what it is, and the user's answers are the reason they must not be re-litigated. The one
+question it left open ("does a provoked sentry shoot you on foot?") was asked and settled: **no,
+it never shoots** — see the entry above.
+The voxel pipeline is **parked by the user's decision** ("we are good on the enemy voxelization
+pipeline FOR NOW") — do not reopen it to improve the model unless asked.
+
+### What the user asked for
+
+Put the sentry into the real game: scattered through the city, with its own AI. Explicitly decided,
+so do not re-litigate:
+
+- **Scattered all over the city**, not spawned at a point.
+- **Each one is on its own. No coordination** — shooting one does not turn the others on you.
+- **They ignore you to begin with.** This is the comic's rule, not a stub: he is an old model and
+  the city's guards are beneath caring. See `assets/comic/COMIC_SCRIPT.md`.
+- **Being shot is what provokes one** — that one, nobody else.
+- **A provoked sentry FOLLOWS you. It does not shoot.** The user said "they just hit back if you
+  shoot them" and then corrected it to "actually they just follow you for now". Following only.
+- **Five player shots kill one.**
+
+### The one piece of arithmetic
+
+`PISTOL.DMG` is **18** (`fpsgun.js:15`), so five hits means `4x18 = 72 < HP <= 5x18 = 90`.
+**Set `FOE.HP` to 90** — it is 60 today, which is four hits, not five.
+
+### What to reuse, and what only looks reusable
+
+| want | use | watch out |
+|---|---|---|
+| spawn by density | `PROJECT.md` "(superseded) STREET city: add car enemies (task 2)" has the design: density per area of city, spawned as the player moves, culled when far. `STREET_ENEMIES` (`config.js:348`) is the switch, still `false`. | that note's unanswered question — **"ask him density numbers"** — is still unanswered, now for sentries |
+| pathing | `FLOW` (`index.html:999`), `flowPassable`, `flowNext` — a BFS flow field, so they come down the street that actually leads to you instead of grinding into a wall | it is built for **cars**: `flowPassable` uses 14–16 unit car clearances. Reuse as-is to start (sentries keep to streets, which is fine); a pedestrian variant is a later nicety |
+| the AI shape | read `aiCity(c, dt)` (`index.html:1066`) for the pattern: head downhill on the flow field, shortcut straight when `cityClear` and close, stuck detection | **do not call it.** It writes `c.aiSteer/aiThrottle/aiBrake` into `updateCar`'s car physics. A walking sentry has none of that |
+| not walking through buildings | `walkCollide(p)` (`index.html:4986`) pushes a point out of city geometry via `cityChunks` and `WALK_R` | it also handles the parked car; check that clause suits a sentry |
+| taking damage | write `foeDamage(f, amount)` | **do not bend `damage()`** (`index.html:1370`) — it is car-only: `untouchable`, `armorCut`, `respawn`, `deaths`, death clips |
+| being shot at | `gunFire()` (`fpsgun.js:64`) hit-scans `cars[1..]` only; foes must join that loop | `PISTOL.HIT_R` is 14, tuned for a car 38x20. A sentry is ~12 wide and 22 tall — it probably wants its own radius |
+
+### Four things that will bite
+
+- **The hit flash is not in the sheet any more.** I removed the white flash row this session
+  because nothing could damage a sentry; it was doubling every bake to draw something never
+  shown. Now something can. **Do not just bake the row back** — use the `hitFrame()` recolour at
+  draw time (`index.html` ~4562), which is what the ASCII pane already does for cars, and which
+  exists precisely because a white silhouette destroys the glyph read in ASCII.
+- **Sheets are shared, so sentry COUNT is free.** Meshes and sheets are keyed by `SPRITEVOX` name,
+  so fifty sentries bake once. A second *type* or a second colour is what costs another bake.
+  `foeWarm()` spreads the strips one per frame; keep that.
+- **Never bake at the live `S`.** `bakeFoe2D` pins to `PX*homeZoom()` like `bakeCarSprites`, and a
+  selftest asserts a changing `S` does not rebuild it. The bend eases the zoom every frame.
+- **`foes[]` has no spatial index.** `gatherBillboards` and the 2D `drawables` loop are O(n) every
+  frame, and `gatherBillboards` culls at 1500 units / `d < 6` while the 2D draw culls on
+  `inView`. Density spawning has to agree with those two or sentries will pop in and out.
+
+### The user's answers (asked and settled 2026-11-09)
+
+1. **Yes, car weapons kill a sentry.** So "five shots" is the PISTOL's number only
+   (`PISTOL.DMG` 18 against `FOE.HP` 90); the cannon at 7 a bullet and the missile at 34 land
+   wherever they land. Do not tune `FOE.HP` to make several weapons each come out round.
+2. **A provoked sentry cannot follow you INTO the car, but it chases the car and shoots it.**
+   See the open question below — this moved the goalposts and needs one more word from him.
+3. **Death reuses the cars' explosion.** `damage()`'s death branch (`index.html:1377`) is the
+   recipe: `explode(x, y, power, owner, dmg, radius, opt)` plus two `particles()` calls, with
+   `deathZ`/`deathClip` for the down-a-pit case. A sentry wants the non-bomb, non-clip path —
+   roughly `explode(f.x, f.y, 1.2, null, 0, 10)` and one `particles()` burst in its own colours —
+   not a copy of the whole branch, which is full of car-only business (`etype === 'tanque'`,
+   `lastHitBy`, `frags`, `convoyKills`, respawn).
+4. **Density varies by block, sampled from a normal distribution.** Some blocks busy, some empty,
+   drawn per block rather than a flat rate. **"Make it small for now, otherwise it will be
+   crowded"** — start well under what feels right and let him raise it.
+5. **A provoked sentry gives up when you get far enough away.** Needs a give-up radius, and it
+   should probably be larger than the provoke range so it does not flicker between states.
+
+### An idea he raised while answering, NOT part of this task
+
+**Hunter cars could carry a sentry inside — but not always.** His words: "lots of times the cars
+are basically drones, so there is no one inside." So wrecking a hunter would sometimes put a
+sentry on the street and sometimes nothing, which is a good reason to look at what you killed.
+Record it, do not build it yet: it needs a spawn-on-death hook into the car death branch above and
+a per-car "is anyone home" flag, and the sentries have to work on their own first.
+
+### Still to ask him
+
+**Does a provoked sentry shoot you when you are ON FOOT?** The brief said "they just follow you
+for now", and then answer 2 said it chases the car "and shoots it as well". Those do not agree.
+Two readings: either shooting is simply in scope now, or a sentry shoots the CAR but still only
+follows the man. Ask before building; it is the difference between a follow behaviour and a
+weapon.
+
+### Parked by the user, do not pick these up unasked
+
+- **The arms do not move, and the walk barely reads head-on.** He knows: "yes I remember we didn't
+  move the arms yet, lets do that later, ok?" Fixes are a lateral sway, an outward splay on the
+  legs, or arm swing — and arm swing needs an enemy **drawn with its arms clear of its body**,
+  which is an art decision. See the carve's run-merging note in the entry below.
+- **The voxel pipeline itself.** "We are good on the enemy voxelization pipeline FOR NOW."
 
 ## 2026-11-09 — The sentry walks: a rig on the voxel model
 
