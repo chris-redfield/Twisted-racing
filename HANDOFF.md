@@ -7,7 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-09 | [Controller support; MOUSE or CONTROLLER in OPTIONS](#2026-11-09--controller-support-mouse-or-controller-in-options) | built, 38 headless checks; **not yet played on a real pad** |
+| 2026-11-09 | [BOOST upgrade: the recharge, not the shove](#2026-11-09--boost-upgrade-the-recharge-not-the-shove) | built, 30 headless checks + screenshot |
+| 2026-11-09 | [Controller support; MOUSE or CONTROLLER in OPTIONS](#2026-11-09--controller-support-mouse-or-controller-in-options) | built, 60 headless checks; **not yet played on a real pad** |
 | 2026-11-08 | [Gun lab: first-person pistol, viewmodel methods compared](#2026-11-08--gun-lab-first-person-pistol-viewmodel-methods-compared) | **pistol is in index.html** (user's picture); lab kept for the 3D method |
 | 2026-11-08 | [Green square heals 17.5% of max hull](#2026-11-08--green-square-heals-175-of-max-hull) | built, verified in Chrome |
 | 2026-11-08 | [Second store at the city gate; city twice as wide](#2026-11-08--second-store-at-the-city-gate-city-twice-as-wide) | built, verified in Chrome |
@@ -44,6 +45,43 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-09 — BOOST upgrade: the recharge, not the shove
+
+**Goal:** a fifth thing to buy at the Scrap Saints, for the boost. `BOOST_TIME` also went
+**0.9 -> 1.0s** (0.9 was too short to feel). Config: `BOOST_COOL_PER_LEVEL` in **3b**.
+
+**What it does.** `boost` is a fifth upgrade track beside armor / health / gun / missile, and it cuts
+the recharge by **1s a level: 10s at level 0, 4s at level 6.**
+
+**Why the recharge and not the strength.** The burn is 1s against a 10s recharge, so at level 0 you
+hold a charge **9% of the time** — the cooldown is what limits the boost, by a factor of ten. Halving
+it roughly doubles how many boosts a leg gives you, and it is only a timer, so nothing in the physics
+moves. Making the boost *stronger* is the trap: `BOOST_ADD` is a target the regulator serves, not a
+force, and section 2 of `config.js` already records that a boost which only raises the target spends
+itself against the frame's front spring and gains no ground. You would have to raise `BOOST_ROOM`
+with it, which pushes the car at the edge of the frame where `WALL_REEL` and the backstop live — the
+stuck-car problem all over again. If it ever needs to feel *bigger*, buy `BOOST_TIME` instead:
+distance scales linearly with it and it touches no geometry.
+
+**The two places a per-level cooldown goes wrong,** both now covered by the selftest:
+
+- `tryBoost` arming the raw `BOOST_COOL` instead of `boostCool()` — the upgrade would be inert.
+- the HUD gauge at the `BST` bar reading `1 - boostCD/BOOST_COOL`. With a 4s countdown over a 10s
+  constant the bar fills to 60% and stops, which looks like a broken gauge, not a wrong divisor.
+
+`boostCoolAt(lv)` has a 0.5s floor so a future config edit can't hand out a boost that never ends.
+`upgradeTotal()` counts the new track, so the repair price rises with it like the others.
+
+**The store panel grew.** Seven rows: `H` 280 -> 300 and the row pitch 28 -> 26, or CONTINUE sat on
+top of the confirm line. `drawOptions()` has an identical-looking panel line — it was left at 280.
+The selftest asserts the last row clears the confirm line and the panel clears `VH`, so the next row
+added will say so instead of being found in a screenshot.
+
+**Verified:** `node tools/selftest_boost.js` → 30/30 (constants, `tryBoost`, the gauge, a real
+60fps recharge timed at ~5s vs ~11s, buying it in the store, the panel geometry). Screenshot of the
+garage in Chrome. `node tools/selftest_pad.js` still 60/60. **Not played by a human:** whether 1s of
+burn and a 4s floor feel right is a seat-of-the-pants question.
 
 ## 2026-11-09 — Controller support; MOUSE or CONTROLLER in OPTIONS
 

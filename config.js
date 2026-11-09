@@ -80,8 +80,9 @@ const FRAME_FRONT_PAD = 60, FRAME_BACK_PAD_H = 60, FRAME_BACK_PAD_V = 40;
 // leave you 90 units "over" and get slapped, which is the hard wall all over again.
 const BOOST_ADD   = 95;          // forward target/ceiling on top of the cruise band
 const BOOST_ACC   = 700;         // acceleration while it burns (CAR_ACC is 330)
-const BOOST_TIME  = 0.9;         // seconds one charge burns for
-const BOOST_COOL  = 10;          // seconds to recharge, counted from the end of the burn
+const BOOST_TIME  = 1.0;         // seconds one charge burns for (was 0.9 - too short to feel)
+const BOOST_COOL  = 10;          // seconds to recharge from the end of the burn, at BOOST level 0
+                                 // (the BOOST upgrade cuts it: see BOOST_COOL_PER_LEVEL in 3b)
 const BOOST_ROOM  = 130;         // extra front-of-frame room while it burns
 // how fast boostEase moves, as a multiplier per second. In hard, so the room is
 // there before the car is; out slow (~3s), so the front line never retreats out
@@ -115,6 +116,11 @@ const MISSILE_DMG = 34;          // missile, at the centre of its blast (radius 
 //            (6 x 1.5 = +9, so 7 -> 16 per bullet)
 //   missile  + MISSILE_DMG_PER_LEVEL of the BASE missile damage each, added, not
 //            compounded (6 x 20% = +120%, so 34 -> 74.8)
+//   boost    - BOOST_COOL_PER_LEVEL seconds off the boost recharge each
+//            (6 x 1s = 10s -> 4s). The recharge is what limits the boost, not its
+//            strength: the burn is 1s, so at level 0 you hold a charge 9% of the
+//            time. Raising BOOST_ADD instead would spend itself against the
+//            frame's front spring and gain no ground - see section 2.
 //
 // Armor and health stack: what it takes to wreck the car is HP / (1 - armor).
 // Base 200; all 6 health + all 6 armor = 440 / 0.64 = 687, 3.4x the base car
@@ -126,7 +132,8 @@ const HEAL_PICKUP = 0.175;          // green square heals this share of max hull
                                     // (was a flat 35). Idea for later: heal power as its own upgrade.
 const GUN_DMG_PER_LEVEL     = 1.5;
 const MISSILE_DMG_PER_LEVEL = 0.20;
-let   UPGRADES = { armor:0, health:0, gun:0, missile:0 };   // levels every run STARTS with (testing)
+const BOOST_COOL_PER_LEVEL  = 1.0;  // seconds off BOOST_COOL a level (10 -> 4 at level 6)
+let   UPGRADES = { armor:0, health:0, gun:0, missile:0, boost:0 };   // levels every run STARTS with (testing)
 
 // -----------------------------------------------------------------------------
 // 3c. THE SCRAP SAINTS - cash per kill, and their garage at the checkpoint

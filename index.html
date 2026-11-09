@@ -1328,7 +1328,7 @@ let runUp = Object.assign({}, UPGRADES);
 let cash = 0;                        // Scrap Saints money, this run
 let saintsPay = null;                // the "+$25" toast: { amt, t }
 function upgradeLv(k){ return clamp(Math.round(runUp[k] || 0), 0, UPGRADE_MAX); }
-function upgradeTotal(){ return ['armor','health','gun','missile'].reduce((n,k)=>n+upgradeLv(k), 0); }
+function upgradeTotal(){ return ['armor','health','gun','missile','boost'].reduce((n,k)=>n+upgradeLv(k), 0); }
 // share of each hit the armor takes away: 0 at level 0, ARMOR_MIN..ARMOR_MAX over levels 1..UPGRADE_MAX
 function armorCutAt(lv){
   if(lv <= 0) return 0;
@@ -1340,6 +1340,10 @@ function healPickup(c){ return Math.round(c.maxHp*HEAL_PICKUP); }
 function playerMaxHp(){ return CAR_HP + HEALTH_PER_LEVEL*upgradeLv('health'); }
 function gunDmgAt(lv){ return GUN_DMG + GUN_DMG_PER_LEVEL*lv; }
 function missileDmgAt(lv){ return MISSILE_DMG*(1 + MISSILE_DMG_PER_LEVEL*lv); }
+// BOOST upgrade: seconds of recharge. The 0.5 floor is insurance against a config
+// edit (a cooldown of 0 would hand the player a boost that never ends).
+function boostCoolAt(lv){ return Math.max(0.5, BOOST_COOL - BOOST_COOL_PER_LEVEL*lv); }
+function boostCool(){ return boostCoolAt(upgradeLv('boost')); }
 function gunDmg(c){ return gunDmgAt(c.isPlayer ? upgradeLv('gun') : 0); }
 function missileDmg(c){ return missileDmgAt(c.isPlayer ? upgradeLv('missile') : 0); }
 
@@ -1429,7 +1433,7 @@ function fireMissile(c){
 function tryBoost(c){
   if(!c || c.dead || c.pitT>0) return;
   if(c.boostT>0 || c.boostCD>0) return;
-  c.boostT = BOOST_TIME; c.boostCD = BOOST_COOL;
+  c.boostT = BOOST_TIME; c.boostCD = c.isPlayer ? boostCool() : BOOST_COOL;
   Snd.boost();
   cam.shake = Math.min(9, cam.shake + 1.2);
 }
@@ -5275,7 +5279,7 @@ function drawDriverHUD(){
   // BOOST. One continuous read of one number: it drains hot while the charge is
   // being spent, then fills cool over the recharge. Full and cyan = press SPACE.
   const burning = me.boostT>0;
-  const bv  = burning ? me.boostT/BOOST_TIME : 1 - me.boostCD/BOOST_COOL;
+  const bv  = burning ? me.boostT/BOOST_TIME : 1 - me.boostCD/boostCool();
   const bcol = burning ? '#ffe9a8' : me.boostCD>0 ? '#3f6a80' : '#7fd4ff';
   ctx.fillStyle = burning ? '#ffe9a8' : me.boostCD>0 ? '#5a4a5e' : '#7fd4ff';
   ctx.fillText('BST', hx+5, hy+24);
@@ -5967,8 +5971,8 @@ function drawMenu(){
 // upgrade levels (config 3b) or a repair, then CONTINUE into leg 2. Prices and
 // bounties are SAINTS in config.js. Leaving writes cash + levels into the
 // checkpoint, so a wreck on leg 2 restarts with what you bought.
-const STORE_ROWS = ['armor', 'health', 'gun', 'missile', 'repair', 'continue'];
-const STORE_LABEL = { armor:'ARMOR', health:'HEALTH', gun:'MACHINE GUN', missile:'MISSILE', repair:'REPAIR', continue:'CONTINUE' };
+const STORE_ROWS = ['armor', 'health', 'boost', 'gun', 'missile', 'repair', 'continue'];
+const STORE_LABEL = { armor:'ARMOR', health:'HEALTH', boost:'BOOST', gun:'MACHINE GUN', missile:'MISSILE', repair:'REPAIR', continue:'CONTINUE' };
 let storeIdx = 0, storeMsg = '', storeMsgT = 0;
 // every purchase is two steps: ENTER/click selects a row and asks, a second
 // ENTER/click on that same row confirms. ESC or moving away cancels.
@@ -6027,7 +6031,9 @@ function storeClick(){
   if(i !== storeIdx){ storeIdx = i; storeArmed = false; }
   storeChoose();
 }
-function storeRowY(i){ return 40 + 62 + i*28 + (STORE_ROWS[i] === 'continue' ? 8 : 0); }
+// pitch 26, not 28: the BOOST row made seven, and at 28 CONTINUE collided with the
+// confirm line at the foot of the panel
+function storeRowY(i){ return 40 + 62 + i*26 + (STORE_ROWS[i] === 'continue' ? 8 : 0); }
 function storeBuy(){
   const row = STORE_ROWS[storeIdx], me = cars[0];
   if(row === 'continue'){ closeStore(); return; }
@@ -6054,6 +6060,7 @@ function storeEffect(row){
   const pair = (a, b, unit) => max ? a + unit + '  (max)' : a + ' -> ' + b + unit;
   if(row === 'armor')   return pair(Math.round(armorCutAt(lv)*100) + '%', Math.round(armorCutAt(nx)*100) + '%', ' less damage');
   if(row === 'health')  return pair(me.maxHp, me.maxHp + HEALTH_PER_LEVEL, ' hull');
+  if(row === 'boost')   return pair(fmt1(boostCoolAt(lv)) + 's', fmt1(boostCoolAt(nx)) + 's', ' recharge');
   if(row === 'gun')     return pair(fmt1(gunDmgAt(lv)), fmt1(gunDmgAt(nx)), ' per bullet');
   if(row === 'missile') return pair(Math.round(missileDmgAt(lv)), Math.round(missileDmgAt(nx)), ' per hit');
   if(row === 'repair')  return 'hull ' + Math.ceil(me.hp) + '/' + me.maxHp + (me.hp < me.maxHp ? ' -> full' : '');
@@ -6063,7 +6070,7 @@ function drawStore(){
   const me = cars[0];
   ctx.save(); ctx.scale(PX, PX);
   ctx.fillStyle = 'rgba(7,4,15,.78)'; ctx.fillRect(0, 0, VW, VH);
-  const X = 110, Y = 40, W = 420, H = 280;
+  const X = 110, Y = 40, W = 420, H = 300;      // H 280 -> 300 for the seventh row
   ctx.fillStyle = 'rgba(18,10,32,.92)'; ctx.fillRect(X, Y, W, H);
   ctx.strokeStyle = 'rgba(34,240,255,.45)'; ctx.lineWidth = 1; ctx.strokeRect(X + 0.5, Y + 0.5, W - 1, H - 1);
   // the name
