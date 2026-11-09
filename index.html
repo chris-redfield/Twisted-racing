@@ -845,7 +845,9 @@ function runEvents(){
     Snd.pickup();
     openStore();                            // the Scrap Saints' garage
   }
-  if(!street && roadProject(cars[0].x, cars[0].y).s >= ROAD.gateS) enterCity();
+  // the end of leg 2: into the city, and the Saints' second garage on the way in
+  // (a restart at the city checkpoint goes through enterCity alone: no store)
+  if(!street && roadProject(cars[0].x, cars[0].y).s >= ROAD.gateS){ enterCity(); openStore(); }
 }
 // No cut, no screen: the scroll stops, the camera starts following the car and
 // the driving goes free. Everything chasing you carries on into the streets.
@@ -1276,6 +1278,8 @@ function armorCutAt(lv){
   return UPGRADE_MAX > 1 ? ARMOR_MIN + (ARMOR_MAX - ARMOR_MIN)*(lv - 1)/(UPGRADE_MAX - 1) : ARMOR_MAX;
 }
 function armorCut(){ return armorCutAt(upgradeLv('armor')); }
+// a green square: a share of the hull you have, so it keeps its worth as HEALTH levels add up
+function healPickup(c){ return Math.round(c.maxHp*HEAL_PICKUP); }
 function playerMaxHp(){ return CAR_HP + HEALTH_PER_LEVEL*upgradeLv('health'); }
 function gunDmgAt(lv){ return GUN_DMG + GUN_DMG_PER_LEVEL*lv; }
 function missileDmgAt(lv){ return MISSILE_DMG*(1 + MISSILE_DMG_PER_LEVEL*lv); }
@@ -2110,7 +2114,7 @@ function updatePads(dt){
     if(!p.item){ p.timer-=dt; if(p.timer<=0) recycleAhead(p); continue; }
     p.bob=(p.bob||0)+dt;
     if(!me.dead && Math.hypot(me.x-p.x, me.y-p.y)<24){
-      if(p.item==='health') me.hp=Math.min(me.maxHp,me.hp+35);
+      if(p.item==='health') me.hp=Math.min(me.maxHp, me.hp + healPickup(me));
       if(p.item==='missile') me.missiles=Math.min(5,me.missiles+2);
       if(p.item==='mine') me.minesLeft=Math.min(3,me.minesLeft+1);
       p.item=null; p.timer=rnd(0.5,1.5);
@@ -3239,8 +3243,10 @@ function drawBuilding2D(b, alpha){
     ctx.moveTo(sa.x, sa.y); ctx.lineTo(sc.x, sc.y);
     ctx.lineTo(sc.x, sc.y - H); ctx.lineTo(sa.x, sa.y - H); ctx.closePath(); ctx.fill();
     // windows: one per WIN_STEP along the face, one per storey
-    const nw = Math.floor(L / WIN_STEP), nf = Math.floor((b.h - 6) / FLOOR_H);
-    const ww = 5/L;
+    // a style's storey scale (b.fsc) grows floors and windows together
+    const fk = b.fsc || 1, FH = FLOOR_H*fk;
+    const nw = Math.floor(L / (WIN_STEP*fk)), nf = Math.floor((b.h - 6*fk) / FH);
+    const ww = 5*fk/L;
     for(let wi=0; wi<nw; wi++){
       const t0 = (wi + 0.5)/nw - ww/2, t1 = t0 + ww;
       const x0 = sa.x + (sc.x-sa.x)*t0, y0 = sa.y + (sc.y-sa.y)*t0;
@@ -3248,7 +3254,7 @@ function drawBuilding2D(b, alpha){
       for(let fl=0; fl<nf; fl++){
         const lit = hash3(b.seed*31 + i, wi, fl + b.tier*101) < b.lit;
         ctx.fillStyle = lit ? '#e8b860' : shade(b.col, 0.4);
-        const zA = lift(fl*FLOOR_H + 4), zB = lift(fl*FLOOR_H + 9);
+        const zA = lift(fl*FH + 4*fk), zB = lift(fl*FH + 9*fk);
         ctx.beginPath();
         ctx.moveTo(x0, y0 - zA); ctx.lineTo(x1, y1 - zA);
         ctx.lineTo(x1, y1 - zB); ctx.lineTo(x0, y0 - zB); ctx.closePath(); ctx.fill();
@@ -3286,12 +3292,20 @@ const OUT_M = OUTSKIRTS.W + 60;
 function outZone(s){
   return s < ROAD.bendS0 - OUT_M || (s > ROAD.bendS1 + OUT_M && s < ROAD.gateS - 40);
 }
+// each leg is cut in its own style (CITY_LOOK): leg 1 before the bend, leg 2 after.
+// A chunk can't straddle the two - the bend's OUT_M margin either side is wider.
+const OUT_STYLE = {};
+for(const leg of ['LEG1', 'LEG2']){
+  const st = CITY_STYLES[CITY_LOOK[leg]];
+  OUT_STYLE[leg] = { st, cut:styleCut(st), plot:stylePlot(st) };
+}
 function makeOutChunk(k, side){
   const O = OUTSKIRTS, rng = cityRng(hash3(k, side > 0 ? 1 : 2, O.SEED)*4294967296);
-  const S0 = k*O.CH, S1 = S0 + O.CH, XST = 60;
+  const S0 = k*O.CH, S1 = S0 + O.CH;
+  const L = OUT_STYLE[S0 < ROAD.bendS0 ? 'LEG1' : 'LEG2'], st = L.st, XST = st.XST, PV = st.PAVE;
   const roads = [];
   const lots = cityCut(rng, { x0:O.IN, y0:S0 + XST, x1:O.W, y1:S1, pad:{ n:XST, s:0, w:0, e:0 } },
-                       0, roads, OUTSKIRTS_CUT);
+                       0, roads, L.cut);
   roads.push({ axis:'h', w:XST, x0:O.IN, x1:O.W, y0:S0, y1:S0 + XST });   // a cross street per chunk
   // every block is built on, sparsely; more of each block as you near the city
   const built = lerp(O.BUILT0, O.BUILT1, clamp((S0 + S1)/2/ROAD.gateS, 0, 1));
@@ -3304,20 +3318,23 @@ function makeOutChunk(k, side){
   const out = { k, side, roads:[], blocks:[], bld:[] };
   for(const r of roads){ const q = quad(r); if(q) out.roads.push(q); }
   for(const lot of lots){
-    const core = { x0:lot.x0 + PAVE, y0:lot.y0 + PAVE, x1:lot.x1 - PAVE, y1:lot.y1 - PAVE };
-    const plots = cityPlots(rng, core, [], OUTSKIRTS_PLOT);
+    const core = { x0:lot.x0 + PV, y0:lot.y0 + PV, x1:lot.x1 - PV, y1:lot.y1 - PV };
+    const plots = cityPlots(rng, core, [], L.plot);
     const bq = quad(lot); if(bq) out.blocks.push(bq);
     const keep = (rng.next()*plots.length)|0;                  // never a block left bare
     for(let pi=0; pi<plots.length; pi++){
       const pl = plots[pi];
-      const up = rng.chance(built) || pi === keep, tall = rng.chance(O.TOWER);
-      const h = tall ? rng.range(O.TOWER_H0, O.TOWER_H1) : rng.range(O.H0, O.H1);
+      const up = rng.chance(built) || pi === keep;
+      const h = styleHeight(st, rng);
       const seed = (rng.next()*1e9)|0, col = BLD_COLS[(rng.next()*BLD_COLS.length)|0];
       const lit = (0.16 + rng.next()*0.36)*O.LIT;
       if(!up) continue;
       const q = quad(pl); if(!q) continue;
       const f = roadFrame((pl.y0 + pl.y1)/2);
-      out.bld.push({ q, h, tier:0, seed, col, lit, out:true, s0:pl.y0, s1:pl.y1,
+      // on the camera's side of the road a building leans up over it (drawn
+      // see-through): its roof may reach at most FRONT_REACH into the road on screen
+      const hh = side*f.ny > 0.3 ? Math.min(h, (pl.x0 - ROAD_HW)*KY + O.FRONT_REACH) : h;
+      out.bld.push({ q, h:hh, tier:0, seed, col, lit, out:true, s0:pl.y0, s1:pl.y1, fsc:st.FLOOR,
                      nx:side*f.nx + 0, ny:side*f.ny + 0 });
     }
   }
@@ -3380,9 +3397,9 @@ function drawOutskirtsGround(){
 //
 // Generated in u-space (u = |x|, distance out from the centre line), mirrored
 // into world x at the end.
-// ...but never under CITY_ROAD_MIN. The 50s and 58s were too tight to drive, in
-// both directions alike (measured: both axes went down to 50), so the deep cuts
-// now all come out at 70 - the same as the first lane-sized cut.
+// Street widths come from the style's ROADS by depth of cut, never under its
+// ROAD_MIN (in SLUMS the 50s and 58s were too tight to drive, measured, so they
+// come out at 70).
 const CITY_CELL = 8;                // ground lookup resolution
 const CITY_MCOLS = Math.ceil((CITY_W - ROAD_HW)/CITY_CELL), CITY_MROWS = Math.ceil(CITY_CH/CITY_CELL);
 // the skyline giants, pushed out past the city wall so they stay a backdrop
@@ -3401,10 +3418,21 @@ function cityRng(seed){
            pick: arr => arr[(next()*arr.length)|0] };
 }
 const snap4 = v => Math.round(v/4)*4;
-const cityRoadW = d => Math.max(CITY_ROAD_MIN, CITY_ROADS[Math.min(d, CITY_ROADS.length - 1)]);
-// the cut's numbers as one set, so the outskirts can cut the same way, sparser
-const CITY_CUT = { LOT_MIN, LOT_MAX, LOT_STOP, LOT_JITTER, LOT_ASPECT, LOT_MERGE, LOT_MERGE_MAX, roadW:cityRoadW };
-const CITY_PLOT = { PLOT_MIN, PLOT_MAX, PLOT_DEEP, PLOT_DEEP_MAX, PLOT_STOP };
+// a style (config 5a) as the cut's and the plots' number sets, so the city and
+// each leg's outskirts cut the same way at their own scale
+function styleCut(st){
+  return { LOT_MIN:st.LOT_MIN, LOT_MAX:st.LOT_MAX, LOT_STOP:st.LOT_STOP, LOT_JITTER:st.LOT_JITTER,
+           LOT_ASPECT:st.LOT_ASPECT, LOT_MERGE:st.LOT_MERGE, LOT_MERGE_MAX:st.LOT_MERGE_MAX,
+           roadW: d => Math.max(st.ROAD_MIN, st.ROADS[Math.min(d, st.ROADS.length - 1)]) };
+}
+function stylePlot(st){
+  return { PLOT_MIN:st.PLOT_MIN, PLOT_MAX:st.PLOT_MAX, PLOT_DEEP:st.PLOT_DEEP, PLOT_DEEP_MAX:st.PLOT_DEEP_MAX, PLOT_STOP:st.PLOT_STOP };
+}
+// a building's height in a style: mostly walk-ups with a skyline, now and then a tower
+function styleHeight(st, rng){
+  return rng.chance(st.TOWER) ? rng.range(st.TOWER_H[0], st.TOWER_H[1]) : rng.range(st.H[0], st.H[1])*(0.6 + 0.4*rng.next());
+}
+const CITY_CUT = styleCut(CITY_STYLE), CITY_PLOT = stylePlot(CITY_STYLE);
 
 // the party's cut(), with x = u. `pad` is the road width on each side of the
 // piece, so a road laid across it runs into the roads at both ends.
@@ -3505,17 +3533,16 @@ function makeCityChunk(k, side){
   const mir = r => side > 0 ? { x0:r.x0, x1:r.x1 } : { x0:-r.x1, x1:-r.x0 };
   const blocks = [], cores = [], bld = [];
   for(const lot of lots){
-    const core = { x0:lot.x0 + PAVE, y0:lot.y0 + PAVE, x1:lot.x1 - PAVE, y1:lot.y1 - PAVE };
+    const P = CITY_STYLE.PAVE, core = { x0:lot.x0 + P, y0:lot.y0 + P, x1:lot.x1 - P, y1:lot.y1 - P };
     fill(lot, 2); fill(core, 3);
     const lm = mir(lot), cm = mir(core);
     blocks.push({ x0:lm.x0, x1:lm.x1, y0:lot.y0, y1:lot.y1 });
     cores.push({ x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1 });
     for(const pl of cityPlots(rng, core, [])){
       const pm = mir(pl), seed = (rng.next()*1e9)|0;
-      // mostly walk-ups, a row of them with a skyline; now and then a tower
-      const h = rng.chance(0.07) ? rng.range(150, 320) : rng.range(26, 96)*(0.6 + 0.4*rng.next());
+      const h = styleHeight(CITY_STYLE, rng);
       bld.push({
-        x0:pm.x0, x1:pm.x1, y0:pl.y0, y1:pl.y1, h, tier:0, seed, nx:0, ny:0, city:true,
+        x0:pm.x0, x1:pm.x1, y0:pl.y0, y1:pl.y1, h, tier:0, seed, nx:0, ny:0, city:true, fsc:CITY_STYLE.FLOOR,
         q:[ { x:pm.x0, y:pl.y0 }, { x:pm.x1, y:pl.y0 }, { x:pm.x1, y:pl.y1 }, { x:pm.x0, y:pl.y1 } ],
         col: BLD_COLS[(rng.next()*BLD_COLS.length)|0],
         lit: 0.16 + rng.next()*0.36
@@ -4322,23 +4349,24 @@ function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog, slant){
   const plinth = Math.max(1, Math.round(5*scale));
   if(y1-plinth > y0) rcSpan(x, y1-plinth, y1, r.col, f*0.6);
 
-  const pitch = scale*FLOOR_H;                       // storey height in pixels
+  const fk = (r.bldg && r.bldg.fsc) || 1, FH = FLOOR_H*fk, WS = WIN_STEP*fk, WA = WIN_A*fk, WB = WIN_B*fk;
+  const pitch = scale*FH;                            // storey height in pixels
   if(pitch < 0.35) return;                           // storeys packed 3 to a pixel: silhouette
   const step = perp*slant/RC_VD;                     // wall length this column covers
-  const far = step > WIN_STEP*0.6 || pitch < 3;
-  const b = r.bldg, wp = along % WIN_STEP;
-  let wi = (along / WIN_STEP)|0;
+  const far = step > WS*0.6 || pitch < 3;
+  const b = r.bldg, wp = along % WS;
+  let wi = (along / WS)|0;
   if(!far){
     // does [along - step/2, along + step/2] touch this pitch's window?
     const h = step/2;
-    if(wp + h < WIN_A || wp - h > WIN_B){
+    if(wp + h < WA || wp - h > WB){
       // not this one - but the strip may reach into a neighbour's window
-      if(wp - h < WIN_B - WIN_STEP) wi -= 1;
-      else if(wp + h > WIN_STEP + WIN_A) wi += 1;
+      if(wp - h < WB - WS) wi -= 1;
+      else if(wp + h > WS + WA) wi += 1;
       else return;                                   // between windows
     }
   }
-  const nf = Math.floor((r.h - 6) / FLOOR_H);
+  const nf = Math.floor((r.h - 6*fk) / FH);
   const li = (fog*31.99)|0;
   const litCol = litCols()[li], darkCol = far || RC_DIRECT ? null : shade(r.col, f*0.45);
   const lit32 = LIT_32[li], dark32 = far ? 0 : rcPacked(r.col, f*0.45);
@@ -4348,7 +4376,7 @@ function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog, slant){
     if(far && !lit) continue;                        // far away only the lights read
     // ...and only a LIGHTS_MIX share of them, picked by hash so it never flickers
     if(far && hash3(b.seed*17 + seg, wi*3 + 1, fl) >= LIGHTS_MIX) continue;
-    const zA = fl*FLOOR_H + WIN_A, zB = fl*FLOOR_H + WIN_B;
+    const zA = fl*FH + WA, zB = fl*FH + WB;
     let ya = (RC_HORIZON + (EYE_Z - zB)*scale)|0, yb = (RC_HORIZON + (EYE_Z - zA)*scale)|0;
     if(yb <= ya) yb = ya + 1;                        // a light is never thinner than a pixel
     if(yb <= 0) break;                               // storeys above the top of the view
@@ -5827,7 +5855,7 @@ function storeEffect(row){
   if(row === 'gun')     return pair(fmt1(gunDmgAt(lv)), fmt1(gunDmgAt(nx)), ' per bullet');
   if(row === 'missile') return pair(Math.round(missileDmgAt(lv)), Math.round(missileDmgAt(nx)), ' per hit');
   if(row === 'repair')  return 'hull ' + Math.ceil(me.hp) + '/' + me.maxHp + (me.hp < me.maxHp ? ' -> full' : '');
-  return 'on to leg 2';
+  return street ? 'into the city' : 'on to leg 2';
 }
 function drawStore(){
   const me = cars[0];
@@ -5842,7 +5870,7 @@ function drawStore(){
   ctx.shadowColor = NEON.MAGENTA; ctx.shadowBlur = 10 + 3*Math.sin(menuT*3);
   ctx.fillStyle = NEON.MAGENTA; ctx.fillText('THE SCRAP SAINTS', X + 16, Y + 30);
   ctx.shadowBlur = 0;
-  ctx.font = '9px monospace'; ctx.fillStyle = NEON.DIM; ctx.fillText('GARAGE  ·  CHECKPOINT', X + 18, Y + 44);
+  ctx.font = '9px monospace'; ctx.fillStyle = NEON.DIM; ctx.fillText(street ? 'GARAGE  ·  CITY GATE' : 'GARAGE  ·  CHECKPOINT', X + 18, Y + 44);
   ctx.textAlign = 'right'; ctx.font = 'bold 16px monospace'; ctx.fillStyle = '#e0b73c';
   ctx.fillText('$' + cash, X + W - 16, Y + 30);
   ctx.font = '8px monospace'; ctx.fillStyle = NEON.DIM; ctx.fillText(convoyKills + ' kills paid out', X + W - 16, Y + 44);

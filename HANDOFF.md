@@ -7,6 +7,11 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-08 | [Green square heals 17.5% of max hull](#2026-11-08--green-square-heals-175-of-max-hull) | built, verified in Chrome |
+| 2026-11-08 | [Second store at the city gate; city twice as wide](#2026-11-08--second-store-at-the-city-gate-city-twice-as-wide) | built, verified in Chrome |
+| 2026-11-08 | [City view distance defaults to 7000](#2026-11-08--city-view-distance-defaults-to-7000) | built; frame cost not measured |
+| 2026-11-08 | [City styles per leg: SLUMS / WIDE / DOWNTOWN](#2026-11-08--city-styles-per-leg-slums--wide--downtown) | built in index.html, screenshots; not played |
+| 2026-11-08 | [City lab: street and building scale presets](#2026-11-08--city-lab-street-and-building-scale-presets) | superseded: lab removed, folded into the game |
 | 2026-11-07 | [Mines on Q](#2026-11-07--mines-on-q) | built, verified in Chrome |
 | 2026-11-07 | [Store: select, then confirm](#2026-11-07--store-select-then-confirm) | built, verified in Chrome |
 | 2026-11-07 | [ESC pauses, never ends a run](#2026-11-07--esc-pauses-never-ends-a-run) | built |
@@ -31,6 +36,106 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+
+
+
+
+
+## 2026-11-08 — Green square heals 17.5% of max hull
+
+The run's health pickup was a flat +35. It now heals `healPickup(c)` = `round(maxHp * HEAL_PICKUP)`, with
+`HEAL_PICKUP` 0.175 in config.js §3b. Verified in Chrome: 35 / 56 / 77 at HEALTH levels 0 / 3 / 6 (max 200 / 320 / 440).
+The old race stages' pads still heal a flat 35 (no upgrades there).
+
+**User idea, not built:** heal power as its own upgrade or skill (e.g. a store row that raises `HEAL_PICKUP`).
+
+## 2026-11-08 — Second store at the city gate; city twice as wide
+
+**Gate store:** `runEvents` now calls `enterCity(); openStore();` when the car crosses `ROAD.gateS`. `enterCity`
+saves the city checkpoint first, so `closeStore` writes the purchases into it. A restart at the city checkpoint
+(and the C skip) goes through `enterCity` alone, so there is no second store visit. The subtitle reads
+"GARAGE · CITY GATE" and CONTINUE reads "into the city" (both keyed on `street`).
+
+**Verified in Chrome:**
+- the store opened at the gate with `street` true;
+- a gun purchase was saved into `checkpoint.up`;
+- a restart kept the cash and levels and didn't reopen the store.
+
+**City width:** `CITY_STYLES.DOWNTOWN.W` went 2000 → 4000 (3820 of city either side of the highway).
+- Chunk generation is median about 1 ms, max 4 ms (Node, `Date` resolution); there are 113 buildings and 15 roads per chunk, up from 52 and 7.
+- The spawner, the flow grid and the cull are all relative to the player, so nothing else changed.
+- The map's zoomed-out panel shows the wider city.
+
+## 2026-11-08 — City view distance defaults to 7000
+
+`VIEW_D` in config.js §8 went from 3600 to 7000, the top of `VIEW_STEPS`; 9 and 0 still step it on foot.
+I measured buildings handed to the raycaster downtown, from 8 bearings: on average 120 → 194, in the worst bearing
+210 → 468 (`VIEW_LOD` already drops the small far plots). Frame time is not measured (headless Chrome has
+no real clock); the F-key overlay on foot shows `walkMs`. If it costs too much, try 5000.
+
+## 2026-11-08 — City styles per leg: SLUMS / WIDE / DOWNTOWN
+
+The lab's presets are now **`CITY_STYLES`** in `config.js` §5a, and **`CITY_LOOK`** picks one per part of the run:
+- **leg 1 = SLUMS** (the old city numbers);
+- **leg 2 = WIDE**;
+- **the city = DOWNTOWN**.
+
+Each style holds:
+- street widths by cut depth and the minimum width;
+- the cross street and outer road;
+- the block (`LOT_*`), pavement and plot (`PLOT_*`) sizes;
+- building heights, tower share and tower height;
+- `FLOOR`, the storey scale. Buildings carry `fsc`, and both renderers scale storeys and windows by it.
+
+**City:** §6's `CITY_W`/`XST`/`OUTR` come from `CITY_STYLE` (= `CITY_STYLES[CITY_LOOK.CITY]`). The loose
+`LOT_*`, `PLOT_*`, `PAVE`, `CITY_ROADS` and `CITY_ROAD_MIN` constants are gone, as are `OUTSKIRTS_CUT`/`OUTSKIRTS_PLOT`
+and the outskirts' own heights. `styleCut`, `stylePlot` and `styleHeight` in index.html turn a style into
+the cut/plot number sets.
+
+**Outskirts:** a chunk takes LEG1's style if it starts before `bendS0`, otherwise LEG2's. A chunk can't
+straddle the two because of the bend's `OUT_M` margin. They stay sparse (`BUILT0/1`) and scenery-only;
+side streets are drivable only in the city, as before.
+
+**Front-reach cap:** on leg 1 the buildings below the road lean up over it on screen (drawn see-through at 42%).
+With SLUMS heights, 10 of 490 front buildings reached more than 40 into the 223-tall road, and the tallest covered all of it.
+Now a front building's height is capped at `(u0 - ROAD_HW)*KY + OUTSKIRTS.FRONT_REACH` (40), so the maximum reach
+is 40, measured. Leg 2 has no front buildings (its road runs up the screen).
+
+**Known:** in DOWNTOWN the tall faces lean over the east-west streets; the user will look at that later.
+
+## 2026-11-08 — City lab: street and building scale presets
+
+**Removed 2026-11-08.** The presets became `CITY_STYLES` in config.js (see the entry above); the lab file and its generator are deleted.
+
+**File (was):** `scrapheap-city-lab.html` was a fork. It is **generated** by `python3 tools/make_city_lab.py` from
+`index.html`; don't hand-edit it, since it would be overwritten. Re-run the script after any change to
+`index.html`. Every patch asserts that it matched exactly once.
+
+**What it does:** **L** (from the menu or in a run) cycles `CITY_PRESETS`, wipes the chunk cache and
+restarts at the city gate (`skipToCity`), so the same seed is driven under each preset. A tag at the top
+names the live preset; a banner lists its numbers for 3 s.
+
+**How it works:** the city constants (`CITY_W`, `CITY_MCOLS`, `CITY_XST`, `CITY_OUTR`, road widths, pavement,
+heights) read from a live `CL` object; `CITY_CUT`/`CITY_PLOT` are mutated in place. Buildings
+carry `fsc` (storey scale): both renderers (top-down and raycaster) scale `FLOOR_H`, `WIN_STEP`,
+`WIN_A/B` and the window width by it. The outskirts and roadside lots are untouched.
+
+**Why the city looked small** (car 38×20, highway 360):
+- every street past the first cut was 70 (`CITY_ROAD_MIN`);
+- plots were 44–120;
+- a storey was 12, a third of a car, so windows were drawn at half scale.
+
+**Presets, measured within ±1500 of the gate:**
+
+| Preset | Streets (count by width) | Buildings | Median height | Median plot short side |
+|---|---|---|---|---|
+| CURRENT | 52 of the 64 at 70 | 827 | 51 | 52 |
+| WIDE | 90–130 | 335 | 82 | 86 |
+| DOWNTOWN | 100–150 | 204 | 261 | 138 |
+
+**Watch when driving:** in DOWNTOWN the tall south faces lean over the east-west streets in the top-down
+view. **Next:** the user picks presets, then a district rule (e.g. which preset by chunk) folds into `index.html`.
 
 ## 2026-11-07 — Mines on Q
 

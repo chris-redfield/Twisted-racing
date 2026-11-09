@@ -122,6 +122,8 @@ const MISSILE_DMG = 34;          // missile, at the centre of its blast (radius 
 const UPGRADE_MAX = 6;
 const ARMOR_MIN = 0.06, ARMOR_MAX = 0.36;   // +6 % a level (was 10..60 %)
 const HEALTH_PER_LEVEL      = 40;
+const HEAL_PICKUP = 0.175;          // green square heals this share of max hull: 35 at 200, 56 at 320, 77 at 440
+                                    // (was a flat 35). Idea for later: heal power as its own upgrade.
 const GUN_DMG_PER_LEVEL     = 1.5;
 const MISSILE_DMG_PER_LEVEL = 0.20;
 let   UPGRADES = { armor:0, health:0, gun:0, missile:0 };   // levels every run STARTS with (testing)
@@ -201,12 +203,45 @@ const BLD_COLS  = ['#4a3c52','#56463e','#3e4454','#5a4a4c','#48394a','#3c3c4a','
 const FLOOR_H = 12, WIN_STEP = 13;   // storey height and window pitch, world units
 
 // -----------------------------------------------------------------------------
+// 5a. CITY STYLES - one scale of streets and buildings per part of the run
+// -----------------------------------------------------------------------------
+// Tried side by side in the (now removed) city lab. Units are world units: the
+// car is 38 long x 20 wide, the highway 360 wide.
+//   W        the city wall's distance from the centre line (city only)
+//   ROADS    street width by depth of cut, avenues first; never under ROAD_MIN
+//   XST/OUTR the cross street atop every chunk / the road down the outer edge
+//   LOT_*    blocks (the cut);  PAVE pavement ring;  PLOT_* building plots
+//   H        normal building heights; TOWER = share of towers, TOWER_H theirs
+//   FLOOR    storey scale: 1 = FLOOR_H (12) a storey; windows grow with it
+const CITY_STYLES = {
+  // tight streets, small walk-ups: the slums along leg 1 (the city as it was)
+  SLUMS:    { W:1400, ROADS:[86,70,58,50], ROAD_MIN:70, XST:92, OUTR:78,
+              LOT_MIN:150, LOT_MAX:440, LOT_STOP:0.3, LOT_JITTER:0.75, LOT_ASPECT:1.5, LOT_MERGE:0.3, LOT_MERGE_MAX:560,
+              PAVE:16, PLOT_MIN:44, PLOT_MAX:120, PLOT_DEEP:44, PLOT_DEEP_MAX:130, PLOT_STOP:0.2,
+              H:[26,96], TOWER:0.07, TOWER_H:[150,320], FLOOR:1 },
+  // real streets, mid-rise: leg 2
+  WIDE:     { W:1700, ROADS:[130,110,100,90], ROAD_MIN:90, XST:120, OUTR:100,
+              LOT_MIN:200, LOT_MAX:600, LOT_STOP:0.3, LOT_JITTER:0.75, LOT_ASPECT:1.5, LOT_MERGE:0.3, LOT_MERGE_MAX:760,
+              PAVE:20, PLOT_MIN:80, PLOT_MAX:200, PLOT_DEEP:70, PLOT_DEEP_MAX:200, PLOT_STOP:0.2,
+              H:[45,150], TOWER:0.10, TOWER_H:[220,450], FLOOR:1.5 },
+  // boulevards and high-rises: the city centre (part 3). W doubled 2000 -> 4000 (2026-11-08):
+  // the city was a tall thin strip; it now spreads 3820 out either side of the highway
+  DOWNTOWN: { W:4000, ROADS:[150,120,110,100], ROAD_MIN:100, XST:140, OUTR:110,
+              LOT_MIN:300, LOT_MAX:760, LOT_STOP:0.3, LOT_JITTER:0.7, LOT_ASPECT:1.5, LOT_MERGE:0.3, LOT_MERGE_MAX:900,
+              PAVE:24, PLOT_MIN:120, PLOT_MAX:260, PLOT_DEEP:110, PLOT_DEEP_MAX:260, PLOT_STOP:0.3,
+              H:[120,450], TOWER:0.25, TOWER_H:[500,900], FLOOR:1.6 },
+};
+// which style each part of the run is built in
+const CITY_LOOK = { LEG1:'SLUMS', LEG2:'WIDE', CITY:'DOWNTOWN' };
+
+// -----------------------------------------------------------------------------
 // 5b. THE OUTSKIRTS (legs 1 and 2) - the same BSP cut as the city, sparse
 // -----------------------------------------------------------------------------
-// The edge of the city: the same blocks and little unmarked streets, but every
-// block is only partly built - a few low buildings with gaps between them. It
-// fills in as you go: BUILT0 of a block's plots have a building at the start of
-// leg 1, BUILT1 by the city gate (every block keeps at least one).
+// The edge of the city: the same blocks and unmarked streets, but every block is
+// only partly built, with gaps between the buildings. It fills in as you go:
+// BUILT0 of a block's plots have a building at the start of leg 1, BUILT1 by the
+// city gate (every block keeps at least one). The sizes - streets, blocks,
+// plots, heights, storeys - come from CITY_LOOK.LEG1 / LEG2 (section 5a).
 // The road's barrier never opens here: it's scenery. (The bend keeps the old
 // rows of lots: a cut can't follow a curve.)
 const OUTSKIRTS = {
@@ -216,14 +251,10 @@ const OUTSKIRTS = {
   W:       1150,   // and run out to here
   BUILT0:  0.30,   // share of a block's plots with a building at the start...
   BUILT1:  0.65,   // ...and at the city gate
-  H0: 16, H1: 58,  // building heights (most of them)
-  TOWER:   0.025,  // the odd taller one
-  TOWER_H0: 90, TOWER_H1: 170,
   LIT:     0.55,   // lit windows relative to the city's (it's darker out here)
+  FRONT_REACH: 40, // a building on the camera's side of the road (leg 1's lower side) leans
+                   // over it on screen; its roof may reach this far into the road (road = 223)
 };
-const OUTSKIRTS_CUT  = { LOT_MIN:190, LOT_MAX:560, LOT_STOP:0.40, LOT_JITTER:0.85, LOT_ASPECT:1.5,
-                         LOT_MERGE:0.45, LOT_MERGE_MAX:700, roadW: d => d < 1 ? 66 : 54 };
-const OUTSKIRTS_PLOT = { PLOT_MIN:56, PLOT_MAX:140, PLOT_DEEP:56, PLOT_DEEP_MAX:150, PLOT_STOP:0.25 };
 
 // -----------------------------------------------------------------------------
 // 6. THE CITY (part 3) - a BSP-cut strip of blocks either side of the highway
@@ -231,18 +262,14 @@ const OUTSKIRTS_PLOT = { PLOT_MIN:56, PLOT_MAX:140, PLOT_DEEP:56, PLOT_DEEP_MAX:
 // Any street whose cut reaches the highway opens a gap in the barrier, which is
 // how the car gets in and out. A chunk is cut from a seed made of (chunk, side),
 // so the same stretch of road is always the same city and nothing is saved.
+// The sizes are the CITY_LOOK.CITY style (section 5a); edit them there.
 const CITY_SEED  = 7717;
 const CITY_CH    = 1400;            // chunk length along the road
-const CITY_W     = 1400;            // the strip's outer edge (the city wall)
 const CITY_IN    = ROAD_HW + 6;     // lots start just past the barrier
-const CITY_XST   = 92;              // the cross street at the top of every chunk
-const CITY_OUTR  = 78;              // the road down the strip's outer edge
-const CITY_ROADS = [86, 70, 58, 50];// road width by depth of cut: avenues first, lanes last
-const CITY_ROAD_MIN = 70;           // ...but never under this (50s and 58s were undrivable)
-const LOT_MIN = 150, LOT_MAX = 440, LOT_STOP = 0.3, LOT_JITTER = 0.75;
-const LOT_ASPECT = 1.5, LOT_MERGE = 0.3, LOT_MERGE_MAX = 560;
-const PAVE = 16;                    // pavement ring round every block
-const PLOT_MIN = 44, PLOT_MAX = 120, PLOT_DEEP = 44, PLOT_DEEP_MAX = 130, PLOT_STOP = 0.2;
+const CITY_STYLE = CITY_STYLES[CITY_LOOK.CITY];
+const CITY_W     = CITY_STYLE.W;    // the strip's outer edge (the city wall)
+const CITY_XST   = CITY_STYLE.XST;  // the cross street at the top of every chunk
+const CITY_OUTR  = CITY_STYLE.OUTR; // the road down the strip's outer edge
 const CITY_WALL_H = 70;             // the wall round the outside of the strip
 // the skyline giants, pushed out past the city wall so they stay a backdrop
 const BLD_SKY_CITY = { step:260, empty:0.25, in0:CITY_W+260, in1:CITY_W+700,
@@ -297,7 +324,7 @@ const WALK_PITCH_RATE = 1.4;         // rad/s, Up/Down arrows
 // 8. FIRST-PERSON VIEW AND QUALITY
 // -----------------------------------------------------------------------------
 const VIEW_STEPS = [1150, 1800, 2600, 3600, 5000, 7000];   // what 9 / 0 step through
-let   VIEW_D = 3600;                 // how far you see on foot
+let   VIEW_D = 7000;                 // how far you see on foot (default = the top step; 9 brings it in if it costs too much)
 const VIEW_LOD = 900, VIEW_LOD_PX = 2.5;   // past VIEW_LOD, skip buildings under this many px
 let   RC_FOV = 95 * Math.PI/180;     // field of view (- = to tune)
 let   EYE_Z  = 26;                   // gunner's eye height ([ ] to tune)
