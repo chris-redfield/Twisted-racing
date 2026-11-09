@@ -20,6 +20,10 @@
 <script src="fpsgun.js"></script>
 <script src="pad.js"></script>
 <script src="assets/guns/guns-2d.js"></script>
+<script src="assets/enemies/enemies-2d.js"></script>
+<script src="assets/enemies/sentry-vox.js"></script>
+<script src="assets/enemies/sentry-vox-64.js"></script>
+<script src="foe.js"></script>
 <!-- voxel cars for the GARAGE (tools/car_voxelize.py). A missing file just drops that car from the list. -->
 <script src="assets/voxcars/aspen-64.js"></script>
 <script src="assets/voxcars/sports-64.js"></script>
@@ -105,6 +109,7 @@ function rescale(){
   makePatterns();
   if(race && track) makeTrack();                // loop paths bake S into their coords
   CAR2D.clear();                                // sheets bake S into their bitmaps
+  clearFoeSheets();                             // ...and so do the foes' (foe.js)
   for(const c of cars) c.sprite = bakeCarSprites(c);
   resize();
 }
@@ -311,6 +316,14 @@ function onPress(code){
   if(devMode && state==='play' && stage==='run' && !street){
     if(code==='KeyK'){ cash += SAINTS.DEV_CASH; saintsPay = { amt:SAINTS.DEV_CASH, t:1.8 }; }
     if(code==='KeyJ'){ openStore(); return; }
+  }
+  // Z drops a sentry 120 units ahead of you, facing back: the only way to look at
+  // one until something spawns them for real
+  // X: voxel model <-> the flat picture, to compare them in place
+  if(code==='KeyX' && state==='play'){ walkSay('FOE: ' + foeCycleRender()); return; }
+  if(code==='KeyZ' && state==='play' && onFoot){
+    spawnFoe(walker.x + Math.cos(walker.a)*120, walker.y + Math.sin(walker.a)*120, walker.a + Math.PI);
+    return;
   }
   if(state==='options'){
     if(code==='ArrowUp'||code==='KeyW')        optMove(-1);
@@ -4551,6 +4564,7 @@ function gatherBillboards(camX, camY, bearing){
     if(e > 1) continue;                           // off the driving pane: off this one too
     add(c.x, c.y, 0, 'car', c, e);
   }
+  for(const f of foes) if(!f.dead) add(f.x, f.y, 0, 'foe', f);
   for(const p of pads) if(p.item) add(p.x,p.y,4,'pad',p);
   for(const m of mines) add(m.x,m.y,2,'mine',m);
   for(const s of shots) add(s.x,s.y,s.z,'shot',s);
@@ -4602,6 +4616,7 @@ function hitFrame(sp, f){
 
 function rcSprites(camX, camY, bearing){
   const list=gatherBillboards(camX, camY, bearing);
+  if(foes.length && !foeImg.n) foeImagesReady();
   for(const bb of list){
     const perp=bb.d*Math.cos(bb.b);
     if(perp<3) continue;
@@ -4637,6 +4652,8 @@ function rcSprites(camX, camY, bearing){
       else
         rcCtx.drawImage(sp.cv, f*sp.fw, c.hurtFlash>0 ? sp.fh : 0, sp.fw, sp.fh, dx, dy, w, h);
       rcCtx.globalAlpha=1;
+    } else if(bb.kind==='foe'){
+      drawFoeBillboard(bb.ref, sx, ground, scale, perp, camX, camY);
     } else if(bb.kind==='pad'){
       const s2=Math.max(1, 13*scale);
       rcCtx.fillStyle=ITEMS[bb.ref.item].col;
@@ -6752,6 +6769,7 @@ function render(){
   // painter's algorithm on world Y (depth), visible entities only
   const drawables=[];
   for(const c of cars) if(!c.dead && (c.isPlayer || inView(c.x,c.y))) drawables.push({y:c.y, f:()=>drawCar(c)});
+  for(const e of foes) if(!e.dead && inView(e.x,e.y)) drawables.push({y:e.y, f:()=>drawFoe2D(e)});
   for(const s of shots) if(inView(s.x,s.y)) drawables.push({y:s.y, f:()=>drawShot(s)});
   // in the city a building is just another thing in the depth sort, keyed on
   // its street face: what is south of your car stands in front of it

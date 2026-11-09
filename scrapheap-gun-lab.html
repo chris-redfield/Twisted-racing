@@ -15,10 +15,15 @@
 </head>
 <body>
 <div id="wrap"><canvas id="cv"></canvas></div>
-<div id="hint">WASD drive &middot; ARROWS or mouse aim/fire &middot; SPACE boost &middot; V viewmodel &middot; Q mine &middot; P / ESC pause &middot; M map &middot; O sound &middot; R resolution &middot; F fps &middot; I dev mode</div>
+<div id="hint">WASD drive &middot; ARROWS or mouse aim/fire &middot; SPACE boost &middot; V viewmodel &middot; Z sentry &middot; Q mine &middot; P / ESC pause &middot; M map &middot; O sound &middot; R resolution &middot; F fps &middot; I dev mode</div>
 <script src="config.js"></script>
 <script src="fpsgun.js"></script>
+<script src="pad.js"></script>
 <script src="assets/guns/guns-2d.js"></script>
+<script src="assets/enemies/enemies-2d.js"></script>
+<script src="assets/enemies/sentry-vox.js"></script>
+<script src="assets/enemies/sentry-vox-64.js"></script>
+<script src="foe.js"></script>
 <!-- voxel cars for the GARAGE (tools/car_voxelize.py). A missing file just drops that car from the list. -->
 <script src="assets/voxcars/aspen-64.js"></script>
 <script src="assets/voxcars/sports-64.js"></script>
@@ -104,6 +109,7 @@ function rescale(){
   makePatterns();
   if(race && track) makeTrack();                // loop paths bake S into their coords
   CAR2D.clear();                                // sheets bake S into their bitmaps
+  clearFoeSheets();                             // ...and so do the foes' (foe.js)
   for(const c of cars) c.sprite = bakeCarSprites(c);
   resize();
 }
@@ -224,6 +230,16 @@ const Snd = (function(){
 // ---------------------------------------------------------------- input
 const keys = Object.create(null);
 const held = k => !!keys[k];
+// MOUSE or CONTROLLER, picked in OPTIONS and remembered. padMode() (pad.js) is
+// what the game actually asks - it also wants a pad to be plugged in, so a saved
+// 'pad' with nothing connected quietly stays on the mouse.
+let inputMode = 'mouse';
+try { const v = localStorage.getItem('scrapheap.input'); if(v==='mouse'||v==='pad') inputMode = v; } catch(e){}
+function setInputMode(m){
+  inputMode = m;
+  try { localStorage.setItem('scrapheap.input', m); } catch(e){}
+  syncHint();
+}
 addEventListener('keydown', e=>{
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();  // arrows are P2's gun
   Snd.boot();
@@ -302,6 +318,22 @@ function onPress(code){
     if(code==='KeyK'){ cash += SAINTS.DEV_CASH; saintsPay = { amt:SAINTS.DEV_CASH, t:1.8 }; }
     if(code==='KeyJ'){ openStore(); return; }
   }
+  // Z drops a sentry 120 units ahead of you, facing back: the only way to look at
+  // one until something spawns them for real
+  // X: voxel model <-> the flat picture, to compare them in place
+  if(code==='KeyX' && state==='play'){ walkSay('FOE: ' + foeCycleRender()); return; }
+  if(code==='KeyZ' && state==='play' && onFoot){
+    spawnFoe(walker.x + Math.cos(walker.a)*120, walker.y + Math.sin(walker.a)*120, walker.a + Math.PI);
+    return;
+  }
+  if(state==='options'){
+    if(code==='ArrowUp'||code==='KeyW')        optMove(-1);
+    else if(code==='ArrowDown'||code==='KeyS') optMove(1);
+    // left/right set the two choices outright, enter toggles - either reads naturally
+    else if(code==='ArrowLeft'||code==='ArrowRight'||code==='Enter'||code==='NumpadEnter'||code==='Space') optChoose();
+    else if(code==='Escape') state='title';
+    return;
+  }
   if(state==='garage'){
     if(code==='ArrowLeft'||code==='KeyA') garageStep(-1);
     else if(code==='ArrowRight'||code==='KeyD') garageStep(1);
@@ -345,6 +377,42 @@ function onPress(code){
     else if(code==='Enter'||code==='NumpadEnter') startMatch(numPlayers);
     else if(code==='KeyT') state='title';        // T -> pick a different stage
   }
+}
+
+// ---------------------------------------------------------------- the pad, once a frame
+// The Gamepad API is polled, so a frame of pad input has to be turned into the two
+// things the game already understands: PRESSES, which go through onPress as key
+// codes - so the title, garage, store and wreck screens need no pad code of their
+// own and can never drift out of step with the keyboard - and HELD state, which is
+// read where it is used (updateCar, updateTurret, updateWalker).
+const PAD_MENU_STATES = { title:1, options:1, garage:1, store:1, setup:1, over:1, comic:1 };
+function padTick(dt){
+  padPoll(dt);                       // always: this is how a pad being plugged in is noticed
+  if(!padConnected()) return;
+  // SCREENS answer to the pad whenever one is plugged in, even in MOUSE mode -
+  // otherwise picking up a pad would mean reaching for the keyboard to get to
+  // OPTIONS and switch it on, which is the one thing you'd want the pad for.
+  // Only the game itself is gated on the device OPTIONS picked.
+  if(PAD_MENU_STATES[state] || (state==='play' && paused)){
+    if(padRepeat('UP'))      onPress('ArrowUp');
+    if(padRepeat('DOWN'))    onPress('ArrowDown');
+    if(padRepeat('LEFT'))    onPress('ArrowLeft');
+    if(padRepeat('RIGHT'))   onPress('ArrowRight');
+    if(padPressed('CROSS'))  onPress('Enter');
+    if(padPressed('CIRCLE')) onPress('Escape');
+  }
+  if(!padMode()) return;
+  if(padPressed('START')) onPress('Escape');     // pause, and unpause again
+  if(state !== 'play' || paused) return;
+  // in the run, the taps only. Routed through onPress so each one keeps the same
+  // guards as its key (a mine still refuses on foot, boost still refuses in a pit).
+  if(onFoot){
+    if(padPressed('CROSS')) onPress('KeyE');     // back in the car
+    return;
+  }
+  if(padPressed('L1'))     onPress('Space');     // boost
+  if(padPressed('SQUARE')) onPress(MINE_KEY);    // mine
+  if(padPressed('CROSS'))  onPress('KeyE');      // out of the car (STREET only)
 }
 
 // ---------------------------------------------------------------- ground tile
@@ -1274,7 +1342,7 @@ let runUp = Object.assign({}, UPGRADES);
 let cash = 0;                        // Scrap Saints money, this run
 let saintsPay = null;                // the "+$25" toast: { amt, t }
 function upgradeLv(k){ return clamp(Math.round(runUp[k] || 0), 0, UPGRADE_MAX); }
-function upgradeTotal(){ return ['armor','health','gun','missile'].reduce((n,k)=>n+upgradeLv(k), 0); }
+function upgradeTotal(){ return ['armor','health','gun','missile','boost'].reduce((n,k)=>n+upgradeLv(k), 0); }
 // share of each hit the armor takes away: 0 at level 0, ARMOR_MIN..ARMOR_MAX over levels 1..UPGRADE_MAX
 function armorCutAt(lv){
   if(lv <= 0) return 0;
@@ -1286,6 +1354,10 @@ function healPickup(c){ return Math.round(c.maxHp*HEAL_PICKUP); }
 function playerMaxHp(){ return CAR_HP + HEALTH_PER_LEVEL*upgradeLv('health'); }
 function gunDmgAt(lv){ return GUN_DMG + GUN_DMG_PER_LEVEL*lv; }
 function missileDmgAt(lv){ return MISSILE_DMG*(1 + MISSILE_DMG_PER_LEVEL*lv); }
+// BOOST upgrade: seconds of recharge. The 0.5 floor is insurance against a config
+// edit (a cooldown of 0 would hand the player a boost that never ends).
+function boostCoolAt(lv){ return Math.max(0.5, BOOST_COOL - BOOST_COOL_PER_LEVEL*lv); }
+function boostCool(){ return boostCoolAt(upgradeLv('boost')); }
 function gunDmg(c){ return gunDmgAt(c.isPlayer ? upgradeLv('gun') : 0); }
 function missileDmg(c){ return missileDmgAt(c.isPlayer ? upgradeLv('missile') : 0); }
 
@@ -1375,7 +1447,7 @@ function fireMissile(c){
 function tryBoost(c){
   if(!c || c.dead || c.pitT>0) return;
   if(c.boostT>0 || c.boostCD>0) return;
-  c.boostT = BOOST_TIME; c.boostCD = BOOST_COOL;
+  c.boostT = BOOST_TIME; c.boostCD = c.isPlayer ? boostCool() : BOOST_COOL;
   Snd.boost();
   cam.shake = Math.min(9, cam.shake + 1.2);
 }
@@ -1450,17 +1522,27 @@ function updateCar(c, dt){
     if(held('KeyA')) steer-=1;
     if(held('KeyD')) steer+=1;
     brake = held('ShiftLeft')||held('ShiftRight');
+    // the pad: the left stick steers analog (A/D are a flat -1/+1), L2 drifts.
+    // Clamped because the keyboard may be pushing the same way at the same time.
+    if(padMode()){
+      steer = clamp(steer + padSteer(), -1, 1);
+      if(padHeld('L2')) brake = true;
+    }
     if(race || street){
       // a real race (or STREET's free drive): you hold the throttle. W/S drive
       // and brake directly.
       if(held('KeyW')) throttle+=1;
       if(held('KeyS')) throttle-=1;
+      if(padMode()) throttle = clamp(throttle + padThrottle(), -1, 1);
     } else {
       // survival: you sit at a cruise pace and W/S trim it within a band; your
       // position in the frame is the speed you chose.
       //
       const fwdNow = c.vx*Math.cos(c.angle) + c.vy*Math.sin(c.angle);
-      const boost = held('KeyW') ? 1 : held('KeyS') ? -1 : 0;
+      // how far you are trimming the cruise pace: W/S are a flat +/-1, the pad's
+      // left stick is analog, so it picks a place in the frame rather than an end
+      let boost = held('KeyW') ? 1 : held('KeyS') ? -1 : 0;
+      if(padMode() && !boost) boost = padThrottle();
       // The ceiling follows the scroll. It used to be a flat 240 while camV ramps
       // to CAM_VMAX = 214, so the FORWARD half of the band evaporated as a run
       // went on - W was worth +59 over the camera at the start and +7 by full
@@ -4483,6 +4565,7 @@ function gatherBillboards(camX, camY, bearing){
     if(e > 1) continue;                           // off the driving pane: off this one too
     add(c.x, c.y, 0, 'car', c, e);
   }
+  for(const f of foes) if(!f.dead) add(f.x, f.y, 0, 'foe', f);
   for(const p of pads) if(p.item) add(p.x,p.y,4,'pad',p);
   for(const m of mines) add(m.x,m.y,2,'mine',m);
   for(const s of shots) add(s.x,s.y,s.z,'shot',s);
@@ -4532,8 +4615,23 @@ function hitFrame(sp, f){
   return hitCv;
 }
 
+const LAB_VOX = ["sentry@96", "sentry@64"];   // left column, right column
+function labSpawnFoes(){
+  const w = walker, fx = Math.cos(w.a), fy = Math.sin(w.a), lx = -fy, ly = fx;
+  // the same four distances twice, one carve each side, facing you
+  [70, 130, 260, 520].forEach((d, i) => {
+    LAB_VOX.forEach((v, c) => {
+      // the bearing WIDENS with distance, so the far pairs sit further out on
+      // screen instead of hiding behind the near ones
+      const a = w.a + (c ? 1 : -1) * (0.18 + i*0.10);
+      const x = w.x + Math.cos(a)*d, y = w.y + Math.sin(a)*d;
+      spawnFoe(x, y, Math.atan2(w.y - y, w.x - x), v);
+    });
+  });
+}
 function rcSprites(camX, camY, bearing){
   const list=gatherBillboards(camX, camY, bearing);
+  if(foes.length && !foeImg.n) foeImagesReady();
   for(const bb of list){
     const perp=bb.d*Math.cos(bb.b);
     if(perp<3) continue;
@@ -4569,6 +4667,8 @@ function rcSprites(camX, camY, bearing){
       else
         rcCtx.drawImage(sp.cv, f*sp.fw, c.hurtFlash>0 ? sp.fh : 0, sp.fw, sp.fh, dx, dy, w, h);
       rcCtx.globalAlpha=1;
+    } else if(bb.kind==='foe'){
+      drawFoeBillboard(bb.ref, sx, ground, scale, perp, camX, camY);
     } else if(bb.kind==='pad'){
       const s2=Math.max(1, 13*scale);
       rcCtx.fillStyle=ITEMS[bb.ref.item].col;
@@ -4753,7 +4853,11 @@ function asciiBlit(dx, dy){
 }
 
 // ---------------------------------------------------------------- the turret
-// Two aim models, one per mode:
+// Three aim models now:
+//  - the PAD's right stick points the gun where you push it (padAimAngle), and
+//    holds that bearing when you let go. It takes priority whenever the pad is
+//    the chosen input, which is also how the mouse-vs-pad fight is settled: one
+//    of them owns the aim for the whole session, picked in OPTIONS.
 //  - 2P is first-person, so the mouse turns the gun by its *movement* (locked
 //    pointer, like Counter-Strike): move and it turns, stop and it holds. No drift.
 //  - 1P is top-down, so the mouse is twin-stick: the gun points straight at the
@@ -4762,7 +4866,16 @@ const TURRET_RATE = 2.3;           // rad/s, keyboard traverse
 const FPS_SENS = 0.0042;           // radians of gun traverse per unit of mouse movement (2P)
 function updateTurret(c, dt){
   const TAU=Math.PI*2;
-  if(numPlayers===1 && mouseIn && !c.dead){
+  // 1P only: in split-screen the gun belongs to P2's locked mouse, so a pad there
+  // drives for P1 and leaves the turret alone rather than fighting over it
+  const padGun = padMode() && numPlayers===1;
+  const padAim = padGun ? padAimAngle() : null;
+  if(padGun && !c.dead){
+    // turret is stored RELATIVE to the car, so subtracting c.angle here means the
+    // gun keeps pointing where you aimed it while the car slides around under it.
+    // padAimAngle() is null with the stick at rest: then the bearing just stays.
+    if(padAim != null) c.turret = padAim - c.angle;
+  } else if(numPlayers===1 && mouseIn && !c.dead){
     // twin-stick: aim the gun at the world point under the cursor (z=0 ground)
     const wx = (mouseSX - VCX)/S + cam.x;
     const wy = (mouseSY - VCY)/(S*KY) + cam.y;
@@ -4776,8 +4889,10 @@ function updateTurret(c, dt){
   }
   c.turret = ((c.turret%TAU)+TAU)%TAU;
   if(c.turret>Math.PI) c.turret -= TAU;
-  if(held('ArrowUp') || mouseFire) fireCannon(c);
-  if(held('ArrowDown') || mouseFire2) fireMissile(c);
+  // R1 is the machine gun, R2 the missile - both held, like the mouse buttons
+  // they stand in for (each gun has its own cooldown, so holding is safe)
+  if(held('ArrowUp') || mouseFire || (padMode() && padHeld('R1'))) fireCannon(c);
+  if(held('ArrowDown') || mouseFire2 || (padMode() && padHeld('R2'))) fireMissile(c);
 }
 
 let aimDY=0;                       // locked-mouse vertical movement, on foot (look up/down)
@@ -4912,10 +5027,12 @@ function updateWalker(dt){
   let turn = 0;
   if(held('ArrowLeft'))  turn -= 1;
   if(held('ArrowRight')) turn += 1;
+  if(padMode()) turn += padLookTurn()*(PAD.LOOK_RATE/WALK_TURN);   // the stick looks faster than the arrows
   w.a += turn*WALK_TURN*dt + aimDX*WALK_SENS; aimDX = 0;
   let tilt = 0;
   if(held('ArrowUp'))   tilt += 1;
   if(held('ArrowDown')) tilt -= 1;
+  if(padMode()) tilt += padLookPitch();
   w.pitch = clamp(w.pitch + tilt*WALK_PITCH_RATE*dt - aimDY*WALK_SENS, WALK_PITCH_DOWN, WALK_PITCH_UP);
   aimDY = 0;
   const TAU = Math.PI*2;
@@ -4926,18 +5043,22 @@ function updateWalker(dt){
   if(held('KeyS')) f -= 1;
   if(held('KeyD')) st += 1;
   if(held('KeyA')) st -= 1;
+  // the pad walks on the left stick (up is -1, so f flips), L3 runs
+  if(padMode()){ const s = padStick('L'); f -= s.y; st += s.x; }
   const n = Math.hypot(f, st);
-  const run = held('ShiftLeft') || held('ShiftRight');
+  const run = held('ShiftLeft') || held('ShiftRight') || (padMode() && padHeld('L3'));
   w.moving = n > 0 ? 1 : 0;
   if(n > 0){
-    const spd = (run ? RUN_SPD : WALK_SPD)/n;
+    // min(1,n)/n keeps the direction and lets a part-pushed stick walk slowly.
+    // On the keyboard n is 1 or root-2 and min(1,n) is 1, so that path is unchanged.
+    const spd = (run ? RUN_SPD : WALK_SPD)*Math.min(1, n)/n;
     const fx = Math.cos(w.a), fy = Math.sin(w.a);
     w.x += (fx*f - fy*st)*spd*dt;
     w.y += (fy*f + fx*st)*spd*dt;
     w.bob += dt*(run ? 13 : 9);
   }
   walkCollide(w);
-  if(true && held('Space')) walkFire();
+  if(true && (held('Space') || (padMode() && padHeld('R1')))) walkFire();
 }
 
 // true's hook: the pistol (fpsgun.js)
@@ -5191,7 +5312,7 @@ function drawDriverHUD(){
   // BOOST. One continuous read of one number: it drains hot while the charge is
   // being spent, then fills cool over the recharge. Full and cyan = press SPACE.
   const burning = me.boostT>0;
-  const bv  = burning ? me.boostT/BOOST_TIME : 1 - me.boostCD/BOOST_COOL;
+  const bv  = burning ? me.boostT/BOOST_TIME : 1 - me.boostCD/boostCool();
   const bcol = burning ? '#ffe9a8' : me.boostCD>0 ? '#3f6a80' : '#7fd4ff';
   ctx.fillStyle = burning ? '#ffe9a8' : me.boostCD>0 ? '#5a4a5e' : '#7fd4ff';
   ctx.fillText('BST', hx+5, hy+24);
@@ -5565,6 +5686,11 @@ const comicImgs = COMIC.PAGES.map(pg => pg.map(p => {
 }));
 const comic = { pages:[], page:0, shown:0, t:0, typed:0 };
 const hintEl = (typeof document !== 'undefined' && document.getElementById) ? document.getElementById('hint') : null;
+// the controls line under the canvas follows whichever device OPTIONS picked
+const HINT_MOUSE = 'WASD drive · ARROWS or mouse aim/fire · SPACE boost · Q mine · SHIFT drift · P / ESC pause · M map · O sound · I dev mode';
+const HINT_PAD   = 'L-STICK drive · R-STICK aim · R1 gun · R2 missile · SQUARE mine · L2 drift · L1 boost · OPTIONS pause · M map · O sound';
+function syncHint(){ if(hintEl) hintEl.textContent = (inputMode === 'pad') ? HINT_PAD : HINT_MOUSE; }
+syncHint();
 // pages with at least one image that has loaded (or is still loading)
 function comicPages(){
   const out = [];
@@ -5683,9 +5809,12 @@ function drawComic(){
 // it, the chosen one lit and the rest taken most of the way to black. Choosing
 // "pops" the line - swell, overshoot, settle - and the screen holds a beat so the
 // punch is seen before it changes. Cyberpunk colours instead of the blood.
-const MENU = [['START GAME', 'play'], ['GARAGE', 'garage']];
+const MENU = [['START GAME', 'play'], ['GARAGE', 'garage'], ['OPTIONS', 'options']];
 const MENU_POP = { amount:0.10, ms:0.26, hold:0.30 };
-const MENU_TOP = 0.62, MENU_SIZE = 22, MENU_PITCH = 1.6, MENU_DIM = 0.55;
+// MENU_TOP came down from 0.62 when OPTIONS made it a three-item menu: the
+// 'driving:' line under the list had landed on top of the ENTER prompt at 0.9.
+// The logo above reaches ~VH*0.52, so this is the lowest the list can start.
+const MENU_TOP = 0.56, MENU_SIZE = 22, MENU_PITCH = 1.6, MENU_DIM = 0.55;
 let menuIdx = 0, menuPop = null, menuT = 0;
 // the logo: loaded once; if the file isn't there the menu just uses the text
 const logoImg = (typeof Image !== 'undefined') ? new Image() : { complete:false, naturalWidth:0 };
@@ -5703,7 +5832,110 @@ function menuTick(dt){
     menuPop = null;
     if(MENU[menuIdx][1] === 'play') startComic();
     else if(MENU[menuIdx][1] === 'garage') openGarage();
+    else if(MENU[menuIdx][1] === 'options') openOptions();
   }
+}
+
+// ---------------------------------------------------------------- OPTIONS
+// One setting that changes how the game is played - which device drives it - and
+// a way back. Kept deliberately small; the dev keys stay on the keyboard and off
+// this screen. The choice is remembered (localStorage), so it is made once.
+const OPT_ROWS = ['input', 'back'];
+let optIdx = 0, optMsg = '', optMsgT = 0;
+function openOptions(){ state = 'options'; optIdx = 0; optMsg = ''; optMsgT = 0; }
+function optSay(m){ optMsg = m; optMsgT = 1.8; }
+function optMove(d){ optIdx = (optIdx + OPT_ROWS.length + d) % OPT_ROWS.length; }
+// INPUT at the top, then the controller legend, then BACK under it (the way out
+// belongs below the reference block, not above it)
+function optRowY(i){ return OPT_ROWS[i] === 'back' ? 40 + 222 : 40 + 62 + i*28; }
+function optChoose(){
+  const row = OPT_ROWS[optIdx];
+  if(row === 'back'){ state = 'title'; Snd.pickup(); return; }
+  if(row === 'input'){
+    // switching TO the pad needs one plugged in; switching back to the mouse is
+    // always allowed, so an unplugged pad can never trap you on this screen
+    if(inputMode === 'mouse' && !padConnected()){ optSay('no controller connected'); Snd.hit(); return; }
+    setInputMode(inputMode === 'mouse' ? 'pad' : 'mouse');
+    Snd.pickup();
+  }
+}
+// the mapping, shown under the setting so it is learnable without a manual
+const PAD_LEGEND = [
+  ['left stick',  'steer + speed'],
+  ['right stick', 'aim the gun'],
+  ['R1 / R2',     'machine gun / missile'],
+  ['L1 / L2',     'boost / drift'],
+  ['SQUARE',      'mine'],
+  ['CROSS',       'confirm, in and out of the car'],
+  ['OPTIONS',     'pause'],
+];
+function drawOptions(){
+  ctx.fillStyle = NEON.BG; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.save(); ctx.scale(PX, PX);
+  ctx.globalAlpha = 0.06; ctx.fillStyle = NEON.CYAN;
+  for(let y = (menuT*12)%4; y < VH; y += 4) ctx.fillRect(0, y, VW, 1);
+  ctx.globalAlpha = 1;
+  const X = 110, Y = 40, W = 420, H = 280;
+  ctx.fillStyle = 'rgba(18,10,32,.92)'; ctx.fillRect(X, Y, W, H);
+  ctx.strokeStyle = 'rgba(34,240,255,.45)'; ctx.lineWidth = 1; ctx.strokeRect(X+0.5, Y+0.5, W-1, H-1);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.font = 'bold 20px monospace';
+  ctx.shadowColor = NEON.MAGENTA; ctx.shadowBlur = 10 + 3*Math.sin(menuT*3);
+  ctx.fillStyle = NEON.MAGENTA; ctx.fillText('OPTIONS', X + 16, Y + 30);
+  ctx.shadowBlur = 0;
+  // what is plugged in, top right. Browsers tack the mapping and the USB ids onto
+  // the name ("Wireless Controller (STANDARD GAMEPAD Vendor: 054c...)") - that runs
+  // off the panel and says nothing, so the bracket and everything after it goes.
+  ctx.textAlign = 'right'; ctx.font = '8px monospace';
+  ctx.fillStyle = padConnected() ? NEON.CYAN : NEON.DIM;
+  ctx.fillText(padConnected() ? 'pad detected' : 'no pad detected', X + W - 16, Y + 24);
+  if(padConnected()){
+    ctx.fillStyle = NEON.DIM;
+    ctx.fillText(padName().replace(/\s*\(.*$/, '').trim().slice(0, 34) || 'gamepad', X + W - 16, Y + 34);
+  }
+
+  OPT_ROWS.forEach((row, i) => {
+    const y = optRowY(i), on = i === optIdx;
+    if(on){ ctx.fillStyle = 'rgba(34,240,255,.12)'; ctx.fillRect(X + 8, y - 4, W - 16, 22); }
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    if(on){ ctx.fillStyle = NEON.CYAN; ctx.font = 'bold 11px monospace'; ctx.fillText('>', X + 12, y + 2); }
+    ctx.font = 'bold 11px monospace';
+    if(row === 'back'){
+      ctx.fillStyle = NEON.MAGENTA; ctx.fillText('BACK', X + 24, y + 2);
+      return;
+    }
+    ctx.fillStyle = NEON.INK; ctx.fillText('INPUT', X + 24, y + 2);
+    // the two choices, the live one lit
+    const pad = inputMode === 'pad' && padConnected();
+    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = !pad ? NEON.CYAN : NEON.DIM; ctx.fillText('MOUSE', X + 120, y + 2);
+    ctx.fillStyle = pad ? NEON.CYAN : NEON.DIM;  ctx.fillText('CONTROLLER', X + 180, y + 2);
+    // kept short: at 9px monospace anything past ~22 characters runs off the panel
+    ctx.font = '9px monospace'; ctx.fillStyle = '#c8bedc';
+    ctx.fillText(pad ? 'the pad drives' : 'mouse aims, keys drive', X + 276, y + 3);
+  });
+
+  // the mapping, so the layout is learnable on the spot. It sits between INPUT and
+  // BACK (see optRowY) rather than under both: BACK is the way out and reads
+  // wrongly above a block of reference text.
+  const ly = Y + 112;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.font = '9px monospace'; ctx.fillStyle = NEON.DIM;
+  ctx.fillText('CONTROLLER', X + 24, ly - 14);
+  const lit = inputMode === 'pad' && padConnected();
+  PAD_LEGEND.forEach(([btn, what], i) => {
+    const y = ly + i*14;
+    ctx.font = 'bold 9px monospace'; ctx.fillStyle = lit ? NEON.CYAN : NEON.DIM;
+    ctx.fillText(btn, X + 24, y);
+    ctx.font = '9px monospace'; ctx.fillStyle = lit ? '#c8bedc' : NEON.DIM;
+    ctx.fillText(what, X + 120, y);
+  });
+
+  ctx.textAlign = 'center'; ctx.font = '9px monospace';
+  if(optMsgT > 0){ ctx.fillStyle = '#e0b73c'; ctx.fillText(optMsg, X + W/2, Y + H - 28); }
+  ctx.fillStyle = NEON.DIM;
+  ctx.fillText('UP/DOWN pick  ·  ENTER change  ·  ESC back', X + W/2, Y + H - 14);
+  ctx.restore();
 }
 function lerpHex(a, b, t){
   const pa = parseInt(a.slice(1),16), pb = parseInt(b.slice(1),16);
@@ -5772,8 +6004,8 @@ function drawMenu(){
 // upgrade levels (config 3b) or a repair, then CONTINUE into leg 2. Prices and
 // bounties are SAINTS in config.js. Leaving writes cash + levels into the
 // checkpoint, so a wreck on leg 2 restarts with what you bought.
-const STORE_ROWS = ['armor', 'health', 'gun', 'missile', 'repair', 'continue'];
-const STORE_LABEL = { armor:'ARMOR', health:'HEALTH', gun:'MACHINE GUN', missile:'MISSILE', repair:'REPAIR', continue:'CONTINUE' };
+const STORE_ROWS = ['armor', 'health', 'boost', 'gun', 'missile', 'repair', 'continue'];
+const STORE_LABEL = { armor:'ARMOR', health:'HEALTH', boost:'BOOST', gun:'MACHINE GUN', missile:'MISSILE', repair:'REPAIR', continue:'CONTINUE' };
 let storeIdx = 0, storeMsg = '', storeMsgT = 0;
 // every purchase is two steps: ENTER/click selects a row and asks, a second
 // ENTER/click on that same row confirms. ESC or moving away cancels.
@@ -5832,7 +6064,9 @@ function storeClick(){
   if(i !== storeIdx){ storeIdx = i; storeArmed = false; }
   storeChoose();
 }
-function storeRowY(i){ return 40 + 62 + i*28 + (STORE_ROWS[i] === 'continue' ? 8 : 0); }
+// pitch 26, not 28: the BOOST row made seven, and at 28 CONTINUE collided with the
+// confirm line at the foot of the panel
+function storeRowY(i){ return 40 + 62 + i*26 + (STORE_ROWS[i] === 'continue' ? 8 : 0); }
 function storeBuy(){
   const row = STORE_ROWS[storeIdx], me = cars[0];
   if(row === 'continue'){ closeStore(); return; }
@@ -5859,6 +6093,7 @@ function storeEffect(row){
   const pair = (a, b, unit) => max ? a + unit + '  (max)' : a + ' -> ' + b + unit;
   if(row === 'armor')   return pair(Math.round(armorCutAt(lv)*100) + '%', Math.round(armorCutAt(nx)*100) + '%', ' less damage');
   if(row === 'health')  return pair(me.maxHp, me.maxHp + HEALTH_PER_LEVEL, ' hull');
+  if(row === 'boost')   return pair(fmt1(boostCoolAt(lv)) + 's', fmt1(boostCoolAt(nx)) + 's', ' recharge');
   if(row === 'gun')     return pair(fmt1(gunDmgAt(lv)), fmt1(gunDmgAt(nx)), ' per bullet');
   if(row === 'missile') return pair(Math.round(missileDmgAt(lv)), Math.round(missileDmgAt(nx)), ' per hit');
   if(row === 'repair')  return 'hull ' + Math.ceil(me.hp) + '/' + me.maxHp + (me.hp < me.maxHp ? ' -> full' : '');
@@ -5868,7 +6103,7 @@ function drawStore(){
   const me = cars[0];
   ctx.save(); ctx.scale(PX, PX);
   ctx.fillStyle = 'rgba(7,4,15,.78)'; ctx.fillRect(0, 0, VW, VH);
-  const X = 110, Y = 40, W = 420, H = 280;
+  const X = 110, Y = 40, W = 420, H = 300;      // H 280 -> 300 for the seventh row
   ctx.fillStyle = 'rgba(18,10,32,.92)'; ctx.fillRect(X, Y, W, H);
   ctx.strokeStyle = 'rgba(34,240,255,.45)'; ctx.lineWidth = 1; ctx.strokeRect(X + 0.5, Y + 0.5, W - 1, H - 1);
   // the name
@@ -6550,6 +6785,7 @@ function render(){
   // painter's algorithm on world Y (depth), visible entities only
   const drawables=[];
   for(const c of cars) if(!c.dead && (c.isPlayer || inView(c.x,c.y))) drawables.push({y:c.y, f:()=>drawCar(c)});
+  for(const e of foes) if(!e.dead && inView(e.x,e.y)) drawables.push({y:e.y, f:()=>drawFoe2D(e)});
   for(const s of shots) if(inView(s.x,s.y)) drawables.push({y:s.y, f:()=>drawShot(s)});
   // in the city a building is just another thing in the depth sort, keyed on
   // its street face: what is south of your car stands in front of it
@@ -6572,6 +6808,7 @@ function frame(now){
   requestAnimationFrame(frame);
   let dt=(now-last)/1000; last=now;
   if(dt>0.25) dt=0.25;
+  padTick(dt);                       // before anything looks at the input
   fpsAcc+=dt; fpsN++;
   if(fpsAcc>0.5){ fpsVal=Math.round(fpsN/fpsAcc); fpsAcc=0; fpsN=0; }
 
@@ -6579,8 +6816,9 @@ function frame(now){
   // moment a match starts and on through the wreck screen
   Snd.music(state==='play' || state==='over' || state==='store');
 
-  if(state==='title' && gunLabBoot()) return;
+  if(state==='title' && gunLabBoot()){ labSpawnFoes(); return; }
   if(state==='title'){ menuT += dt; if(menuPop!=null) menuTick(dt); drawMenu(); return; }
+  if(state==='options'){ menuT += dt; optMsgT = Math.max(0, optMsgT - dt); drawOptions(); return; }
   // the controls line under the canvas is noise over a comic page
   if(hintEl) hintEl.style.display = (state==='comic' || state==='garage') ? 'none' : '';
   if(state==='comic'){ comicTick(dt); drawComic(); return; }

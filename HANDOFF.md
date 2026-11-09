@@ -7,6 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-09 | [One drawing -> a voxel model: sprite_voxelize.py](#2026-11-09--one-drawing---a-voxel-model-sprite_voxelizepy) | built, 35 headless checks + screenshots; rotates, and is the only version the top-down view can draw |
+| 2026-11-09 | [The first on-foot enemy: a SENTRY billboard](#2026-11-09--the-first-on-foot-enemy-a-sentry-billboard) | built, 35 headless checks + screenshots; **art reads as a solid block in ASCII** |
 | 2026-11-09 | [BOOST upgrade: the recharge, not the shove](#2026-11-09--boost-upgrade-the-recharge-not-the-shove) | built, 30 headless checks + screenshot |
 | 2026-11-09 | [Controller support; MOUSE or CONTROLLER in OPTIONS](#2026-11-09--controller-support-mouse-or-controller-in-options) | built, 60 headless checks; **not yet played on a real pad** |
 | 2026-11-08 | [Gun lab: first-person pistol, viewmodel methods compared](#2026-11-08--gun-lab-first-person-pistol-viewmodel-methods-compared) | **pistol is in index.html** (user's picture); lab kept for the 3D method |
@@ -45,6 +47,152 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-09 — One drawing -> a voxel model: sprite_voxelize.py
+
+**Goal:** stop paying for enemy directions in drawings. The cars get 32 angles free because
+`bakeFpsSprites` renders them from a mesh; this makes a hand-drawn enemy do the same from ONE
+front view. **It works, and the result is honestly worse-looking than the flat sprite** — see the
+trade at the end before building on it.
+
+**`tools/sprite_voxelize.py`** — `sentry_idle.png` → `assets/enemies/sentry-vox.js`
+(`SPRITEVOX["sentry@64"]`, the same shape `car_voxelize.py` emits, so `voxMesh()` eats it
+unchanged). Current build: `--res 64 --round 4.0`, 2008 faces, **68 KB**.
+
+**How it guesses the depth it was never given.** A real visual hull needs two silhouettes to
+intersect; with one picture an honest hull is a flat slab. So for every row of the sprite it takes
+each horizontal RUN of solid pixels and gives it a superelliptical cross-section of depth
+`min(width, cap)`. A narrow run — arm, leg, head — comes out round. A wide run — chest, shoulders
+— is capped and comes out a rounded slab. That one rule is most of a humanoid.
+
+**Three things it had to learn the hard way, all still in the code as comments:**
+
+- **The drawn outline became a black skin.** A voxel's side faces take the colour of the column
+  they sit behind, so the sprite's bold black outline painted the entire left and right of the
+  model black — the first carve was a dark slab from every angle but dead ahead. `--erode 3`
+  reassigns `dark` voxels within 3 of the silhouette to the nearest painted role; interior dark
+  (the joints) is left alone, because that is real shading.
+- **A standing figure gets no light.** `LIGHT` is `(-0.42,-0.58,0.70)`: fine for a car, whose lit
+  faces are its horizontal tops, but a standing figure shows the camera its **+y** faces and
+  LIGHT's y is negative, so every face you look at bakes at the flat 0.44 ambient. `FOE_LIFT`
+  (1.9, a `brightness()` filter on the sheet, not on the flash row) puts it back.
+- **Near-white washes out.** `accent` is `hexShade(col, 1.32)`, so a white body clamps accent to
+  flat grey and the model loses all hue. `FOE_COL` is `#a8b6d4` — cool and well below white — so
+  the highlight stays blue and the amber visor is the only warm thing on the model, which is what
+  keeps it winning its ASCII cell.
+
+**Also:** `--smooth 2` majority-filters the roles (the drawing holds far more detail than 36
+voxels across can carry, and it aliases into salt-and-pepper), with `lamp` exempt so the visor is
+never voted away. `scipy` here is built against numpy 1.x and will not import, so the erosion and
+the filter are plain numpy — don't reintroduce the scipy dependency.
+
+**Game side:** `foe.js` gained `foeMesh()`, `bakeFoeSheet()` (32 frames + a flash row, `vsc=1` so
+one sheet pixel is one world unit, feet anchored near the frame bottom) and `FOE_RENDER`.
+**X toggles voxel ↔ flat picture in place** — that comparison is the whole point of the feature,
+keep it. Meshes and sheets are keyed by `SPRITEVOX` name and `spawnFoe(x, y, a, vox)` takes one,
+so two carves (or two enemies) can stand side by side; the lab plants `sentry@96` down the left
+and `sentry@64` down the right at four distances.
+
+**`bakeFoe2D` / `drawFoe2D`: the same mesh in the DRIVING view.** A billboard only exists inside
+the raycaster, so at first a sentry simply vanished when you got back in the car — reported from
+play, not caught by a test. The fix is the second payoff of voxelising: the top-down pane is the
+same mesh through `rasterCar` at the axonometric `KY`/`KZ` with `vsc = S`, which is what
+`bakeCarSheet` does for a car. Baked at `S` and dropped by the same rescale that clears `CAR2D`
+(`clearFoeSheets()`), and pushed into the painter's-algorithm `drawables` list on `y`, so sentries
+sort correctly against cars and buildings. **The flat sprite could never have done this** — it is
+drawn face-on from eye level and has no top-down view at all.
+
+`FOE_LIFT_2D` is 1.4, against 1.9 for first person: the driving camera is only 38° up, so you
+still see mostly the figure's vertical faces and only the shoulders and head catch `LIGHT`'s +z.
+Unlifted they read as dark smudges beside the car.
+
+**Note for anyone reading a screenshot comparison:** `asciiBlit` is called in exactly two places,
+the gunner pane and the walk view. **The top-down driving view is never ASCII.** "Pixel vs ASCII"
+is a first-person question only; `G` cycles `asciiMode` 0 → 1 → 2.
+
+**The trade, which is the finding.** Side by side in the lab, at 95 units:
+
+| | flat `sentry_idle.png` | the voxel carve |
+|---|---|---|
+| looks | crisp, coloured, visor and chest lights read | grey-blue, mushy, washed out |
+| turning | always faces you | 32 real angles |
+| per enemy | 1 drawing per state × per direction | 1 drawing, ever |
+| ASCII | solid `@` block | still reads; slightly busier |
+
+The voxel version **rotates and the flat one cannot**, and that is the only reason to prefer it.
+It does not yet look as good, and the gap is tuning, not a wall: `--res`, `--round`, `--smooth`,
+`--cap`, `FOE_COL`, `FOE_LIFT`. Worth pushing before committing to a whole roster.
+
+**What it still does not solve:** animation. A voxel model gives angles, not a walk cycle. The
+prize is splitting the model into limb groups and posing them before the raster, which is only
+possible now that the enemy is 3D — that, not the look, is why this pipeline is worth keeping.
+
+**Verified:** `node tools/selftest_foe.js` → 35/35 (roles are all names `rasterCar` knows, faces
+are whole 13-number records, the visor survived as `lamp` faces, the model registers into
+`MODELS`, 32 frames bake without throwing, frame geometry and the feet anchor, X cycles, and the
+2D sheet bakes at the current `S` and survives 20 frames of driving). Chrome
+screenshots: a 32-frame contact sheet, and voxel-vs-flat in both pixel and ASCII modes.
+
+## 2026-11-09 — The first on-foot enemy: a SENTRY billboard
+
+**Goal:** get one enemy sprite through `gatherBillboards` → `rcSprites` → `asciiBlit` and look at
+it. Nothing more: the sentry does not move, think or shoot, and nothing spawns one in the game.
+
+**Why there were no foot enemies before.** It was deliberate, twice over. `PROJECT.md`'s
+"add car enemies (task 2)" says *"no enemies on foot yet"*, and the comic has a reason: the city's
+guards ignore him because he is an old model and they *"only fear high-tech androids packed with
+powerful energy attacks"*. The hook out of that, if these are ever to attack: **he is beneath
+notice until he starts shooting.** The pistol is what makes him worth killing.
+
+**Files:**
+- `assets/enemies/sentry_idle.png` — the user's picture, 1024×1536, standing, head-on.
+- `assets/enemies/IMAGE_PROMPT.md` — the prompt and, more usefully, the *rules* behind it: the
+  green key, the ASCII brightness band, the warm-pixel light path, the ground anchor. Read it
+  before asking for any more enemy art.
+- `tools/enemy_images.py` → `assets/enemies/enemies-2d.js` (`ENEMY_IMAGES[name] = {src, w, h}`).
+  Unlike `gun_images.py` it keys, crops and shrinks in **Python**, not the browser: the source is
+  1.3 MB (1.7 MB as base64) for a sprite never drawn above ~100 px, and keying *after* a smooth
+  downscale leaves a dark halo, because the black outline blends into the green on the way down
+  and the blend is no longer green enough to key. 1271 KB → **88 KB**, 218×384.
+- `foe.js` — `FOE` knobs, `foes[]`, `spawnFoe`, `clearFoes`, `foeImagesReady`,
+  `drawFoeBillboard`. It has a **fallback box** (white rectangle, amber visor slot) when no
+  picture has loaded, which is what the headless harness always sees.
+- `index.html` — two script tags, one line in `gatherBillboards`, one branch in `rcSprites`, and
+  **Z** spawns a sentry 120 units ahead while on foot.
+- `tools/make_gun_lab.py` — the lab now plants five sentries fanned across the view at 60 / 120 /
+  240 / 480 / 900 units, each on its own bearing so none overlaps.
+
+**What it actually looks like (measured, not guessed).** A 22-unit sentry at `RC_VD` 146.6:
+
+| distance | 60u | 120u | 240u | 480u | 900u |
+|---|---|---|---|---|---|
+| height | 53.8 px | 26.9 px | 13.4 px | 6.7 px | 3.6 px |
+| ASCII rows | 17.9 | 9.0 | 4.5 | 2.2 | 1.2 |
+
+In the pixel view it reads at every one of those. In ASCII it reads as a figure down to ~9 rows,
+is a smudge at 4, and is gone by 2 — about what the prompt predicted.
+
+**The finding: the art is too bright for the ASCII ramp.** The figure's mean luminance is 128
+against `ASC_HI` 100, so **61.7% of it saturates to `@` and 27% falls below `ASC_LO` into blank**.
+Only ~11% lands anywhere in the middle of the ramp. In ASCII the sentry is not a shaded figure, it
+is a solid white block with a hole-punched outline — readable, and completely without detail. The
+pistol was deliberately re-lit to a body of **70–90** for exactly this reason; this sprite sits
+well above that band. Two ways out, neither done: a `--gain` on the packer to pull the whole
+picture down into 70–90, or ask for mid-grey plating next time. **Decide before ordering seven
+more sprites**, because it is a property of the art, not of the code.
+
+Also true, and also the prompt's fault: the outline is pure black (30.7% of the figure is darker
+than the street), and the sentry has **no weapon** — the prompt said "arms at its sides".
+
+**Verified:** `node tools/selftest_foe.js` → 17/17 (packed sprite present as a data URL, nothing
+spawns on its own, a spawned sentry reaches the billboard list, 30 frames with one on screen, the
+1500-unit cull and the behind-you FOV cull). Chrome screenshots of the lab in both pixel and ASCII
+modes. `selftest_pad` 60/60 and `selftest_boost` 30/30 still pass.
+
+**One trap for the next session:** the lab helper is injected **inside index.html's own inline
+script**, not as a new `<script>` tag. `tools/headless.js` pulls the inline script out with a
+single greedy regex, so a second inline block makes it swallow a `</script>` and fail to parse the
+whole page. If you add lab code, add it the same way or fix the regex.
 
 ## 2026-11-09 — BOOST upgrade: the recharge, not the shove
 
