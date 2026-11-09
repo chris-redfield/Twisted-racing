@@ -303,7 +303,7 @@ const SKIP_TO_CITY_KEY = 'KeyC';
 //  STREET_ENEMIES - run the spawner in the city.
 //  WALK_ARMED     - a sidearm on foot (SPACE / click).
 const STREET_ENEMIES = false;
-const WALK_ARMED     = false;
+const WALK_ARMED     = true;    // the pistol: fpsgun.js (knobs: PISTOL there), picture: assets/guns/
 const WALK_SPD = 46, RUN_SPD = 92;   // units/s (SHIFT runs)
 const WALK_R = 5;                    // body radius against buildings and the car
 let   WALK_EYE = 16;                 // standing eye height ([ ] on foot to tune)

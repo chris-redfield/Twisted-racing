@@ -17,6 +17,8 @@
 <div id="wrap"><canvas id="cv"></canvas></div>
 <div id="hint">WASD drive &middot; ARROWS or mouse aim/fire &middot; SPACE boost &middot; Q mine &middot; P / ESC pause &middot; M map &middot; O sound &middot; R resolution &middot; F fps &middot; I dev mode</div>
 <script src="config.js"></script>
+<script src="fpsgun.js"></script>
+<script src="assets/guns/guns-2d.js"></script>
 <!-- voxel cars for the GARAGE (tools/car_voxelize.py). A missing file just drops that car from the list. -->
 <script src="assets/voxcars/aspen-64.js"></script>
 <script src="assets/voxcars/sports-64.js"></script>
@@ -4901,6 +4903,7 @@ function walkCollide(p){
 }
 
 function updateWalker(dt){
+  gunTick(dt);
   const w = walker;
   w.t += dt;
   walkMsgT = Math.max(0, walkMsgT - dt);
@@ -4936,8 +4939,8 @@ function updateWalker(dt){
   if(WALK_ARMED && held('Space')) walkFire();
 }
 
-// WALK_ARMED's hook. Off for now; the sidearm goes here.
-function walkFire(){}
+// WALK_ARMED's hook: the pistol (fpsgun.js)
+function walkFire(){ gunFire(); }
 
 function nearCar(){
   const c = cars[0];
@@ -4987,6 +4990,7 @@ function drawWalkView(){
   rcBackground(w.x, w.y, w.a);
   rcWalls(w.x, w.y, w.a);
   rcSprites(w.x, w.y, w.a);
+  if(WALK_ARMED) gunDraw(w);                  // the gun in your hands, before the blit (ascii takes it too)
   EYE_Z = eye0; RC_HORIZON = hz0;
   const p = RC_PANE;
   ctx.save();
@@ -5007,6 +5011,7 @@ function drawWalkHUD(){
     drawBanner();
     ctx.textBaseline='top'; ctx.textAlign='left'; ctx.font='8px monospace';
   }
+  gunMarker();
   // crosshair
   ctx.fillStyle='#e8d5b0'; ctx.globalAlpha=0.7;
   ctx.fillRect(VW/2-4, VH/2, 3, 1); ctx.fillRect(VW/2+2, VH/2, 3, 1);
