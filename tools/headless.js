@@ -52,6 +52,11 @@ function load(file){
     requestAnimationFrame: cb => { rafCb = cb; return 1; },
     localStorage: { getItem: k => store[k] || null, setItem: (k,v) => { store[k] = String(v); } },
     setTimeout: () => 0,
+    // Image: the on-foot pistol's viewmodel asks for one as soon as it draws
+    // (fpsgun.js, 2026-11-08). It never loads here, so `complete` stays false and
+    // the code takes its own "no picture yet" path - which is what we want.
+    Image: class { constructor(){ this.complete = false; this.naturalWidth = 0; this.naturalHeight = 0; }
+                   addEventListener(){} },
     Path2D, Math, Date, console, JSON,
     Uint8ClampedArray, Float32Array, Object, Array, String, Number,
     parseInt, parseFloat, isNaN

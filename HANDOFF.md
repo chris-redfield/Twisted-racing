@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-09 | [Controller support; MOUSE or CONTROLLER in OPTIONS](#2026-11-09--controller-support-mouse-or-controller-in-options) | built, 38 headless checks; **not yet played on a real pad** |
 | 2026-11-08 | [Gun lab: first-person pistol, viewmodel methods compared](#2026-11-08--gun-lab-first-person-pistol-viewmodel-methods-compared) | **pistol is in index.html** (user's picture); lab kept for the 3D method |
 | 2026-11-08 | [Green square heals 17.5% of max hull](#2026-11-08--green-square-heals-175-of-max-hull) | built, verified in Chrome |
 | 2026-11-08 | [Second store at the city gate; city twice as wide](#2026-11-08--second-store-at-the-city-gate-city-twice-as-wide) | built, verified in Chrome |
@@ -43,6 +44,79 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-09 — Controller support; MOUSE or CONTROLLER in OPTIONS
+
+**Goal:** play the whole game on a pad. The mouse stays as it is; the player picks one device and
+keeps it. New file `pad.js`, knobs in `config.js` **7b (`PAD`)**, new `OPTIONS` screen off the title.
+
+**The layout. Left side is the car, right side is the guns:**
+
+| | | | |
+|---|---|---|---|
+| left stick | steer (X, analog) + speed trim (Y) | right stick | the turret |
+| d-pad | the same four, digital | | |
+| L2 | drift (the handbrake) | R2 | missile |
+| L1 | boost | R1 | machine gun |
+| Square | mine | Cross | confirm · in and out of the car |
+| Circle | back | Options | pause |
+
+On foot: left stick walks, right stick looks, L3 runs, R1 is the pistol, Cross gets back in the car.
+
+**Why the buttons landed there.** The two triggers are the two things you **squeeze and hold**: drift
+through a corner on the left, the missile on the right. Both guns sit on the right hand, next to the aim
+stick, so firing never costs you the aim. Boost is a **tap** and it is a driving input, so it joins drift
+on the left shoulder. Mines moved to Square because they are the rarest thing in the game — you carry
+2, 3 at most. The user asked for the guns on R1/R2 specifically, having first tried boost on R2.
+
+**Three things worth knowing before changing it:**
+
+- **The device choice settles the aim fight.** `updateTurret` used to take the mouse branch whenever
+  `numPlayers===1 && mouseIn`, which in 1P is always — a right stick would have been overridden on
+  every frame. There is no last-input-wins arbitration: `padMode()` (pad.js) is the single gate, and
+  it wants *both* `inputMode==='pad'` and a pad actually connected. A saved `'pad'` with nothing
+  plugged in quietly stays on the mouse, so nobody can lock themselves out of their own game.
+- **The turret holds its bearing when the stick is released.** `padAimAngle()` returns `null` inside
+  the deadzone and the caller leaves `c.turret` alone. A stick springs back to centre and a mouse
+  does not; without this the gun snapped to straight-ahead every time you let go. And because
+  `turret` is stored *relative* to the car, the gun keeps pointing where you aimed it while the car
+  slides around underneath — that part was free.
+- **The aim is screen-faithful, not world-faithful.** The ground is squashed by `KY` (0.62), so the
+  stick is read as a direction *on screen* and converted the way the mouse already was: a 45° push
+  comes out as 58.2° in world space. Push the stick at the thing you can see and the shot goes there.
+
+**Presses go through `onPress`.** `padTick(dt)` runs once a frame at the top of `frame()` and
+synthesises key codes (`'Enter'`, `'Escape'`, `MINE_KEY`, …), so the title, OPTIONS, garage, store,
+setup and wreck screens needed no pad code of their own and cannot drift out of step with the
+keyboard. Held controls are read where they are used instead. Edges last a whole frame, so more than
+one reader can act on the same press.
+
+**Screens answer to the pad even in MOUSE mode** — only the game itself is gated on the chosen
+device. This was the other way round at first, and the self-test caught what that meant: someone who
+has just plugged a pad in would have to reach for the keyboard to get to OPTIONS and turn the pad
+on, which is the one thing they wanted the pad for. `padTick` gates the menu block on
+`padConnected()` and everything below it on `padMode()`.
+
+**Also changed:** analog steering is a real gain — `A`/`D` are a flat ±1, so the stick is the first
+thing to give proportional cornering. `MENU_TOP` came down 0.62 → 0.56 because OPTIONS made it a
+three-item menu and the `driving:` line had landed on top of the `ENTER` prompt. The hint line under
+the canvas now follows the chosen device. Split-screen is untouched: in 2P the pad drives for P1 and
+leaves the turret to P2's locked mouse rather than fighting over it.
+
+**Verified:** `node tools/selftest_pad.js` — 59 checks on a fake standard-mapping pad, built on
+`tools/headless.js`: deadzones and analog diagonals, trigger travel, edge-fires-once, menu repeat,
+the KY aim conversion, the turret holding on release, and a full run through title → OPTIONS → a
+live run → on foot → back in the car. It also pins the thing most likely to rot — that in MOUSE mode
+the cursor still owns the turret and the stick does not touch it. Re-run it after touching input.
+Layout checked in Chrome (`--headless=new --screenshot`); `tools/shot.js` is WSL-only and could not
+be used here. `tools/headless.js` gained an `Image` stub, which the on-foot pistol's viewmodel needs
+before it will draw at all — that gap predates this work.
+
+**Not yet played on a real pad.** The button *indices* assume the W3C standard mapping, which is
+what Chrome reports for DualSense/Xbox/8BitDo, but nothing here has been felt by a human. The
+deadzones (`PAD.DZ_MOVE` 0.22, `PAD.DZ_AIM` 0.26) and `PAD.LOOK_RATE` 2.6 are first guesses — expect
+to move them. The one to watch is `DZ_AIM`: too small and the turret twitches when the stick rests
+off-centre, too large and short aim corrections do nothing.
 
 ## 2026-11-08 — Gun lab: first-person pistol, viewmodel methods compared
 

@@ -321,6 +321,38 @@ const WALK_PITCH_UP = 0.78, WALK_PITCH_DOWN = -0.51;   // look up/down limits
 const WALK_PITCH_RATE = 1.4;         // rad/s, Up/Down arrows
 
 // -----------------------------------------------------------------------------
+// 7b. THE CONTROLLER (pad.js)
+// -----------------------------------------------------------------------------
+// Mouse or pad is picked in OPTIONS on the title screen and remembered
+// (localStorage 'scrapheap.input'). With nothing plugged in it is the mouse
+// whatever is saved, so choosing CONTROLLER and unplugging can't lock you out.
+// The chosen one owns the aim; the keyboard keeps working in both, because every
+// dev key hangs off it.
+//
+//   LEFT = the car                       RIGHT = the guns
+//   left stick  steer (X) + speed trim (Y)   right stick  the turret
+//   d-pad       the same four, digital
+//   L2  drift (handbrake)                    R2  missile
+//   L1  boost                                R1  machine gun
+//   Square  mine    Cross  confirm / in and out of the car    Circle  back
+//   Options  pause
+// On foot: left stick walks, right stick looks, L3 runs, R1 is the pistol,
+// Cross gets you back in the car.
+const PAD = {
+  // standard-mapping button indices (the W3C "standard" gamepad: DualSense,
+  // Xbox, 8BitDo and most things that aren't a flight stick)
+  BTN: { CROSS:0, CIRCLE:1, SQUARE:2, TRIANGLE:3, L1:4, R1:5, L2:6, R2:7,
+         SELECT:8, START:9, L3:10, R3:11, UP:12, DOWN:13, LEFT:14, RIGHT:15 },
+  AX:  { LX:0, LY:1, RX:2, RY:3 },
+  DZ_MOVE:     0.22,   // left stick: slack the steering and walking ignore...
+  DZ_AIM:      0.26,   // ...and the firmer push the right stick needs to take the turret
+  TRIG:        0.35,   // how far L2/R2 travel before they count as pressed
+  LOOK_RATE:   2.6,    // rad/s, right stick on foot (the arrows' WALK_TURN is 2.4)
+  MENU_REPEAT: 0.42,   // seconds a held d-pad waits before it starts repeating...
+  MENU_RATE:   0.12,   // ...and the gap between repeats after that
+};
+
+// -----------------------------------------------------------------------------
 // 8. FIRST-PERSON VIEW AND QUALITY
 // -----------------------------------------------------------------------------
 const VIEW_STEPS = [1150, 1800, 2600, 3600, 5000, 7000];   // what 9 / 0 step through

@@ -73,11 +73,31 @@ let   BACK_EDGE = 240;           // soft wall this far behind the camera (per st
 // spring and gain no ground. BOOST_ROOM lends the frame extra room while it burns,
 // eased in and out through c.boostEase - a step back to FRONT_MAX at the end would
 // leave you 90 units "over" and get slapped, which is the hard wall all over again.
-const BOOST_ADD   = 95;          // forward target/ceiling on top of the cruise band
-const BOOST_ACC   = 700;         // acceleration while it burns (ACC is 330)
-const BOOST_TIME  = 0.9;         // seconds one charge burns for
+const BOOST_ADD   = 108;         // the PEAK of the wave, on top of the cruise band
+const BOOST_ACC   = 700;         // acceleration at the peak (ACC is 330 normally)
+const BOOST_TIME  = 1.35;        // seconds one charge burns for
 const BOOST_COOL  = 10;          // seconds to recharge, counted from the end of the burn
 const BOOST_ROOM  = 130;         // extra front-of-frame room while it burns
+const BOOST_COAST = 0.7;         // seconds after the burn the regulator may pull but not brake
+
+// THE WAVE. A flat number for a second reads as a switch being thrown; this reads
+// as a surge. `u` runs 0..1 across the burn: a soft onset, a hard climb to the peak
+// a fifth of the way in, then a long glide off. Both halves meet at the peak with
+// zero slope, so there is no kink to feel, and it starts and ends at zero, so
+// nothing steps when the burn begins or ends. c.boostW is this, sampled per frame,
+// and it is the ONE number the target, the ceiling, the acceleration and the gauge
+// all read - so they cannot drift out of agreement. The boost has no visual effects
+// of its own by design: no flame, no speed lines, no camera kick, no shake, no
+// vignette. All of that was tried and cut. The gauge and the engine note are it.
+const BOOST_PEAK_AT = 0.20;        // where in the burn the peak lands
+function boostEnv(u){
+  if(u<=0 || u>=1) return 0;
+  if(u < BOOST_PEAK_AT){ const t=u/BOOST_PEAK_AT; return t*t*(3-2*t); }   // smoothstep up
+  const t=(u-BOOST_PEAK_AT)/(1-BOOST_PEAK_AT);
+  // the 0.55 holds it near the peak a beat longer than a plain cosine would, which
+  // is what stops the surge feeling over by the halfway mark
+  return Math.pow(0.5+0.5*Math.cos(Math.PI*t), 0.55);
+}
 // how fast boostEase moves, as a multiplier per second. In hard, so the room is
 // there before the car is; out slow (~3s), so the front line never retreats out
 // from under a car that is still ahead of where it used to be.
@@ -242,7 +262,7 @@ const Snd = (function(){
     mine(){ blip(1200,0.04,'square',0.1); },
     // boost: cutoff and pitch both RISE (noise()/blip() ramp either direction), so
     // it reads as winding up rather than as one more explosion
-    boost(){ noise(0.5,0.3,500,2400); blip(140,0.45,'sawtooth',0.15,430); },
+    boost(){ noise(0.72,0.32,450,2600); blip(130,0.6,'sawtooth',0.16,470); },
     engine(rpm, load){
       if(!ac||!engGain) return;
       engGain.gain.value = 0.05 + load*0.05;
@@ -517,7 +537,7 @@ function makeCar(id, isPlayer, x, y, angle, model){
     // boost: boostT = burn left, boostCD = recharge left (only ticks once the burn
     // is done, so the gauge reads "seconds until I can boost again"), boostEase =
     // the smoothed 0..1 that lends the frame its extra room
-    boostT:0, boostCD:0, boostEase:0,
+    boostT:0, boostCD:0, boostEase:0, boostW:0, boostCoast:0,
     // convoy: role is 'player', 'charger' (barrels through from ahead) or 'pursuer' (chases from behind)
     role:isPlayer?'player':'charger', tActive:0,
     turret:0, fps:null
@@ -912,7 +932,6 @@ function tryBoost(c){
   if(c.boostT>0 || c.boostCD>0) return;
   c.boostT = BOOST_TIME; c.boostCD = BOOST_COOL;
   Snd.boost();
-  cam.shake = Math.min(9, cam.shake + 1.2);
 }
 function dropMine(c){
   if(c.minecool>0 || c.minesLeft<=0) return;
@@ -932,7 +951,11 @@ function updateCar(c, dt){
   // boost timers. The recharge waits for the burn to finish rather than running
   // through it, so 10 really is 10 seconds of not having it.
   c.boostT=Math.max(0,(c.boostT||0)-dt);
+  c.boostW = c.boostT>0 ? boostEnv(1 - c.boostT/BOOST_TIME) : 0;
   if(c.boostT<=0) c.boostCD=Math.max(0,(c.boostCD||0)-dt);
+  // the no-brake window: held open through the burn, then times out (see the
+  // throttle for why the tail of the wave must not become the brake pedal)
+  c.boostCoast = c.boostT>0 ? BOOST_COAST : Math.max(0,(c.boostCoast||0)-dt);
   // fast in (~0.1s), slow out (~1.5s): the frame reels you back in after the burn
   c.boostEase = lerp(c.boostEase||0, c.boostT>0?1:0,
                      1-Math.pow(c.boostT>0?BOOST_EASE_IN:BOOST_EASE_OUT, dt));
@@ -994,12 +1017,17 @@ function updateCar(c, dt){
       // not pull. Nothing else about the controller changes - it still measures
       // along the nose, still has no feed-forward, so the hand of it is the same.
       // the boost sits ON TOP of the band, so W+SPACE is the fastest thing there is
-      const targetF = Math.max(60, camV + boost*CRUISE_BAND + (c.boostT>0?BOOST_ADD:0));
+      const targetF = Math.max(60, camV + boost*CRUISE_BAND + BOOST_ADD*(c.boostW||0));
       throttle = clamp((targetF - fwdNow)/40, -1, 1);
       // Just been shunted from behind: coast instead of braking, or the regulator
       // scrubs the shove off within a couple of tenths and you never feel it.
       // Drag still bleeds it, so the boost fades on its own rather than stopping.
-      if(c.ramT>0 && throttle<0) throttle = 0;
+      // The same rule covers the back half of the wave. As the envelope glides down
+      // the target falls away underneath the car, and a regulator that is allowed to
+      // brake will chase it down at -520 - so the end of a boost would feel like
+      // standing on the pedal, which is the opposite of a glide. Pull, never brake:
+      // drag alone bleeds the surge off, and drag IS the downhill.
+      if((c.ramT>0 || c.boostCoast>0) && throttle<0) throttle = 0;
     }
     // the gun rides in every stage now (2P gunner, or the solo driver on mouse/arrows)
     updateTurret(c, dt);
@@ -1025,10 +1053,12 @@ function updateCar(c, dt){
   // The quick one was comfortably the slowest of the three for most of a game.
   // the boost raises the ceiling with the target - a target above MAXF can never
   // be met, which is the same trap the comment above describes for the scroll
-  const bst = (c.isPlayer && c.boostT>0) ? BOOST_ADD : 0;
+  const bw  = c.isPlayer ? (c.boostW||0) : 0;
+  const bst = BOOST_ADD*bw;
   const MAXF = c.isPlayer ? (race ? 232+bst : Math.max(232, camV + CRUISE_BAND + 12) + bst)
              : (race ? 232 : 232*c.pace);
-  const MAXR=95, ACC = bst ? BOOST_ACC : 330;
+  // the punch rides the wave too, so the climb to the peak is the hard part
+  const MAXR=95, ACC = 330 + (BOOST_ACC-330)*bw;
   const SPIN_FREE = 60*Math.PI/180;   // past this you are being spun, not driving
   const SPIN_RIGHT = 2.2;             // rad/s the latched righting turns you back
   if(throttle>0) fwd += ACC*dt*throttle;
@@ -1113,14 +1143,6 @@ function updateCar(c, dt){
           spd0:2, spd1:16, size:2, life0:0.5, life1:1.1, grav:-14, up0:6, up1:22 });
     }
   }
-  // boost flame out of the back while it burns. Blue-white at the head so it does
-  // not read as the damage smoke or as a hit.
-  if(c.boostT>0 && !c.dead){
-    particles(c.x-Math.cos(c.angle)*15, c.y-Math.sin(c.angle)*15, 5, 2,
-      { col:['#bfe8ff','#ffe9a8','#ff9d3d'], spd0:10, spd1:60, size:2,
-        life0:0.1, life1:0.28, grav:0, up0:2, up1:16 });
-  }
-
   if(!c.isPlayer){
     c.moveCheck -= dt;
     if(c.moveCheck<=0){
@@ -3547,8 +3569,11 @@ function drawDriverHUD(){
       me.hp>me.maxHp*0.5?'#4ade80':me.hp>me.maxHp*0.25?'#e0b73c':'#f0503c');
   // BOOST. One continuous read of one number: it drains hot while the charge is
   // being spent, then fills cool over the recharge. Full and cyan = press SPACE.
+  // While it burns the bar IS the wave - it swells to the peak and glides off, so
+  // what you see is the push you have right now. Then it empties and refills cool
+  // over the recharge. Full and cyan = press SPACE.
   const burning = me.boostT>0;
-  const bv  = burning ? me.boostT/BOOST_TIME : 1 - me.boostCD/BOOST_COOL;
+  const bv  = burning ? me.boostW : 1 - me.boostCD/BOOST_COOL;
   const bcol = burning ? '#ffe9a8' : me.boostCD>0 ? '#3f6a80' : '#7fd4ff';
   ctx.fillStyle = burning ? '#ffe9a8' : me.boostCD>0 ? '#5a4a5e' : '#7fd4ff';
   ctx.fillText('BST', hx+5, hy+24);
