@@ -263,6 +263,35 @@ E('gunCool = 0; gunFire()');
 ok('the fifth kills it', E('foes[0].dead') === true, E('foes[0].hp'));
 ok('and it does not walk once it is dead', E('foes[0].walk') === false);
 
+// The pistol used to test the YAW ALONE, which made the line of fire an
+// infinite vertical cylinder: aim at your boots, kill a sentry 500 units off.
+// gunFire now walks the ray the crosshair is on - z(d) = eye - DROP*d - and
+// asks for z inside [0, FOE.H] at the target, plus PISTOL.AIM_PAD pixels.
+head('the round goes where the CROSSHAIR is, not merely where you face');
+onFootInCity();
+const aimAt = (dist, pitch) => E(
+  'clearFoes(); const w = walker; w.pitch = ' + pitch + '; ' +
+  'spawnFoe(w.x + Math.cos(w.a)*' + dist + ', w.y + Math.sin(w.a)*' + dist + ', w.a + Math.PI); ' +
+  'foes[0].hp = 9999; gunCool = 0; gunFire(); 9999 - foes[0].hp');
+ok('level, at 120 units, it is a hit', aimAt(120, 0) === E('PISTOL.DMG'));
+ok('aimed at the road it is a MISS, however well lined up', aimAt(120, -0.35) === 0);
+ok('...and so is aimed over his head', aimAt(120, 0.45) === 0);
+ok('at the full look-down the round lands in the road, yards away',
+   E('walker.pitch = WALK_PITCH_DOWN; gunCool = 0; gunFire(); Math.round(gunImpact.d)') < 40,
+   E('Math.round(gunImpact.d)'));
+ok('...and that shot hit nothing', E('gunImpact.hit') === false);
+// the drop is the renderer's own geometry, so the two cannot disagree
+ok('the drop is the crosshair\'s offset from the horizon, in RC_VD',
+   Math.abs(E('(RC_H/2 - (RC_HORIZON + RC_VD*Math.tan(walker.pitch)))/RC_VD') -
+            E('(RC_H/2 - RC_HORIZON)/RC_VD - Math.tan(walker.pitch)')) < 1e-12);
+ok('level, the line of fire reaches the road at about 210 units',
+   Math.abs(E('walker.pitch = 0; WALK_EYE/((RC_H/2 - RC_HORIZON)/RC_VD)') - 213) < 25,
+   E('Math.round(WALK_EYE/((RC_H/2 - RC_HORIZON)/RC_VD))'));
+ok('so a sentry past it needs the crosshair lifted onto him',
+   aimAt(400, 0) === 0 && aimAt(400, 0.1) === E('PISTOL.DMG'));
+ok('a wall still stops the round before any of this', E('typeof rcZ') === 'object');
+E('walker.pitch = 0; clearFoes()');
+
 head('it ignores you until YOU shoot it');
 E('clearFoes(); const w = walker; const f = spawnFoe(w.x + 60, w.y, 0); f.ox = f.x; f.oy = f.y');
 frame(120);

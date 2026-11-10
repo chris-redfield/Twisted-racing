@@ -7,7 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-10 | [The kerb hides what stands behind it](#2026-11-10--the-kerb-hides-what-stands-behind-it) | built, 162 headless checks + screenshots; **his bug report**; the fix is a CLIP, not a depth test |
+| 2026-11-10 | [The pistol shoots where the crosshair is](#2026-11-10--the-pistol-shoots-where-the-crosshair-is) | built, 171 headless checks + screenshots; **his bug report**; aim now has a VERTICAL - read the 210-unit note |
+| 2026-11-10 | [The kerb hides what stands behind it](#2026-11-10--the-kerb-hides-what-stands-behind-it) | built, 171 headless checks + screenshots; **his bug report**; a CLIP, not a depth test - and read why it is ONE rectangle |
 | 2026-11-10 | [voxcar-viewer.html takes the sentry, and grew the vsc A/B](#2026-11-10--voxcar-viewerhtml-takes-the-sentry-and-grew-the-vsc-ab) | built; the lab the FOE_VSC call was made on; **its walk rig is a COPY of foe.js's** |
 | 2026-11-10 | [Moving sentries: a second population driven by the clock](#2026-11-10--moving-sentries-a-second-population-driven-by-the-clock) | built, 150 headless checks; **played**; read the harness traps at the end |
 | 2026-11-10 | [The sentry's first-person sprite: FOE_VSC](#2026-11-10--the-sentrys-first-person-sprite-foe_vsc) | built, **played and his idea**; 26 px sprite -> 103 px, no new art |
@@ -57,6 +58,86 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+## 2026-11-10 — The pistol shoots where the crosshair is
+
+His report: *"even if I miss the enemy y position by a lot I still hit them - if I shoot a lot
+down but in the general x direction of the enemy, I still hit him."* Exactly right, and the old
+`gunFire` could not have done anything else.
+
+**What it was.** The hit-scan took the yaw and nothing else:
+
+```js
+const fx = Math.cos(w.a), fy = Math.sin(w.a);
+const along = dx*fx + dy*fy, lat = Math.abs(-dx*fy + dy*fx);
+if(along > 0 && along < bd && lat < FOE.HIT_R) { ...hit... }
+```
+
+`w.pitch` is never read. That is an **infinite vertical cylinder** of radius `FOE.HIT_R` round the
+line you face: aim at your own boots, kill a sentry 500 units away. There was no z in the test at
+all, so there was no way for it to miss high or low.
+
+**What it is now.** The walk view is a **shift, not a tilt** — `drawWalkView` slides the horizon by
+`RC_VD*tan(pitch)` and every column stays a world-vertical plane — so a point at height z and
+perpendicular distance d draws at `y = horizon + (eye - z)*RC_VD/d`. Inverting that at the
+crosshair (`RC_H/2`) gives the ray the round actually flies down:
+
+```
+z(d) = eye - DROP*d,      DROP = (RC_H/2 - horizon)/RC_VD
+```
+
+`gunFire` walks that ray. A target is a **box**: the lateral radius it always had, and `z` inside
+`[0, H]` — `FOE.H` for a sentry, the new `PISTOL.CAR_H` for a car. **The lateral radii are
+untouched**, so none of the existing car/sentry tuning moves. And `DROP > 0` now clamps the range
+at `eye/DROP`: aiming down, the round ploughs into the road and nothing past that point is a
+target.
+
+### The number to know before you play it: ~210 units
+
+`rcInit` puts the resting horizon at **0.44** of the pane ("more road, less empty sky") and the
+crosshair is at **0.5**. So the line of fire is already a few degrees down at pitch 0, and at
+`WALK_EYE` 16 with `RC_VD` 146.6 it **meets the road at about 213 units**. Past that you have to
+tilt up and put the crosshair ON him.
+
+That is not a bug introduced here — it is what the picture has always shown, and you can read it
+straight off `.shots/aim-level-hit.png`: level, at 150 units, the crosshair sits on the sentry's
+shins. It is the hit test that used to disagree with the picture. But it *is* a change in how the
+gun feels at range, and **if it plays badly the fix is a design choice, not a bug fix**: either
+leave it (the shot goes where the crosshair is, which is what was asked for), or move the
+crosshair up onto the horizon so the gun fires level. Do not "fix" it by putting the pitch back
+out of the test.
+
+`PISTOL.AIM_PAD` (2) is the forgiveness: **raycaster pixels**, turned into world units at the
+target's distance, so it is a constant slack on screen rather than in the world. An ASCII cell is
+`ASC_CH` = 3 of those tall, so the rule is "within two thirds of a character of his silhouette".
+Set it to 0 for an exact box.
+
+### What this did NOT fix
+
+- **The lateral is still a world cylinder**, `FOE.HIT_R` 8 against a body radius (`FOE.R`) of 6.
+  Deliberate: making it angular like the vertical would move the car numbers too.
+- **The wall clamp ignores pitch.** `bd` is capped by `rcZ[RC_W >> 1]` whatever your elevation, so
+  you cannot shoot over a wall the ray clears. It almost never shows, because the kerb is a `low`
+  ring and out of `rcZ` already and everything else in there is tall. The fix, if it ever matters,
+  is an `rcZH[x]` beside `rcZ[x]` holding that wall's height.
+- **The car's cannon and missile are still flat 2D** — `index.html` ~2176 is
+  `Math.hypot(f.x - s.x, f.y - s.y) < FOE.SHOT_R`, and a shot's `z` is a *render* value only. That
+  is the whole car-combat layer, and moving it would move the balance of every weapon.
+- **A sentry is one box, with no head.** Now that the ray has a z, a headshot band is a few lines:
+  test `z` against the top of `FOE.H` for a multiplier.
+
+**It costs nothing.** `gunFire` is per SHOT, not per frame, and `PISTOL.RATE` caps it at 3.3 a
+second. Measured in Chrome with 50 sentries in the list: **0.37 us a shot**, the added work being
+one `Math.tan` and a compare per candidate. There is no per-frame cost at all.
+
+**Checked.** `tools/selftest_foe.js` is **171** (was 162): level-at-120 hits, aimed-at-the-road
+misses *however well lined up*, over-the-head misses, the full look-down lands the round under 40
+units away, and the drop the test uses is asserted to be the renderer's own geometry rather than a
+second copy of it. Screenshots `.shots/aim-level-hit.png` (crosshair on his shins -> hit, HP 999
+-> 981) and `.shots/aim-down-miss.png` (crosshair on bare road, sentry near the horizon -> miss,
+impact at 36 units). `scrapheap-gun-lab.html` regenerated.
+
+---
+
 ## 2026-11-10 — The kerb hides what stands behind it
 
 His report: *"in the city main road, in ASCII, there is this drawn curb which is basically a
@@ -85,17 +166,53 @@ far edge, `yFar`, not the face's `top`, because the ribbon reaches higher). `rcS
 canvas clip is cut at that row; everything else is left whole, and the clip is popped after the
 sprite. `rcZ` and the tall-wall cull are untouched.
 
-Three details that make it cheap and safe:
+### The clip is ONE integer rectangle, and that is the whole cost of the feature
 
-- **`rcLowY` is stored as a whole row**, so neighbouring columns share a value and the path merges
-  into runs. Measured on a deliberately overloaded frame (152 sentries, 80 billboards, far past
-  what the game shows): **1-4 rectangles per sprite**, over spans of 3-61 columns.
-- **Outside `[sx-rad, sx+rad]` the path is full height.** `rad` is a generous guess
-  (`90*scale` for a car, `50*scale` otherwise), so too small a guess costs a pixel of accuracy at
-  a sprite's edge and can **never** slice a sprite in half.
+The first cut did the honest thing: a clip path with one rectangle per run of equal cut rows,
+1-4 per sprite. It worked, and it cost **+345 us a frame** - `rcSprites` went 0.114 -> 0.467 ms,
+and the pixel walk frame went up **50%**. Benchmarked in Chrome (no virtual time, see PROJECT.md)
+on the 320x180 buffer, 20 occluded sprites a frame, us for all 20:
+
+| what the drawImage goes through | us |
+|---|---|
+| no clip | 179 |
+| **1 rect, integer rows** | **209** |
+| 1 rect, fractional rows | 272 |
+| 2 rects | 505 |
+| 4 rects | 699 |
+
+`clip()` itself is nearly free (~0.8 us); **drawing through it** is what costs. A single
+axis-aligned rectangle on integer rows keeps Skia's fast blit, and a second rectangle - or a
+fractional edge - drops the blit onto a path that costs 4x. So `rcLowClip` takes the **lowest row
+the kerb reaches across the sprite** and cuts flat there, in one rect.
+
+What that gives up: the cut no longer follows the kerb's slope. Measured on a 49-billboard frame
+the kerb's top moves **1-4 rows** across a sprite's span, an ASCII cell is `ASC_CH` = 3 rows tall,
+and taking the LOWEST row errs toward showing more of the sprite - so the error is a couple of
+boot pixels over the kerb, never a gap above it. The two versions are indistinguishable in a
+screenshot.
+
+**What it costs now**, same scene (49 billboards, 20 of them clipped - heavier than the game puts
+on screen):
+
+| | clip off | clip on | delta |
+|---|---|---|---|
+| `rcSprites` | 0.114 ms | 0.132 ms | **+19 us** |
+| walk frame, pixel | 0.671 ms | 0.676 ms | +5 us (**0.75%**) |
+| walk frame, ASCII | 3.841 ms | 3.847 ms | +6 us (**0.15%**) |
+
+Both frame figures are at the noise floor. `rcWalls` also fills 320 floats a frame it did not
+before; it did not move off 0.18 ms.
+
+Two more details that keep it safe:
+
+- **`rcLowY` is stored as a whole row.** That is what makes the rect integer, which is half the
+  table above.
 - **Driving costs nothing.** `low` is `onFoot` at build time, so at the wheel there are no low
   rings, `rcLowAny` stays false and `rcLowClip` returns on its first line. Probed in Chrome:
-  `{lowRings: 0, rcLowAny: false}`.
+  `{lowRings: 0, rcLowAny: false}`. `rad` is a generous guess (`90*scale` for a car, `50*scale`
+  otherwise) and is only used to pick the row, so getting it small costs accuracy, never a
+  sliced sprite.
 
 **Checked.** `tools/selftest_foe.js` is **162** (was 150) — a new head records the kerb's depth and
 row, asserts a sprite behind it clips and one in front does not, and asserts the sentry behind it

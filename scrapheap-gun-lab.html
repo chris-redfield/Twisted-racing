@@ -4742,35 +4742,42 @@ function hitFrame(sp, f, row, lift){
 
 // Clip a sprite against the kerb it is standing behind. `perp` is the sprite's
 // depth, `sx` the column it stands on, `rad` a generous half-width in columns.
-// Every column inside that span where rcWalls found a nearer low wall is cut at
-// that wall's top row; everything outside the span is left whole, so too small
-// a `rad` costs a pixel of accuracy at the sprite's edge and can never slice a
-// sprite in half. Returns true if a clip was pushed - the caller restores.
+// Returns true if a clip was pushed - the caller restores.
 //
 // Why a clip and not a depth test: the kerb is WALK_BARRIER_H (7) tall and a
 // sentry FOE.H (22), so standing right behind it only its boots are hidden.
 // rcZ answers one question per column - "is this sprite behind a wall" - and
 // both answers are wrong for a kerb, which is why `low` rings stay out of it.
+//
+// ONE axis-aligned rectangle, on INTEGER rows. That is not tidiness, it is the
+// whole cost of this feature. Measured in Chrome on the 320x180 buffer, 20
+// occluded sprites a frame (us for all 20):
+//
+//     no clip                              179
+//     1 rect, integer rows                 209      <- here
+//     1 rect, fractional rows              272
+//     2 rects                              505
+//     4 rects                              699
+//
+// A drawImage through a single integer rect keeps Skia's fast blit; a second
+// rectangle, or a fractional edge, drops it onto a path that costs 4x. The
+// honest per-column cut needs one rect per run of equal rows, which measured
+// +345 us a frame - so this takes the LOWEST row the kerb reaches across the
+// sprite instead, and cuts flat there. The kerb's top moves 1-4 rows across a
+// sprite's span (measured on a 49-billboard frame), an ASCII cell is ASC_CH = 3
+// rows tall, and taking the lowest errs toward showing MORE of the sprite, so
+// the error is a couple of boot pixels over the kerb and never a gap above it.
 function rcLowClip(perp, sx, rad){
   if(!rcLowAny) return false;
   let c0 = Math.floor(sx - rad), c1 = Math.ceil(sx + rad);
   if(c0 < 0) c0 = 0;
   if(c1 > RC_W) c1 = RC_W;
-  let need = false;
-  for(let x=c0; x<c1; x++) if(rcLowD[x] < perp){ need = true; break; }
-  if(!need) return false;
+  let cut = -1;
+  for(let x=c0; x<c1; x++) if(rcLowD[x] < perp && rcLowY[x] > cut) cut = rcLowY[x];
+  if(cut < 0 || cut >= RC_H) return false;     // kerb behind the sprite, or off the pane
   rcCtx.save();
   rcCtx.beginPath();
-  if(c0 > 0)    rcCtx.rect(0, 0, c0, RC_H);          // outside the span: uncut
-  if(c1 < RC_W) rcCtx.rect(c1, 0, RC_W-c1, RC_H);
-  let x = c0;
-  while(x < c1){
-    const cut = rcLowD[x] < perp ? rcLowY[x] : RC_H;
-    let e = x+1;
-    while(e < c1 && (rcLowD[e] < perp ? rcLowY[e] : RC_H) === cut) e++;
-    if(cut > 0) rcCtx.rect(x, 0, e-x, cut);
-    x = e;
-  }
+  rcCtx.rect(0, 0, RC_W, cut);
   rcCtx.clip();
   return true;
 }

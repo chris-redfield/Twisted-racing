@@ -16,6 +16,12 @@ const PISTOL = {
   RATE:     0.30,   // seconds between shots (hold to keep firing at this rate)
   RANGE:    1600,   // world units
   HIT_R:    14,     // how far off the line of fire a car still counts as hit (car is 38 x 20)
+  CAR_H:    16,     // ...and how tall it stands, for the up/down half of the same question
+  AIM_PAD:   2,     // raycaster pixels of forgiveness on the vertical, turned into
+                    // world units at the target's distance. An ASCII cell is
+                    // ASC_CH = 3 of those tall, so this is "within two thirds of a
+                    // character of his silhouette" - what the player can actually
+                    // see they aimed at. 0 makes the box exact.
   KICK:     0.16,   // recoil, seconds
   FLASH:    0.05,   // muzzle flash, seconds
 };
@@ -58,32 +64,75 @@ function gunTick(dt){
 }
 
 // ---------------------------------------------------------------- firing
-// Hit-scan along where you face: the nearest enemy whose centre passes within a
-// hit radius of the line, unless a wall (the raycaster's depth down the centre
-// column) is nearer. Your own car (cars[0]) is never a target.
+// Hit-scan along the line the CROSSHAIR is on - not merely the direction you
+// face. The crosshair sits at the middle of the pane, and the walk view is a
+// SHIFT rather than a tilt (drawWalkView: the horizon slides by
+// RC_VD*tan(pitch) and every column stays a world-vertical plane), so a point
+// at height z and perpendicular distance d draws at
 //
-// Cars and sentries are two passes over one running nearest-hit, so whichever is
-// in front takes the round - and each uses its own radius, because PISTOL.HIT_R
-// is 14 for a car 38 x 20 and a sentry is about 12 wide (FOE.HIT_R).
+//     y = horizon + (eye - z)*RC_VD/d
+//
+// Inverting that at y = RC_H/2 gives the ray the round flies down:
+//
+//     z(d) = eye - DROP*d,   DROP = (RC_H/2 - horizon)/RC_VD
+//
+// Two things fall out of it, and both used to be missing:
+//   - PITCH COUNTS. The old test used the yaw alone, which made the line of
+//     fire an INFINITE VERTICAL CYLINDER: aim at your own boots, still kill a
+//     sentry 500 units away as long as he was in the right direction.
+//   - THE ROAD STOPS THE ROUND. Aiming down, the ray meets the ground at
+//     d = eye/DROP, and nothing past that point is a target any more.
+//
+// RC_H/2 is BELOW the resting horizon (rcInit puts that at 0.44 of the pane -
+// "more road, less empty sky"), so even at pitch 0 the line of fire is a few
+// degrees down and reaches the road at about 210 units. That is what the
+// picture has always shown; it is the hit test that used to disagree with it.
+// Past that you have to tilt up and put the crosshair ON him, which is the
+// whole of what was asked for.
+//
+// A target is a BOX now: the lateral radius it always had, and z in [0, H].
+// The lateral radii are untouched, so the car/sentry tuning does not move -
+// PISTOL.HIT_R is 14 for a car 38 x 20, and a sentry is about 12 wide
+// (FOE.HIT_R). Cars and sentries are two passes over one running nearest-hit,
+// so whichever is in front takes the round. Your own car (cars[0]) is never a
+// target.
 function gunFire(){
   if(gunCool > 0) return;
   gunCool = PISTOL.RATE; gunKick = PISTOL.KICK; gunFlash = PISTOL.FLASH; gunShots++; casingPending = true;
   if(typeof Snd !== 'undefined') Snd.shot();
   const w = walker, fx = Math.cos(w.a), fy = Math.sin(w.a);
+  // The eye the view draws from, WITHOUT the head bob (drawWalkView adds up to
+  // 0.7 of it): a shot that misses because you were mid-stride is not something
+  // anyone can read as skill. RC_HORIZON is the resting horizon here - the walk
+  // view sets and restores it around its own draw, and firing happens in the
+  // step, not the draw.
+  const eye = (typeof WALK_EYE !== 'undefined') ? WALK_EYE : EYE_Z;
+  const horizon = RC_HORIZON + RC_VD*Math.tan(w.pitch);
+  const DROP = (RC_H/2 - horizon)/RC_VD;          // height lost per unit of distance
   const wall = (typeof rcZ !== 'undefined' && rcZ && RC_W) ? rcZ[RC_W >> 1] : PISTOL.RANGE;
   let best = null, bestFoe = null, bd = Math.min(PISTOL.RANGE, wall || PISTOL.RANGE);
+  if(DROP > 1e-4) bd = Math.min(bd, eye/DROP);    // the road, when you are aiming down
+  // the vertical slack, as world units at a given distance: AIM_PAD is in raycaster
+  // pixels, and a pixel is worth d/RC_VD of world height out there.
+  const pad = d => PISTOL.AIM_PAD*d/RC_VD;
   for(let i = 1; i < cars.length; i++){
     const c = cars[i];
     if(c.dead) continue;
     const dx = c.x - w.x, dy = c.y - w.y;
     const along = dx*fx + dy*fy, lat = Math.abs(-dx*fy + dy*fx);
-    if(along > 0 && along < bd && lat < PISTOL.HIT_R){ best = c; bestFoe = null; bd = along; }
+    if(along <= 0 || along >= bd || lat >= PISTOL.HIT_R) continue;
+    const z = eye - DROP*along, p = pad(along);
+    if(z < -p || z > PISTOL.CAR_H + p) continue;  // over the roof, or into the road
+    best = c; bestFoe = null; bd = along;
   }
   if(typeof foes !== 'undefined') for(const f of foes){
     if(f.dead) continue;
     const dx = f.x - w.x, dy = f.y - w.y;
     const along = dx*fx + dy*fy, lat = Math.abs(-dx*fy + dy*fx);
-    if(along > 0 && along < bd && lat < FOE.HIT_R){ bestFoe = f; best = null; bd = along; }
+    if(along <= 0 || along >= bd || lat >= FOE.HIT_R) continue;
+    const z = eye - DROP*along, p = pad(along);
+    if(z < -p || z > FOE.H + p) continue;         // over his head, or into the road
+    bestFoe = f; best = null; bd = along;
   }
   if(best || bestFoe){
     // five of these kills a sentry, which is the number FOE.HP is set from
