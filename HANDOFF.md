@@ -210,8 +210,11 @@ first.
 
 - The rescue: where she is held, and what the gear is (see the trap above).
 - What is standing in the square, in detail.
-- Whether the three quests are **pick one per run** (three endings, replay) or all three in one
-  run in any order. Not settled.
+- ~~Whether the three quests are pick-one-per-run or all three in one run.~~ **DECIDED
+  (2026-11-10): pick ONE per run — but the other two quests' LOCATIONS still stand in the city.**
+  You drive past the datacenter square and the mixer yard whether or not you took that job, so the
+  city reads as a place with three things going on in it rather than a level built round your
+  errand. It also means the sites are built once and the quest flag only decides which one is live.
 - Whether the graffiti ships with the demo or later.
 
 ---

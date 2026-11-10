@@ -334,18 +334,21 @@ ok('a fresh run has none of them, and no memory of them',
    E('foes.length') === 0 && E('foeLive.size') === 0 && E('foeKilled.size') === 0 && E('foePlans.size') === 0);
 onFootInCity(true);
 frame(40);                                  // one chunk seeded a frame; 6 are in range
-const nFoe = E('foes.filter(f => f.ck).length');
+// `!f.route` throughout this head: the MOVERS (FOE_WALK) also carry a key and a
+// ck, and they belong to cityWalkers, not to citySentries. Without the filter
+// these checks silently started measuring both populations at once.
+const nFoe = E('foes.filter(f => f.ck && !f.route).length');
 ok('the city has placed some', nFoe > 0, String(nFoe));
 ok('every one is standing on a PAVEMENT (cityGround 2)',
-   E('foes.filter(f => f.ck).every(f => cityGround(f.x, f.y) === 2)') === true);
+   E('foes.filter(f => f.ck && !f.route).every(f => cityGround(f.x, f.y) === 2)') === true);
 ok('each one that has a body is in the live index',
-   E('foes.filter(f => f.key).every(f => foeLive.has(f.key))') === true);
+   E('foes.filter(f => f.key && !f.route).every(f => foeLive.has(f.key))') === true);
 // DROP, not KEEP. KEEP is where a sentry is GIVEN a body; it keeps it until
 // DROP, so the band between the two is legitimately occupied once you have moved
 // at all. (Asserting KEEP here passed only while the city was thin enough that
 // the band usually happened to be empty - one density knob away from failing.)
 ok('and every one with a body is inside DROP',
-   E('foes.filter(f => f.key).every(f => Math.hypot(f.x - walker.x, f.y - walker.y) <= FOE_POP.DROP)') === true);
+   E('foes.filter(f => f.key && !f.route).every(f => Math.hypot(f.x - walker.x, f.y - walker.y) <= FOE_POP.DROP)') === true);
 const blocksSeeded = E('(() => { let n = 0; for(const k of foePlans.keys()){ const [kk, sd] = k.split(":").map(Number); n += cityChunk(kk, sd).blocks.length; } return n; })()');
 // measured against the PLANS - every sentry the city drew - not the subset that
 // happens to have a body inside KEEP right now
@@ -411,34 +414,34 @@ const got = onInnerEdge[0]/Math.max(1, onInnerEdge[1]);
 ok('the road-facing share tracks ROADSIDE',
    onInnerEdge[1] > 0 && got > want*0.6 && got < want*1.5,
    `${(got*100).toFixed(0)}% on the frontage, expected about ${(want*100).toFixed(0)}% at ROADSIDE ${RS}`);
-const nearest = E('Math.min(...foes.filter(f => f.key).map(f => Math.hypot(f.x - walker.x, f.y - walker.y)))');
+const nearest = E('Math.min(...foes.filter(f => f.key && !f.route).map(f => Math.hypot(f.x - walker.x, f.y - walker.y)))');
 ok('and one is close enough to the road to READ when you get out of the car',
    nearest < 400, `nearest is ${Math.round(nearest)} units (22 units tall; past ~600 it is a speck)`);
 ok('...while the live set is still only what is near you, not a whole chunk',
-   E('foes.filter(f => f.key).length') < E('(() => { let n = 0; for(const v of foePlans.values()) n += v.length; return n; })()'),
-   `${E('foes.filter(f => f.key).length')} with a body of ${E('(() => { let n = 0; for(const v of foePlans.values()) n += v.length; return n; })()')} planned`);
+   E('foes.filter(f => f.key && !f.route).length') < E('(() => { let n = 0; for(const v of foePlans.values()) n += v.length; return n; })()'),
+   `${E('foes.filter(f => f.key && !f.route).length')} with a body of ${E('(() => { let n = 0; for(const v of foePlans.values()) n += v.length; return n; })()')} planned`);
 
 head('the same city gives the same sentries back (nothing is saved)');
 // Compared over the ones inside KEEP only: cityFoesOff takes away everything
 // with a key, including any sitting out in the KEEP..DROP band, and coming back
 // only re-bodies what is inside KEEP. The band is therefore expected to differ,
 // and the determinism claim is about the inside-KEEP set.
-const snap = '(() => foes.filter(f => f.key && Math.hypot(f.x - walker.x, f.y - walker.y) <= FOE_POP.KEEP)' +
+const snap = '(() => foes.filter(f => f.key && !f.route && Math.hypot(f.x - walker.x, f.y - walker.y) <= FOE_POP.KEEP)' +
              '.map(f => f.key + "@" + Math.round(f.x) + "," + Math.round(f.y)).sort().join("|"))()';
 const before = E(snap);
 E('cityFoesOff()');
-ok('cityFoesOff takes the city’s away', E('foes.filter(f => f.ck).length') === 0);
+ok('cityFoesOff takes the city’s away', E('foes.filter(f => f.ck && !f.route).length') === 0);
 frame(40);
 ok('and they come back in exactly the same places',
    E(snap) === before, `${before.split('|').length} sentries compared`);
 
 head('...but a sentry you WRECKED stays wrecked');
-E('const f = foes.find(x => x.ck); globalThis.__k = f.key; f.hp = 1; foeDamage(f, 50, 0)');
+E('const f = foes.find(x => x.ck && !x.route); globalThis.__k = f.key; f.hp = 1; foeDamage(f, 50, 0)');
 ok('the kill is remembered by key', E('foeKilled.has(__k)') === true);
 E('walker.y -= 12000'); frame(40);
-ok('walking right out of the city drops them', E('foes.filter(f => f.ck && f.ck.startsWith("-11")).length') === 0);
+ok('walking right out of the city drops them', E('foes.filter(f => f.ck && !f.route && f.ck.startsWith("-11")).length') === 0);
 E('walker.y += 12000'); frame(40);
-ok('coming back brings the others', E('foes.filter(f => f.ck).length') > 0);
+ok('coming back brings the others', E('foes.filter(f => f.ck && !f.route).length') > 0);
 ok('...and leaves the one you killed lying where it fell',
    E('foes.some(f => f.key === __k)') === false);
 
@@ -446,7 +449,7 @@ head('a sentry dropped by hand (Z) is never culled by the spawner');
 E('clearFoes(); const w = walker; spawnFoe(w.x + 100, w.y, 0)');
 ok('it has no chunk', E('foes[0].ck') === null);
 E('walker.y -= 12000'); frame(40);
-ok('and it survives being left 12000 units behind', E('foes.some(f => !f.ck)') === true);
+ok('and it survives being left 12000 units behind', E('foes.some(f => !f.ck && !f.route)') === true);
 
 head('the hit flash is recoloured, not baked (hitFrame takes a row now)');
 E('startMatch(1)'); frame(2);
@@ -526,6 +529,158 @@ ok('one past SHAKE.FAR is silent', booms(E('SHAKE.FAR') + 20) === 0);
 ok('and one right across the city is silent', booms(3000) === 0);
 ok('the player cannot throw a blast as far as SHAKE.FAR (so none of theirs is cut)',
    190 * 2.6 < E('SHAKE.FAR'), '190*2.6 = ' + (190*2.6) + ' vs ' + E('SHAKE.FAR'));
+
+// ===================================================================== MOVERS
+// A SEPARATE population (FOE_WALK) whose position is a pure function of the
+// clock rather than something we integrate. These checks are about the four
+// things that buys: no pathfinding needed, nothing to simulate off screen, no
+// teleport when a body is dropped and given back, and no drift.
+head('the movers are a separate population that walks');
+onFootInCity(true);
+E('walker.y -= 300'); frame(240);
+const movers   = () => E('foes.filter(f => !!f.route).length');
+const standers = () => E('foes.filter(f => f.ck && !f.route).length');
+ok('the city placed some of each', movers() > 0 && standers() > 0,
+   `${movers()} movers, ${standers()} standers`);
+ok('they are a different set, not a relabelling',
+   E('FOE_WALK.SEED') !== E('FOE_POP.SEED'));
+ok('every mover is on a PAVEMENT (cityGround 2), with no pathfinding involved',
+   E('foes.filter(f => f.route).every(f => cityGround(f.x, f.y) === 2)') === true);
+ok('none of them is inside a building',
+   E('foes.filter(f => f.route && cityGround(f.x, f.y) === 3).length') === 0);
+ok('the mover live index has no orphans (citySentries must not cull them)',
+   E('walkLive.size') === movers(),
+   `${E('walkLive.size')} keys vs ${movers()} bodies`);
+
+// they move, but not all at once - the paused ones are standing at an end
+const p0 = E('foes.filter(f => f.route).map(f => f.x + "," + f.y)');
+frame(120);
+const p1 = E('foes.filter(f => f.route).map(f => f.x + "," + f.y)');
+let shifted = 0;
+for(let i = 0; i < Math.min(p0.length, p1.length); i++) if(p0[i] !== p1[i]) shifted++;
+ok('most of them have moved after two seconds', shifted > p0.length*0.5,
+   `${shifted} of ${p0.length} moved`);
+
+head('a mover is driven by the CLOCK, not by the frame');
+ok('walkAt is pure: the same route at the same t gives the same point',
+   E('(() => { const rt = foes.find(f => f.route).route; const a = walkAt(rt, 123.456), b = walkAt(rt, 123.456);' +
+     ' return a.x === b.x && a.y === b.y && a.phase === b.phase; })()') === true);
+ok('...and a different t gives a different one',
+   E('(() => { const rt = foes.find(f => f.route).route;' +
+     ' return walkAt(rt, 0).x !== walkAt(rt, rt.arc/rt.spd*0.5).x || walkAt(rt, 0).y !== walkAt(rt, rt.arc/rt.spd*0.5).y; })()') === true);
+// the whole point of the clock: leave, come back, and it is where it SHOULD be
+E('globalThis.__wk = foes.find(f => f.route).route.key');
+E('walker.y -= 12000'); frame(60);
+ok('walking away takes its body (and nothing is left in the index)',
+   E('foes.some(f => f.route && f.route.key === globalThis.__wk)') === false &&
+   E('walkLive.has(globalThis.__wk)') === false);
+E('walker.y += 12000'); frame(60);
+ok('coming back puts it EXACTLY where the schedule says - no teleport to the start',
+   E('(() => { const f = foes.find(f => f.route && f.route.key === globalThis.__wk); if(!f) return -1;' +
+     ' const p = walkAt(f.route, matchTime); return Math.hypot(f.x - p.x, f.y - p.y); })()') < 0.001);
+ok('an off-duty mover costs nothing: far more routes exist than have bodies',
+   E('(() => { let n = 0; for(const v of walkPlans.values()) n += v.length; return n; })()') > movers()*1.5,
+   `${E('(() => { let n = 0; for(const v of walkPlans.values()) n += v.length; return n; })()')} routes, ${movers()} bodies`);
+
+head('shoot a mover and it leaves its round, then goes back to it');
+onFootInCity(true);
+E('walker.y -= 300'); frame(240);
+quietStreet();                      // no hunter is going to run the subject over
+E('globalThis.__m = foes.find(f => f.route && !f.dead); globalThis.__m.hp = 9999;' +
+  'globalThis.__mx = globalThis.__m.x; globalThis.__my = globalThis.__m.y;');
+E('foeDamage(globalThis.__m, 5, 0)');
+ok('your bullet provokes it', E('globalThis.__m.mad') === true);
+frame(120);
+ok('it leaves the route to chase you',
+   E('Math.hypot(globalThis.__m.x - globalThis.__mx, globalThis.__m.y - globalThis.__my)') > 20);
+// Park the walker at a MEASURED distance from the mover: over GIVE_UP (900) so it
+// loses interest, under FOE_WALK.DROP (2400) so the body survives to rejoin. It
+// has to be measured, not guessed - nudging the walker 1500 units only opened the
+// gap to 897 (the geometry is sideways) and the mover, closing at CHASE_SPD on a
+// stationary target, simply never gave up.
+E('walker.x = globalThis.__m.x + 1600; walker.y = globalThis.__m.y');
+frame(240);
+ok('it gives up and is still the same body (not culled mid-test)',
+   E('globalThis.__m.mad') === false && E('foes.includes(globalThis.__m)') === true);
+frame(420);
+ok('and it is back on its schedule',
+   E('globalThis.__m.rejoin') !== true &&
+   E('(() => { const f = globalThis.__m, p = walkAt(f.route, matchTime);' +
+     ' return Math.hypot(f.x - p.x, f.y - p.y); })()') < 1,
+   `off by ${E('(() => { const f = globalThis.__m, p = walkAt(f.route, matchTime); return Math.hypot(f.x - p.x, f.y - p.y); })()').toFixed(2)}`);
+// REJOIN_T is the backstop, but it only works if the hurry-back outruns the route
+ok('the hurry-back speed beats the fastest mover, or it would never arrive',
+   Math.max(E('FOE_AI.CHASE_SPD'), E('FOE_WALK.SPD')*2) >
+   E('FOE_WALK.SPD') * Math.max(...E('FOE_WALK.REASONS.map(r => r.spd)')));
+
+head('the reasons are weights, and FOE_WALK.ON is a real off switch');
+const planMix = E('(() => { const c = {}; let n = 0;' +
+  ' for(let k = -30; k < -11; k++) for(const sd of [-1, 1]) for(const rt of walkChunkPlan(k, sd)) { c[rt.reason] = (c[rt.reason] || 0) + 1; n++; }' +
+  ' return { n, c }; })()');
+const wTot = E('FOE_WALK.REASONS.reduce((a, r) => a + r.w, 0)');
+let mixOk = planMix.n > 200;
+for(const r of E('FOE_WALK.REASONS.map(r => [r.name, r.w])')){
+  const got = (planMix.c[r[0]] || 0)/planMix.n, want = r[1]/wTot;
+  if(got < want*0.75 || got > want*1.25) mixOk = false;
+}
+ok('every reason appears at about its weight', mixOk,
+   `${planMix.n} routes: ${JSON.stringify(planMix.c)}`);
+ok('all five reasons are represented',
+   Object.keys(planMix.c).length === E('FOE_WALK.REASONS.length'));
+E('FOE_WALK.ON = false; cityWalkersOff()'); frame(120);
+ok('FOE_WALK.ON = false removes every mover...', movers() === 0);
+ok('...and leaves the standing city untouched', standers() > 0, `${standers()} standers`);
+E('FOE_WALK.ON = true'); frame(240);
+ok('...and turning it back on brings them back', movers() > 0, `${movers()} movers`);
+
+// walkFit trims a route that does not fit rather than throwing the MOVER away.
+// In the city as it stands today it never fires - 0 of 2790 routes needed it,
+// because every pavement ring here is fully walkable. It is kept because
+// CITY_STYLE (SLUMS / WIDE / DOWNTOWN) changes block sizes, and a corner inset
+// on a small lot lands inside the footprint. So it is proved here against a
+// stubbed cityGround instead of against a city that happens not to need it.
+head('walkFit trims a route to fit instead of losing the mover');
+onFootInCity(true);
+E('walker.y -= 300'); frame(240);
+E('globalThis.__rt0 = foes.find(f => f.route && !f.route.loop).route');
+// a route exactly as planned is already valid
+ok('a planned route passes validation as it stands',
+   E('walkRouteOk(globalThis.__rt0)') === true);
+// now make the far half of the ring unwalkable and re-fit a copy
+E(`globalThis.__og = cityGround;
+   globalThis.__mk = (rt, frac) => {
+     const bad = ringPoint(rt.ring, rt.s0 + rt.span*frac, 1);
+     cityGround = (x, y) => (Math.hypot(x - bad.x, y - bad.y) < 8 ? 3 : globalThis.__og(x, y));
+   };`);
+E('globalThis.__rt = Object.assign({}, globalThis.__rt0); globalThis.__a0 = globalThis.__rt.arc;');
+E('globalThis.__mk(globalThis.__rt, 0.9)');          // blocked near the far end
+const fitted = E('walkFit(globalThis.__rt)');
+ok('a route blocked near its far end is kept, not rejected', fitted === true);
+ok('...and it came back shorter', E('globalThis.__rt.arc') < E('globalThis.__a0'),
+   `${Math.round(E('globalThis.__a0'))} -> ${Math.round(E('globalThis.__rt.arc'))} units`);
+ok('...and what is left really is walkable', E('walkRouteOk(globalThis.__rt)') === true);
+ok('...and its span still matches its arc (sign kept)',
+   Math.abs(Math.abs(E('globalThis.__rt.span')) - E('globalThis.__rt.arc')) < 0.001);
+E('cityGround = globalThis.__og');
+// the shrink fractions are OF THE ORIGINAL, not compounding - 1, 0.72, 0.5 ...
+// applied in turn to a shrinking arc would collapse to 0.36, 0.12, 0.0006
+ok('the shrink steps are fractions of the ORIGINAL arc, and descend',
+   E('FOE_WALK.SHRINK[0]') === 1 &&
+   E('FOE_WALK.SHRINK.every((v, i, a) => i === 0 || v < a[i-1])') === true);
+// a lapper that cannot lap becomes a ping-pong walker rather than disappearing
+E('globalThis.__lp = Object.assign({}, foes.find(f => f.route && f.route.loop).route)');
+E('globalThis.__mk(globalThis.__lp, 0.5)');
+const lapFit = E('walkFit(globalThis.__lp)');
+ok('a lapper whose ring is blocked falls back to ping-pong, keeping the mover',
+   lapFit === true && E('globalThis.__lp.loop') === false);
+E('cityGround = globalThis.__og');
+// and it does give up when there is genuinely nowhere to walk
+E(`globalThis.__no = Object.assign({}, globalThis.__rt0);
+   cityGround = () => 3;`);
+const none = E('walkFit(globalThis.__no)');
+E('cityGround = globalThis.__og');
+ok('with no pavement anywhere the route is refused (the block keeps one fewer)', none === false);
+ok('ARC_MIN is the floor it refuses below', E('FOE_WALK.ARC_MIN') > 0);
 
 console.log(`\n${total - fails}/${total} passed`);
 process.exit(fails ? 1 : 0);

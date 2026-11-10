@@ -472,7 +472,9 @@ function foeThink(f, dt){
   const dx = T.x - f.x, dy = T.y - f.y, dist = Math.hypot(dx, dy);
   if(dist > FOE_AI.GIVE_UP){
     f.loseT += dt;
-    if(f.loseT > FOE_AI.LOSE_T){ f.mad = false; f.loseT = 0; f.walk = false; f.side = 0; return; }
+    if(f.loseT > FOE_AI.LOSE_T){ f.mad = false; f.loseT = 0; f.walk = false; f.side = 0;
+      if(f.route) f.rejoin = true;        // a mover goes back to its round
+      return; }
   } else f.loseT = 0;
   // Where to put its feet next. Close and in the open: straight at you.
   // Otherwise a few cells down the flow field. If even that comes back empty
@@ -514,6 +516,15 @@ function updateFoes(dt){
   for(const f of foes){
     if(f.dead) continue;
     if(f.hurtFlash > 0) f.hurtFlash = Math.max(0, f.hurtFlash - dt);
+    // A MOVER ON DUTY IS NOT SIMULATED. Its position is read out of the clock:
+    // one evaluation, no integration, no collision, no separation, no stuck
+    // check. This is the whole reason the movers are cheap - see FOE_WALK.
+    if(f.route && !f.mad){
+      if(f.rejoin){ walkRejoin(f, dt); continue; }
+      const p = walkAt(f.route, matchTime);
+      f.x = p.x; f.y = p.y; f.a = p.a; f.phase = p.phase; f.walk = p.walk;
+      continue;
+    }
     foeThink(f, dt);
     if(f.mad) foeMadN++;
     if(!f.walk) continue;
@@ -558,7 +569,8 @@ function updateFoes(dt){
 const foePlans = new Map();       // chunk key -> [{key, x, y, a}]
 const foeLive = new Set();        // sentry keys that have a body right now
 const foeKilled = new Set();      // ...and the ones wrecked this run
-function clearFoeWorld(){ foeLive.clear(); foeKilled.clear(); foePlans.clear(); }
+function clearFoeWorld(){ foeLive.clear(); foeKilled.clear(); foePlans.clear();
+  if(typeof clearWalkWorld === 'function') clearWalkWorld(); }
 
 // Somewhere to stand on a block: its PAVEMENT, the band between the lot's edge
 // and the building's footprint. Picked ON an edge by construction rather than by
@@ -649,7 +661,10 @@ function citySentries(){
   const T = cityTarget();
   for(let i = foes.length - 1; i >= 0; i--){
     const f = foes[i];
-    if(!f.key) continue;                              // dropped by hand (Z): not ours
+    // dropped by hand (Z) has no key and is not ours; a MOVER has a key but
+    // belongs to cityWalkers, and culling it here would strand its key in
+    // walkLive forever - the same trap as clearFoes vs foeLive.
+    if(!f.key || f.route) continue;
     if(Math.hypot(f.x - T.x, f.y - T.y) > FOE_POP.DROP){ foeLive.delete(f.key); foes.splice(i, 1); }
   }
   const k0 = Math.floor((T.y - FOE_POP.KEEP)/CITY_CH);
@@ -677,8 +692,230 @@ function citySentries(){
 // the N key, with the cars: forget every sentry the city put there, and let
 // citySentries lay them out again from scratch when it comes back on.
 function cityFoesOff(){
-  for(let i = foes.length - 1; i >= 0; i--) if(foes[i].key) foes.splice(i, 1);
+  for(let i = foes.length - 1; i >= 0; i--) if(foes[i].key && !foes[i].route) foes.splice(i, 1);
   foeLive.clear();
+}
+
+// ======================================================================= MOVERS
+// A SEPARATE population from the standing sentries (FOE_WALK, config.js 3f).
+// Nothing below reads FOE_POP, and FOE_WALK.ON = false removes the lot without
+// touching the standing city.
+//
+// The whole trick: a mover on duty is never integrated. Its position is read
+// straight out of the clock, so one that is off screen is not stepped, not
+// collided and not drawn - it is a plan entry costing nothing until it comes
+// into range. See the comment on FOE_WALK for why that also kills drift and
+// the teleport-on-return problem.
+
+const walkPlans = new Map();      // chunk key -> [route, ...]
+const walkLive  = new Set();      // route keys that have a body right now
+function clearWalkWorld(){ walkLive.clear(); walkPlans.clear(); }
+
+// The pavement RING of a block: the rectangle the movers walk round, inset from
+// the lot edge by FOE_WALK.LANE of the pavement width. The standers sit at 0.5
+// of it (foeSpot's inset), so a different LANE keeps the two mostly apart.
+function walkRing(b){
+  const inset = CITY_STYLE.PAVE*FOE_WALK.LANE;
+  const x0 = b.x0 + inset, x1 = b.x1 - inset;
+  const y0 = b.y0 + inset, y1 = b.y1 - inset;
+  const w = x1 - x0, h = y1 - y0;
+  if(w <= 0 || h <= 0) return null;               // block too small to walk round
+  return { x0, y0, x1, y1, w, h, per: 2*(w + h) };
+}
+
+// Distance s along the ring -> a point on it, and the heading of travel there.
+// Clockwise from the top-left corner. `dir` is +1 walking with s, -1 against it,
+// 0 standing - so the heading is the tangent, flipped when walking back.
+function ringPoint(r, s, dir){
+  const per = r.per;
+  s = ((s % per) + per) % per;
+  let x, y, a;
+  if(s < r.w)              { x = r.x0 + s;                 y = r.y0; a = 0; }
+  else if(s < r.w + r.h)   { x = r.x1;                     y = r.y0 + (s - r.w); a = Math.PI/2; }
+  else if(s < 2*r.w + r.h) { x = r.x1 - (s - r.w - r.h);   y = r.y1; a = Math.PI; }
+  else                     { x = r.x0;                     y = r.y1 - (s - 2*r.w - r.h); a = -Math.PI/2; }
+  if(dir < 0) a += Math.PI;
+  return { x, y, a };
+}
+
+// Where a route's mover is at time t. Forward leg, pause, back leg, pause.
+// Pure: same route and same t always give the same answer, on any machine, with
+// or without anybody watching.
+function walkAt(rt, t){
+  // A LAP: distance just accumulates and wraps. No ends, so no pause and no
+  // turning round - and it is the longest route in the game, a whole block.
+  if(rt.loop){
+    const s = rt.s0 + rt.spd*(t + rt.t0)*Math.sign(rt.span || 1);
+    const p = ringPoint(rt.ring, s, Math.sign(rt.span || 1));
+    p.phase = ((rt.spd*(t + rt.t0))/FOE_RIG.STRIDE) % 1;
+    p.walk = true;
+    return p;
+  }
+  const legT = rt.arc/rt.spd, pauseT = rt.pause;
+  const period = 2*(legT + pauseT);
+  let u = ((t + rt.t0) % period + period) % period;
+  let f, dir;                                      // f = 0..1 along the arc
+  if(u < legT)                       { f = u/legT;                      dir =  1; }
+  else if(u < legT + pauseT)         { f = 1;                           dir =  0; }
+  else if(u < 2*legT + pauseT)       { f = 1 - (u - legT - pauseT)/legT; dir = -1; }
+  else                               { f = 0;                           dir =  0; }
+  const s = rt.s0 + rt.span*f;
+  const p = ringPoint(rt.ring, s, dir || rt.lastDir || 1);
+  // The rig's phase has to run on distance WALKED, not on f, or the feet skate
+  // at one end of the arc and sprint at the other. Total distance walked is the
+  // whole cycles plus how far into this one, and a cycle is two lengths of arc.
+  const cyc = Math.floor((t + rt.t0)/period);
+  const inCyc = rt.arc*(dir < 0 || u >= legT + pauseT ? 2 - f : f);
+  p.phase = ((cyc*2*rt.arc + inCyc)/FOE_RIG.STRIDE) % 1;
+  p.walk = dir !== 0;
+  return p;
+}
+
+// One chunk's movers, drawn deterministically and cached - the same shape as
+// foeChunkPlan, with its own seed so the two populations are independent.
+function walkChunkPlan(k, side){
+  const key = k + ':' + (side > 0 ? 1 : -1);
+  let plan = walkPlans.get(key);
+  if(plan) return plan;
+  const ch = cityChunk(k, side);
+  const rng = cityRng(hash3(k, side > 0 ? 3 : 4, FOE_WALK.SEED)*4294967296);
+  // the reasons, as a normalised cumulative table (weights need not sum to 1)
+  const tot = FOE_WALK.REASONS.reduce((a, r) => a + r.w, 0) || 1;
+  plan = [];
+  ch.blocks.forEach((b, bi) => {
+    const ring = walkRing(b);
+    const u1 = Math.max(1e-9, rng.next()), u2 = rng.next();
+    const g = Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
+    const n = Math.min(FOE_WALK.MAX, Math.max(0, Math.round(FOE_WALK.MEAN + g*FOE_WALK.SD)));
+    for(let i = 0; i < n; i++){
+      // draw every number whatever happens, so one rejected route cannot shift
+      // the ones after it (the same discipline foeChunkPlan keeps)
+      const pick = rng.next()*tot, s0 = rng.next(), span = rng.next(), bk = rng.next();
+      if(!ring) continue;
+      let acc = 0, reason = FOE_WALK.REASONS[0];
+      for(const r of FOE_WALK.REASONS){ acc += r.w; if(pick <= acc){ reason = r; break; } }
+      // A looping mover's "arc" is the whole ring: one lap, and it never turns.
+      const arc = reason.loop ? ring.per
+                : Math.min(FOE_WALK.ARC0 + span*(FOE_WALK.ARC1 - FOE_WALK.ARC0), ring.per*FOE_WALK.ARC_MAXF);
+      const start = s0*ring.per;
+      const signed = (bk < 0.5 ? -arc : arc);      // walk either way round
+      const rt = { key: 'w' + key + ':' + bi + ':' + i, ck: key, ring,
+                   s0: start, span: signed, arc, loop: !!reason.loop,
+                   spd: FOE_WALK.SPD*reason.spd, pause: FOE_WALK.PAUSE*reason.pause,
+                   t0: bk*997, reason: reason.name };
+      // SHRINK TO FIT rather than reject. A ring has four corners and on an odd
+      // lot one of them lands inside the footprint or on the barrier; the longer
+      // the arc, the likelier it samples a bad one. Throwing the route away
+      // throws away the MOVER, and lengthening the routes cost 23% of them that
+      // way (132 -> 102). So walk the route in from its far end until it fits,
+      // and only give up if even the shortest allowed arc is blocked.
+      if(!walkFit(rt)) continue;
+      plan.push(rt);
+    }
+  });
+  walkPlans.set(key, plan);
+  return plan;
+}
+
+// Trim a route until it is walkable, in place. A LAP cannot be trimmed - it is
+// the whole ring by definition - so a block whose ring is not fully walkable
+// gives its lapper a ping-pong arc instead of losing it.
+function walkFit(rt){
+  if(rt.loop){
+    if(walkRouteOk(rt)) return true;
+    rt.loop = false;                               // cannot lap this block
+    rt.arc = Math.min(rt.arc, rt.ring.per*FOE_WALK.ARC_MAXF);
+    rt.span = (rt.span < 0 ? -1 : 1)*rt.arc;
+  }
+  const base = rt.arc, sign = rt.span < 0 ? -1 : 1;   // fractions are OF THE
+  for(const k of FOE_WALK.SHRINK){                   // ORIGINAL, not compounding
+    const arc = base*k;
+    if(arc < FOE_WALK.ARC_MIN) break;
+    rt.arc = arc;
+    rt.span = sign*arc;
+    if(walkRouteOk(rt)) return true;
+  }
+  return false;
+}
+
+// Every FOE_WALK.SAMPLE units of the arc has to be pavement. This is the only
+// validation a route gets, and it is done ONCE at plan time rather than per
+// frame - which is what lets the mover skip collision entirely afterwards.
+function walkRouteOk(rt){
+  const n = Math.max(2, Math.ceil(rt.arc/FOE_WALK.SAMPLE));
+  // a lap is sampled right round the ring, not along a span
+  const span = rt.loop ? rt.ring.per : rt.span;
+  for(let i = 0; i <= n; i++){
+    const p = ringPoint(rt.ring, rt.s0 + span*(i/n), 1);
+    if(cityGround(p.x, p.y) !== 2) return false;
+  }
+  return true;
+}
+
+// Give bodies to the routes near you and take them off the ones you left, the
+// same way citySentries does - and for the same reason: a chunk is 1400 long but
+// the city's whole width, so a chunk band would spend movers thousands of units
+// out to the side where nobody will ever see them walk.
+function cityWalkers(){
+  if(!enemiesOn || !FOE_WALK.ON) return;
+  const T = cityTarget();
+  for(let i = foes.length - 1; i >= 0; i--){
+    const f = foes[i];
+    if(!f.route) continue;
+    if(Math.hypot(f.x - T.x, f.y - T.y) > FOE_WALK.DROP){ walkLive.delete(f.route.key); foes.splice(i, 1); }
+  }
+  const k0 = Math.floor((T.y - FOE_WALK.KEEP)/CITY_CH);
+  const k1 = Math.min(Math.floor((T.y + FOE_WALK.KEEP)/CITY_CH), Math.floor(cityLimitY/CITY_CH) - 1);
+  let planned = 0;
+  for(let k = k0; k <= k1; k++) for(const side of [-1, 1]){
+    if(!walkPlans.has(k + ':' + (side > 0 ? 1 : -1))){
+      if(planned) continue;                        // one new plan a frame, no more
+      planned++;
+    }
+    for(const rt of walkChunkPlan(k, side)){
+      if(walkLive.has(rt.key) || foeKilled.has(rt.key)) continue;
+      const p = walkAt(rt, matchTime);             // where it should be RIGHT NOW
+      if(Math.hypot(p.x - T.x, p.y - T.y) > FOE_WALK.KEEP) continue;
+      const f = spawnFoe(p.x, p.y, p.a);
+      f.key = rt.key; f.ck = rt.ck; f.route = rt; f.reason = rt.reason;
+      f.phase = p.phase; f.walk = p.walk;
+      walkLive.add(rt.key);
+    }
+  }
+  if(walkPlans.size > 32){
+    const kn = Math.floor(T.y/CITY_CH);
+    for(const key of walkPlans.keys()) if(Math.abs(parseInt(key, 10) - kn) > 6) walkPlans.delete(key);
+  }
+}
+
+// A mover that has been shot leaves its schedule to chase (the normal FOE_AI
+// path). When it gives up, it walks back to wherever the schedule has got to and
+// picks up where it should be - so the route survives being interrupted.
+function walkRejoin(f, dt){
+  const p = walkAt(f.route, matchTime);
+  const dx = p.x - f.x, dy = p.y - f.y, d = Math.hypot(dx, dy);
+  // It hurries back at CHASE_SPD, not at its working pace: the point it is
+  // walking to is ITSELF MOVING, so anything slower than the fastest mover
+  // never arrives. Measured: at working pace it sat 140 units adrift after ten
+  // seconds and stayed there. REJOIN_T is the backstop either way.
+  const spd = Math.max(FOE_AI.CHASE_SPD, FOE_WALK.SPD*2);
+  f.rejoinT = (f.rejoinT || 0) + dt;
+  if(d < spd*dt + 2 || f.rejoinT > FOE_WALK.REJOIN_T){
+    f.x = p.x; f.y = p.y; f.a = p.a; f.rejoin = false; f.rejoinT = 0; return;
+  }
+  const want = Math.atan2(dy, dx);
+  f.a += clamp(angDiff(f.a, want), -FOE_AI.TURN*dt, FOE_AI.TURN*dt);
+  const step = spd*dt;
+  f.x += Math.cos(f.a)*step; f.y += Math.sin(f.a)*step;
+  if(typeof street !== 'undefined' && street) foeCollide(f);
+  f.walk = true;
+  f.phase = ((f.phase || 0) + step/FOE_RIG.STRIDE) % 1;
+}
+
+// the N key: forget the movers too
+function cityWalkersOff(){
+  for(let i = foes.length - 1; i >= 0; i--) if(foes[i].route) foes.splice(i, 1);
+  walkLive.clear();
 }
 
 // ---------------------------------------------------------------- the billboard

@@ -985,6 +985,7 @@ function toggleEnemies(){
   enemiesOn = !enemiesOn;
   if(!enemiesOn){
     cityFoesOff();                  // foe.js: and the sentries the city placed
+    cityWalkersOff();               // ...and the movers
     for(let i=cars.length-1;i>=1;i--){
       const c = cars[i];
       particles(c.x, c.y, 8, 10, {col:[NEON.CYAN, NEON.MAGENTA], spd0:20, spd1:90, size:1, life0:0.2, life1:0.5});
@@ -1175,6 +1176,7 @@ function cityStep(dt){
   }
   citySpawner(dt);
   citySentries();                  // foe.js: scatter them by block, cull what you left
+  cityWalkers();                   // ...and the SEPARATE moving population (FOE_WALK)
   foeRam();                        // ...and a car that drives into one
   if(onFoot) for(const c of cars){
     if(c.isPlayer || c.dead) continue;

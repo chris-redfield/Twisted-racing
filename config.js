@@ -330,6 +330,123 @@ const FOE_POP = {
 };
 
 // -----------------------------------------------------------------------------
+// 3f. THE MOVING SENTRIES - a SEPARATE population from the standing ones
+// -----------------------------------------------------------------------------
+// His rule: the standing sentries (FOE_POP) stay exactly as they are, and the
+// movers are a completely separate sample with their own knobs. Nothing here
+// reads FOE_POP, and turning FOE_WALK.ON off leaves the standing city untouched.
+//
+// WHY THIS IS CHEAP - and it is the whole design. A mover's position is a PURE
+// FUNCTION OF THE CLOCK, not something we integrate frame by frame:
+//
+//     route = an arc of its block's pavement ring (two distances along it)
+//     position(t) = ringPoint(ring, lerp(s0, s1, pingpong(t)))
+//
+// That buys four things at once:
+//   * NO PATHFINDING. The ring is the same line foeSpot already stands sentries
+//     on, so it is pavement by construction. FLOW is no use here anyway - it
+//     points at the player and its clearances are a CAR's.
+//   * NOTHING TO SIMULATE OFF SCREEN. A mover with no body is one plan entry and
+//     costs zero: we do not step it, we EVALUATE it when it comes into range.
+//     His question - "if the thing is not on screen, why bother" - is answered
+//     by never running it at all rather than by running it and hiding it.
+//   * NO TELEPORT ON RETURN. Walk away and come back and the schedule says where
+//     it should be at this instant, whether or not anyone was watching. The
+//     standing sentries get this for free because they never move; the movers
+//     get it because the clock, not the frame, is what moves them.
+//   * NO DRIFT, NO STUCK, NO COLLISION. There is nothing to wedge against a wall,
+//     so none of foeCollide / foeStuck / foeSeparate runs for a mover on duty.
+//
+// The only stateful part is being SHOT: a provoked mover leaves its schedule and
+// chases on the normal FOE_AI path, then rejoins the route when it gives up.
+const FOE_WALK = {
+  ON:     true,    // false = no movers at all; the standing city is unaffected
+  MEAN:      5,    // movers per block, on average. THE KNOB, and it is its own.
+                   // Doubled from 2.5 on 2026-11-10 ("too few of them"), which
+                   // makes it equal to FOE_POP.MEAN - so the city is now a true
+                   // half-and-half: as many walking as standing.
+  SD:      2.0,    // same units as MEAN, so it HAS to be scaled WITH MEAN - this
+                   // went 1.0 -> 2.0 with the MEAN above. Leave it behind and the
+                   // spread shrinks in relative terms until every block gets the
+                   // same number; see FOE_POP.SD for what that looks like at 10x.
+  MAX:      16,    // ceiling per block; a no-op only while it is SLACK, and slack
+                   // means above about MEAN + 3*SD. At MEAN 5 / SD 2 that is 11,
+                   // so the old 8 would have quietly capped the doubling and made
+                   // MEAN stop answering - exactly the trap FOE_POP.MAX documents.
+  SEED:   9173,    // its own seed: the movers are not a reshuffle of the standers
+  KEEP:   1800,    // gets a BODY inside this radius...
+  DROP:   2400,    // ...and loses it past here. Same reasoning as FOE_POP's.
+  LANE:   0.25,    // where the walking lane sits across the pavement, as a
+                   // fraction of CITY_STYLE.PAVE from the lot edge. The standers
+                   // are at 0.5 (the middle), so 0.25 puts the movers on the KERB
+                   // side and keeps them mostly out of each other. The pavement
+                   // is only PAVE wide and a sentry is 12, so they still brush
+                   // past - which is what people walking a street do.
+  SPD:      26,    // units/s on duty, before the reason's multiplier. Below
+                   // FOE_RIG.WALK_SPD (30) on purpose: 30 is a sentry WALKING AT
+                   // you, and a commute should not look as urgent as a pursuit.
+  ARC0:    900,    // shortest route along the ring. Raised with ARC1 so the whole
+                   // DISTRIBUTION moves up, not just its top end: leaving ARC0
+                   // low only lengthened the long routes and left the median at
+                   // 2.6x when the ask was 4x.
+  ARC1:   2600,    // ...and longest. Drawn per mover, then clamped by ARC_MAXF.
+                   // MEASURED (552 blocks, 1403 routes): the pavement ring of a
+                   // block is 1166 units round at the smallest, 1912 median,
+                   // 2894 at the biggest. So ARC1 is the ONLY thing that limits
+                   // route length until it passes about 520 - at ARC1 520 the
+                   // ARC_MAXF clamp fired on 0 of 1403 routes. Raise this to get
+                   // longer walks; raise ARC_MAXF too if you want them longer
+                   // than half a block.
+  ARC_MAXF: 0.90,  // ...but never more than this fraction of the ring. THIS IS THE
+                   // REAL CEILING on a ping-pong route, not ARC1: a route lives on
+                   // ONE block's ring, so it physically cannot be longer than that
+                   // ring. 2026-11-10, asked for "4x bigger": the median ring is
+                   // 1912, so 4x the old median (521 -> 2084) is longer than a
+                   // whole lap of a median block and cannot exist. 0.90 is as far
+                   // as it goes - the mover walks nearly all the way round and
+                   // comes back. To go beyond this a route has to CROSS A STREET
+                   // onto the next block, which is new machinery (see HANDOFF).
+                   // A mover that should circle without reversing gets `loop`.
+  PAUSE:   1.6,    // seconds stood still at each end before turning round
+  // A route that does not fit is TRIMMED, not thrown away - throwing it away
+  // throws away the mover with it. These are the fractions of the drawn arc it
+  // tries, in order, and the shortest arc worth having.
+  SHRINK: [1, 0.72, 0.5, 0.34, 0.22, 0.14],
+  ARC_MIN:  70,    // below this a "route" is just standing about: reject it and
+                   // let the block keep one fewer mover
+  REJOIN_T:  6,    // seconds a mover may spend walking back to its round after
+                   // being shot at, before it just snaps onto the schedule. It
+                   // hurries back at FOE_AI.CHASE_SPD, which MUST stay above the
+                   // fastest mover (SPD * the biggest reason multiplier) or it is
+                   // chasing a schedule that runs away from it and never arrives.
+  SAMPLE:   20,    // route validation step: every this many units along the arc
+                   // must be pavement, or the route is rejected. Corners are the
+                   // reason - on a small block the inset corner lands inside the
+                   // building footprint (the same hazard foeSpot guards against).
+  // WHY each one is walking. Purely parameters - a reason is a weight, a speed
+  // multiplier and a pause multiplier, so adding one is a line. `w` are relative
+  // weights, normalised, so they do not have to sum to 1.
+  REASONS: [
+    // `loop: true` walks the WHOLE ring, one way, for ever - no turning round and
+    // no pause. It is the longest route there is (a full lap of the block, 1166
+    // to 2894 units) and the cheapest, because there is no ping-pong to work
+    // out. It is also what policing actually looks like.
+    { name:'POLICE',   w:0.35, spd:0.85, pause:2.0, loop:true },
+    { name:'DELIVERY', w:0.25, spd:1.05, pause:2.5 },  // office kit, door to door
+    { name:'REMOVAL',  w:0.15, spd:0.70, pause:3.0 },  // shifting the heavy stuff
+    { name:'MILITARY', w:0.15, spd:1.45, pause:0.4 },  // the overlords' police
+    { name:'SOCIAL',   w:0.10, spd:0.90, pause:4.0 },  // his joke, and it stays:
+                                                       // two robots going nowhere
+                                                       // slowly is free character
+  ],
+  // NOT BUILT YET, and each needs art or paired movement rather than a knob:
+  // a carried box for DELIVERY, two sentries carrying one crate for REMOVAL, a
+  // file of three for MILITARY, and a pair for SOCIAL. The schedule supports
+  // them - give two movers the same route and a phase offset - but the sprites
+  // and the pair-keeping do not exist. See HANDOFF.
+};
+
+// -----------------------------------------------------------------------------
 // 4. ENEMIES AND THE SPAWNER
 // -----------------------------------------------------------------------------
 // One entry per model/colour. `size` is relative to the player's car, `hp` to
