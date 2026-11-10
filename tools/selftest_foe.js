@@ -340,8 +340,12 @@ ok('every one is standing on a PAVEMENT (cityGround 2)',
    E('foes.filter(f => f.ck).every(f => cityGround(f.x, f.y) === 2)') === true);
 ok('each one that has a body is in the live index',
    E('foes.filter(f => f.key).every(f => foeLive.has(f.key))') === true);
-ok('and every one with a body is inside KEEP',
-   E('foes.filter(f => f.key).every(f => Math.hypot(f.x - walker.x, f.y - walker.y) <= FOE_POP.KEEP)') === true);
+// DROP, not KEEP. KEEP is where a sentry is GIVEN a body; it keeps it until
+// DROP, so the band between the two is legitimately occupied once you have moved
+// at all. (Asserting KEEP here passed only while the city was thin enough that
+// the band usually happened to be empty - one density knob away from failing.)
+ok('and every one with a body is inside DROP',
+   E('foes.filter(f => f.key).every(f => Math.hypot(f.x - walker.x, f.y - walker.y) <= FOE_POP.DROP)') === true);
 const blocksSeeded = E('(() => { let n = 0; for(const k of foePlans.keys()){ const [kk, sd] = k.split(":").map(Number); n += cityChunk(kk, sd).blocks.length; } return n; })()');
 // measured against the PLANS - every sentry the city drew - not the subset that
 // happens to have a body inside KEEP right now
@@ -397,9 +401,16 @@ const onInnerEdge = E(`(() => {
   }
   return [inner, all];
 })()`);
-ok('most of them stand on their block\u2019s ROAD-FACING edge, not just anywhere on it',
-   onInnerEdge[1] > 0 && onInnerEdge[0]/onInnerEdge[1] > 0.35,
-   `${onInnerEdge[0]} of ${onInnerEdge[1]} on the frontage (ROADSIDE ${E('FOE_POP.ROADSIDE')})`);
+// Measured against whatever ROADSIDE is set to, not a number calibrated at one
+// value of it: picking the inner edge happens either deliberately (ROADSIDE) or
+// by luck (a quarter of the rest), so the share should land near
+// ROADSIDE + (1 - ROADSIDE)/4. A fixed threshold here fails the moment the knob
+// moves, which is when you need the suite to still be telling the truth.
+const RS = E('FOE_POP.ROADSIDE'), want = RS + (1 - RS)/4;
+const got = onInnerEdge[0]/Math.max(1, onInnerEdge[1]);
+ok('the road-facing share tracks ROADSIDE',
+   onInnerEdge[1] > 0 && got > want*0.6 && got < want*1.5,
+   `${(got*100).toFixed(0)}% on the frontage, expected about ${(want*100).toFixed(0)}% at ROADSIDE ${RS}`);
 const nearest = E('Math.min(...foes.filter(f => f.key).map(f => Math.hypot(f.x - walker.x, f.y - walker.y)))');
 ok('and one is close enough to the road to READ when you get out of the car',
    nearest < 400, `nearest is ${Math.round(nearest)} units (22 units tall; past ~600 it is a speck)`);
@@ -408,12 +419,18 @@ ok('...while the live set is still only what is near you, not a whole chunk',
    `${E('foes.filter(f => f.key).length')} with a body of ${E('(() => { let n = 0; for(const v of foePlans.values()) n += v.length; return n; })()')} planned`);
 
 head('the same city gives the same sentries back (nothing is saved)');
-const before = E('foes.filter(f => f.ck).map(f => f.key + "@" + Math.round(f.x) + "," + Math.round(f.y)).sort().join("|")');
+// Compared over the ones inside KEEP only: cityFoesOff takes away everything
+// with a key, including any sitting out in the KEEP..DROP band, and coming back
+// only re-bodies what is inside KEEP. The band is therefore expected to differ,
+// and the determinism claim is about the inside-KEEP set.
+const snap = '(() => foes.filter(f => f.key && Math.hypot(f.x - walker.x, f.y - walker.y) <= FOE_POP.KEEP)' +
+             '.map(f => f.key + "@" + Math.round(f.x) + "," + Math.round(f.y)).sort().join("|"))()';
+const before = E(snap);
 E('cityFoesOff()');
 ok('cityFoesOff takes the city’s away', E('foes.filter(f => f.ck).length') === 0);
 frame(40);
 ok('and they come back in exactly the same places',
-   E('foes.filter(f => f.ck).map(f => f.key + "@" + Math.round(f.x) + "," + Math.round(f.y)).sort().join("|")') === before);
+   E(snap) === before, `${before.split('|').length} sentries compared`);
 
 head('...but a sentry you WRECKED stays wrecked');
 E('const f = foes.find(x => x.ck); globalThis.__k = f.key; f.hp = 1; foeDamage(f, 50, 0)');
@@ -460,6 +477,55 @@ ok('no runtime error over ~12 s of city with sentries in it, chasing, in both pa
    liveErr === null, liveErr && liveErr.message);
 ok('and there are still sentries standing', E('foes.filter(f => !f.dead).length') > 0,
    String(E('foes.filter(f => !f.dead).length')));
+
+// A sentry dying used to kick the camera at full strength from anywhere in the
+// city, because explode() had no distance term at all - it was written when a
+// blast only ever happened under your own bumper. With hunter cars mowing
+// sentries down hundreds of units away, that read on screen as a permanent
+// shake nobody had asked for. The camera kick now has to fall off with range.
+head('a death you cannot see does not shake the camera');
+onFootInCity();
+const kick = (dx, power) => {
+  E('cam.shake = 0');
+  E(`explode(cam.x + ${dx}, cam.y, ${power}, null, 0, 10)`);
+  return E('cam.shake');
+};
+ok('a sentry dying at your feet still kicks the camera', kick(0, E('SHAKE.SENTRY')) > 0);
+ok('...but a whole car exploding there kicks it harder',
+   kick(0, 1.2) > kick(0, E('SHAKE.SENTRY')));
+ok('the kick falls off with distance', kick(400, 1.2) < kick(0, 1.2) && kick(400, 1.2) > 0);
+ok('and past SHAKE.FAR there is none at all', kick(E('SHAKE.FAR') + 1, 2.4) === 0);
+ok('a blast beside the camera is NOT weakened by the fix', kick(0, 2.4) === Math.min(9, 2.4*3));
+ok('SHAKE.NEAR is inside it, SHAKE.FAR outside',
+   E('SHAKE.NEAR') > 0 && E('SHAKE.FAR') > E('SHAKE.NEAR'));
+// the whole point: a quiet street full of sentries being run over off screen
+E('cam.shake = 0');
+let offscreen = 0;
+for(const d of [800, 1200, 2000]){
+  E(`explode(cam.x + ${d}, cam.y, SHAKE.SENTRY, null, 0, 10)`);
+  if(E('cam.shake') > 0) offscreen++;
+}
+ok('three sentries popping off screen leave the camera completely still', offscreen === 0);
+
+// ...and it must not be heard either. Snd.boom() takes no arguments - it is one
+// fixed-volume bang - so a sentry run over across the city was as loud as one
+// under your bumper. Nothing the player fires can reach SHAKE.FAR (a missile is
+// 190 units/s for 2.6 s = 494), so this can only ever silence someone else's.
+head('...and it is not heard either');
+onFootInCity();
+const booms = (dx) => {
+  E('globalThis.__b = 0');
+  E('if(!globalThis.__wrapped){ globalThis.__wrapped = 1; const o = Snd.boom; Snd.boom = function(){ globalThis.__b++; return o.apply(Snd, arguments); }; }');
+  E('globalThis.__b = 0');
+  E(`explode(cam.x + ${dx}, cam.y, SHAKE.SENTRY, null, 0, 10)`);
+  return E('globalThis.__b');
+};
+ok('a sentry dying at your feet is heard', booms(0) === 1);
+ok('one just inside SHAKE.FAR is still heard', booms(E('SHAKE.FAR') - 20) === 1);
+ok('one past SHAKE.FAR is silent', booms(E('SHAKE.FAR') + 20) === 0);
+ok('and one right across the city is silent', booms(3000) === 0);
+ok('the player cannot throw a blast as far as SHAKE.FAR (so none of theirs is cut)',
+   190 * 2.6 < E('SHAKE.FAR'), '190*2.6 = ' + (190*2.6) + ' vs ' + E('SHAKE.FAR'));
 
 console.log(`\n${total - fails}/${total} passed`);
 process.exit(fails ? 1 : 0);

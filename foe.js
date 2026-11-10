@@ -368,7 +368,7 @@ function foeDamage(f, amount, ownerId){
 function foeDie(f, ownerId){
   f.hp = 0; f.dead = true; f.walk = false; f.mad = false;
   if(f.key) foeKilled.add(f.key);       // and it stays wrecked if you come back
-  explode(f.x, f.y, 1.2, null, 0, 10);
+  explode(f.x, f.y, SHAKE.SENTRY, null, 0, 10);   // power only drives the camera kick
   particles(f.x, f.y, 8, 14, {col:[FOE_COL, '#ffa820', '#3a3040'],
     spd0:50, spd1:190, size:2, life0:0.3, life1:0.9});
   particles(f.x, f.y, 2,  8, {col:['#4a3f50', '#6b5c72'],
@@ -564,7 +564,18 @@ function clearFoeWorld(){ foeLive.clear(); foeKilled.clear(); foePlans.clear(); 
 // and the building's footprint. Picked ON an edge by construction rather than by
 // rejection-sampling the box - the band is about a sixth of a block's area, so
 // rejection would miss more often than it hit.
-function foeSpot(b, rng){
+// `placed` is what this block has already put down: a spot too close to one of
+// them is rejected and re-rolled. Without it two sentries stand INSIDE each
+// other - they are 12 units wide and nothing else keeps them apart, since
+// foeSeparate only pushes apart the ones that are chasing you. It bites at any
+// density (at MEAN 2.5 the closest pair was 4 units) and is grotesque at high
+// ones (at MEAN 25, 0 units - straight through each other).
+//
+// It is also what makes the density knob SELF-LIMITING: when a block has no room
+// left, foeSpot runs out of tries and returns null, and that sentry is simply
+// not placed. Wind MEAN up far enough and the city fills to what it can hold
+// rather than stacking bodies in one spot.
+function foeSpot(b, rng, placed){
   const inset = CITY_STYLE.PAVE*0.5;
   // WHICH EDGE is the whole game here. A block has four, and only one of them
   // faces the highway - so picking uniformly put three sentries in four down
@@ -591,7 +602,16 @@ function foeSpot(b, rng){
     else             { y = b.y1 - inset;               x = b.x0 + u*(b.x1 - b.x0); }
     // pavement only (cityGround 2). On a small block a corner inset lands inside
     // the footprint, and a lot's inner edge can fall on the highway barrier.
-    if(cityGround(x, y) === 2) return { x, y };
+    if(cityGround(x, y) !== 2) continue;
+    if(placed){
+      let clash = false;
+      for(const q of placed){
+        const dx = q.x - x, dy = q.y - y;
+        if(dx*dx + dy*dy < FOE_POP.GAP*FOE_POP.GAP){ clash = true; break; }
+      }
+      if(clash) continue;
+    }
+    return { x, y };
   }
   return null;
 }
@@ -609,10 +629,13 @@ function foeChunkPlan(k, side){
     const u1 = Math.max(1e-9, rng.next()), u2 = rng.next();
     const g = Math.sqrt(-2*Math.log(u1))*Math.cos(2*Math.PI*u2);
     const n = Math.min(FOE_POP.MAX, Math.max(0, Math.round(FOE_POP.MEAN + g*FOE_POP.SD)));
+    const placed = [];
     for(let i = 0; i < n; i++){
-      const p = foeSpot(b, rng), a = rng.range(0, Math.PI*2);   // drawn either way,
-      if(p) plan.push({ key: key + ':' + bi + ':' + i, x:p.x, y:p.y, a, ck:key });
-    }                                        // so one bad spot cannot shift the rest
+      const p = foeSpot(b, rng, placed), a = rng.range(0, Math.PI*2);  // drawn either
+      if(!p) continue;                       // way, so one bad spot cannot shift the rest
+      placed.push(p);
+      plan.push({ key: key + ':' + bi + ':' + i, x:p.x, y:p.y, a, ck:key });
+    }
   });
   foePlans.set(key, plan);
   return plan;

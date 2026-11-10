@@ -238,7 +238,7 @@ const FOE_AI = {
 // 14 of them per side. MEAN 0.22 with SD 0.80 rounds and clamps to roughly: six
 // blocks in ten empty, three with one sentry, one with two or three.
 const FOE_POP = {
-  MEAN:    2.5,    // sentries per block, on average. THIS IS THE KNOB: it is the
+  MEAN:      5,    // sentries per block, on average. THIS IS THE KNOB: it is the
                    // only number that changes how many there are. Measured along
                    // the road, averaged over four spots (live = bodies within
                    // KEEP, view = most visible in one first-person look):
@@ -249,13 +249,34 @@ const FOE_POP = {
                    //     1.8   5  |  38     253     1.8   4.8     16
                    //     2.5   6  |  60     249     3.3   8.0     23
                    //     3.5   8  |  80     190     5.0  11.0     28
+                   //     5    12  | 148     200     3.5  14.3     28   <- here
+                   //    25    60  | 377     180    (a swarm - see below)
+                   // The rows up to 3.5 were taken at ROADSIDE 0.6; the MEAN 5
+                   // row is at 0.45, which is why its <300 is LOWER than the
+                   // 3.5 row's even though it has twice the bodies - a smaller
+                   // share of them is standing on the frontage. Compare rows
+                   // only at equal ROADSIDE.
                    // Below ~1.2 the curve is flat and noisy: at those rates the
                    // few blocks near the road dominate and luck decides. Raise
                    // MAX with it or MAX becomes the real limit (see below).
-  SD:     0.80,    // the spread about it. Rounded and clamped at nought, and that
-                   // clamp is what leaves most blocks empty - the whole left half
-                   // of the curve lands on none.
-  MAX:       6,    // never more than this on one block. NOT a second density
+                   //
+                   // THE CITY-CENTRE SET, measured and kept for when the centre
+                   // gets its own density: MEAN 25, SD 8, MAX 60, ROADSIDE 0.2.
+                   // That is ~377 live, ~190 in one view, nearest ~180, and it
+                   // costs 0.28 ms of a 16.7 ms frame. Every number in that set
+                   // has to move together - see SD, MAX and ROADSIDE below.
+  SD:      1.6,    // the spread about it, in the SAME units as MEAN - so it has
+                   // to be scaled WITH it or the distribution quietly dies. At
+                   // MEAN 2.5 an SD of 0.8 is a 33% spread and blocks really do
+                   // differ; leave SD at 0.8 and raise MEAN to 25 and it is a 3%
+                   // spread - every block gets exactly 25 and "some blocks busy,
+                   // some empty" is gone, replaced by a flat rate. Rounded and
+                   // clamped at nought, and at a low MEAN that clamp is what
+                   // leaves most blocks empty (the curve's whole left half lands
+                   // on none). At a high MEAN nothing reaches nought and no
+                   // block is ever empty - unavoidable, and the right look when
+                   // the fiction is a city swarming with guards.
+  MAX:      12,    // never more than this on one block. NOT a second density
                    // knob - it is a ceiling, and a ceiling only does something
                    // while it is being hit. Swept on its own at MEAN 2.5:
                    //    MAX | live  nearest  <600  in view   blocks at the cap
@@ -281,14 +302,31 @@ const FOE_POP = {
                    // nobody will ever walk down. Both sit outside the 1500-unit
                    // billboard cull so nothing appears while you are looking at
                    // it, and DROP > KEEP so the boundary cannot thrash.
-  TRIES:     8,    // tries at finding a pavement spot on a block before giving up
-  ROADSIDE: 0.6,   // share that stand on the block's ROAD-FACING edge rather than
+  TRIES:    14,    // tries at finding a pavement spot on a block before giving up.
+                   // Higher than it looks like it needs to be because GAP makes
+                   // a crowded block reject most rolls; when it does run out,
+                   // that sentry is skipped, which is what caps density at what
+                   // the pavement can actually hold.
+  GAP:      16,    // closest two sentries may be placed, world units. A sentry is
+                   // 12 wide, so below ~12 they overlap and above ~20 a busy
+                   // block starts refusing most of its draws.
+  ROADSIDE: 0.45,  // share that stand on the block's ROAD-FACING edge rather than
                    // anywhere on its perimeter. Not decoration - see foeSpot: a
                    // block has four pavement edges and only one faces the
                    // highway, so picking uniformly hides three sentries in four
                    // down streets the player never walks. At 0 they are
-                   // invisible however high MEAN goes; at 1 they line the route
-                   // like a guard of honour.
+                   // invisible however high MEAN goes.
+                   //
+                   // IT TRADES OFF AGAINST MEAN, and the two must move in
+                   // OPPOSITE directions. At a low MEAN it has to be high or you
+                   // meet nobody (0.6 at MEAN 2.5). At a high MEAN it has to come
+                   // down or the frontage packs shoulder to shoulder and the
+                   // city reads as a guard of honour lining the route - at
+                   // MEAN 25 that is exactly what 0.6 looks like, and 0.2 gives
+                   // the same 377 sentries as scattered knots along the street.
+                   // Compare .shots/extreme-mean-25.png (0.6) with
+                   // .shots/extreme-roadside-0.2.png (0.2). At the MEAN of 5 this
+                   // sits between the two, nearer the low-MEAN end.
 };
 
 // -----------------------------------------------------------------------------
@@ -493,6 +531,30 @@ const PAD = {
   LOOK_RATE:   2.6,    // rad/s, right stick on foot (the arrows' WALK_TURN is 2.4)
   MENU_REPEAT: 0.42,   // seconds a held d-pad waits before it starts repeating...
   MENU_RATE:   0.12,   // ...and the gap between repeats after that
+};
+
+// -----------------------------------------------------------------------------
+// 7b. CAMERA SHAKE
+// -----------------------------------------------------------------------------
+// explode() kicks the camera. For most of this game's life it did so at FULL
+// strength no matter where the blast was, which was invisible as a bug while
+// explosions were rare and always happened under your own bumper.
+//
+// The sentries broke that. The 2D pane shows only +/-160 x +/-90 world units, and
+// hunter cars cruise at CITY_CRUISE, well over FOE.RAM_MIN - so they mow sentries
+// down all over the city, hundreds of units past anything you can see. Measured
+// at MEAN 25, just driving and never firing a shot: 3 deaths in 30 s, ALL THREE
+// further than 600 units away, and the screen shook for 13% of the frames. Firing
+// made it 27 deaths, 25 of them off screen, shaking 27% of the time.
+//
+// So the kick is scaled by how far the camera is from the blast: full inside
+// NEAR, fading to nothing at FAR. A death you cannot see cannot shake you.
+const SHAKE = {
+  NEAR:    110,   // full kick within this many units of the camera
+  FAR:     700,   // nothing at all beyond this; linear in between
+  SENTRY: 0.45,   // blast POWER for a dying sentry. Was 1.2 - the same as a whole
+                  // car exploding (see explode's callers: barrel 0.8, missile 1.0,
+                  // mine 1.1, car 1.2, car bomb 2.4). One person popping is a bump.
 };
 
 // -----------------------------------------------------------------------------

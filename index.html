@@ -1315,13 +1315,28 @@ function particles(x,y,z,n,opt){
       grav:opt.grav==null?140:opt.grav, floor:opt.floor||0, clip:opt.clip||null });
   }
 }
+// 1 right on top of the camera, 0 past SHAKE.FAR. A blast you cannot see has
+// no business moving the view; one under your bumper still hits full force.
+function shakeFade(x, y){
+  const d = Math.hypot(x - cam.x, y - cam.y);
+  if(d <= SHAKE.NEAR) return 1;
+  if(d >= SHAKE.FAR)  return 0;
+  return 1 - (d - SHAKE.NEAR)/(SHAKE.FAR - SHAKE.NEAR);
+}
 function explode(x,y,power,owner,dmg,radius,opt){
   opt = opt || {};
   const z = opt.z || 0;                 // height of the blast above the floor plane
   const clip = opt.clip || null;        // confine the debris, e.g. to the mouth of a pit
   const tight = clip ? 0.4 : 1;         // a blast in a hole cannot throw debris across the arena
-  Snd.boom();
-  cam.shake = Math.min(9, cam.shake + power*3);
+  // Both of these are scaled by how far the CAMERA is from the blast - see SHAKE
+  // in config.js for why. Past SHAKE.FAR there is no kick and no bang at all: a
+  // sentry being run over somewhere across the city is not an event you are in.
+  // Nothing the player fires can reach that far anyway (a missile travels 190
+  // units/s for 2.6 s = 494 units, a mine lands behind you), so this silences
+  // only explosions you had nothing to do with and could not see.
+  const fade = shakeFade(x, y);
+  if(fade > 0) Snd.boom();
+  cam.shake = Math.min(9, cam.shake + power*3*fade);
   fx.push({ ring:true, x, y, z:z+4, t:0, life:0.35, r0:6, r1:radius||58, clip });
   particles(x,y,z+6,18,{col:['#ffe9a8','#ff9d3d','#e04a20'],spd0:40*tight,spd1:200*tight,
     size:3,life0:0.25,life1:0.7,floor:z,clip,up1:70*tight});
