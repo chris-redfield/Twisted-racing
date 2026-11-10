@@ -3,11 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Voxel Car Viewer</title>
-<!-- Standalone lab page: NOT part of the game. Shows a voxelized car (tools/car_voxelize.py)
-     through the game's own renderer: the top-down axonometric bake (left) and the
-     first-person bake run through the ASCII filter (right), both spinning about the
-     car's own vertical axis. rasterCar / asciiBlit are copied from index.html. -->
+<title>Voxel Model Viewer</title>
+<!-- Standalone lab page: NOT part of the game. Shows a voxelized model through the
+     game's own renderer: the top-down axonometric bake (left) and the first-person
+     bake run through the ASCII filter (right), both spinning about the model's own
+     vertical axis. rasterCar / asciiBlit are copied from index.html.
+
+     Takes CARS (tools/car_voxelize.py -> window.VOXCARS) and the SENTRY
+     (tools/sprite_voxelize.py -> window.SPRITEVOX). The two asset formats are
+     identical, so one voxMesh reads both. The sentry needs two things a car does
+     not, and without them this page would flatter it:
+       * a LIGHTING LIFT. rasterCar's LIGHT is (-0.42,-0.58,0.70) and its y is
+         negative, so a standing figure - which shows the camera its +y faces -
+         bakes at the flat 0.44 ambient and reads as a dark smudge. The game lifts
+         it with a canvas brightness filter when it composites (foeSheetEnsure):
+         FOE_LIFT 1.9 in first person, FOE_LIFT_2D 1.4 top-down.
+       * the WALK RIG. The model has no animation of its own; foe.js splits its
+         faces by height and swings them (posedMesh + FOE_RIG). Pose 0 IS the
+         drawing. The rig below is a COPY of foe.js's - keep them in step.
+     The sentry is also framed like the game frames it: feet near the bottom of
+     the cell, not centred like a car. -->
 <script src="assets/voxcars/aspen-48.js"></script>
 <script src="assets/voxcars/aspen-64.js"></script>
 <script src="assets/voxcars/aspen-96.js"></script>
@@ -17,6 +32,9 @@
 <script src="assets/voxcars/biome-48.js"></script>
 <script src="assets/voxcars/biome-64.js"></script>
 <script src="assets/voxcars/biome-96.js"></script>
+<!-- the sentry: same voxelizer output format as the cars, so the same voxMesh reads it -->
+<script src="assets/enemies/sentry-vox.js"></script>
+<script src="assets/enemies/sentry-vox-64.js"></script>
 <style>
   :root { --bg:#0b0810; --panel:#151020; --ink:#e8e0f0; --dim:#8a7f9c; --line:#2a2238; --hot:#ff7a3c; }
   * { box-sizing:border-box; }
@@ -38,7 +56,7 @@
 </style>
 </head>
 <body>
-<h1>VOXEL CAR VIEWER</h1>
+<h1>VOXEL MODEL VIEWER &mdash; cars and the sentry</h1>
 <div class="bar">
   <label>model <select id="model"></select></label>
   <label>colour <input id="color" type="color" value="#c8452a"></label>
@@ -47,8 +65,14 @@
   <label>top zoom <input id="zoom" type="range" min="1" max="6" step="1" value="4"></label>
   <label>ASCII distance <input id="dist" type="range" min="0.3" max="2.5" step="0.05" value="0.45"></label>
   <label>ASCII <select id="amode"><option value="2">solid</option><option value="1">on black</option><option value="0">off (raw FP)</option></select></label>
+  <label title="pixels per world unit the FP sheet is baked at; the game's bakeFoeSheet uses 1">sprite res (vsc) <input id="vsc" type="range" min="1" max="4" step="1" value="1"><span id="vscN">1</span>x</label>
   <button id="pause">pause</button>
   <button id="bake">time bake</button>
+  <span id="figbar" style="display:none; gap:8px 18px; flex-wrap:wrap; align-items:center;">
+    <label>pose <input id="pose" type="range" min="0" max="5" step="1" value="0"><span id="poseN">0</span>/6</label>
+    <label><input id="walk" type="checkbox" checked> walk the rig</label>
+    <label>lift <input id="lift" type="range" min="1" max="3" step="0.05" value="1.9"><span id="liftN">1.90</span></label>
+  </span>
 </div>
 <div class="views">
   <div class="view">
@@ -110,9 +134,62 @@ function voxMesh(d){
   }
   return out;
 }
+// --------------------------------------------- the sentry's walk rig (foe.js copy)
+// Measured off sentry@96: 22.0 tall, 12.4 wide, 4.4 deep; the legs part below z=11.
+const FOE_RIG = { POSES:6, YAWS:16, HIP_Z:11.0, KNEE_Z:6.5, SWING:0.35, KNEE:0.50,
+                  STRIDE:26, WALK_SPD:30 };
+const FOE_LIFT = 1.9, FOE_LIFT_2D = 1.4, FOE_COL = '#a8b6d4';
+function rot2(x, z, pz, th){            // about an axis parallel to y at (0, pz)
+  const c=Math.cos(th), s=Math.sin(th), dx=x, dz=z-pz;
+  return [dx*c - dz*s, pz + dx*s + dz*c];
+}
+function foeLegs(ph){
+  const S=FOE_RIG.SWING, K=FOE_RIG.KNEE, si=Math.sin(ph), co=Math.cos(ph);
+  return [{ th: S*si, knee: K*Math.max(0, co) },      // the +y leg
+          { th:-S*si, knee: K*Math.max(0,-co) }];     // ...and the -y one, half a cycle off
+}
+function foeDrop(legs){                 // keeps the feet on the floor as they swing
+  let lowest=Infinity;
+  for(const L of legs){
+    let [x,z]=rot2(0,0,FOE_RIG.KNEE_Z,-L.knee);
+    [x,z]=rot2(x,z,FOE_RIG.HIP_Z,L.th);
+    if(z<lowest) lowest=z;
+  }
+  return lowest;
+}
+function posedMesh(mesh, pose){
+  if(!pose) return mesh;                                 // pose 0 IS the drawing
+  const ph=pose/FOE_RIG.POSES*Math.PI*2;
+  const legs=foeLegs(ph), drop=foeDrop(legs);
+  const out=[];
+  for(const f of mesh){
+    let cy=0, cz=0;
+    for(const v of f.v){ cy+=v[1]; cz+=v[2]; }
+    cy/=f.v.length; cz/=f.v.length;
+    const L = cz < FOE_RIG.HIP_Z ? legs[cy>=0?0:1] : null;
+    const shin = L && cz < FOE_RIG.KNEE_Z;
+    out.push({ c:f.c, noCull:f.noCull, v: f.v.map(v=>{
+      if(!L) return [v[0], v[1], v[2]-drop];
+      let x=v[0], z=v[2];
+      if(shin) [x,z]=rot2(x,z,FOE_RIG.KNEE_Z,-L.knee);
+      [x,z]=rot2(x,z,FOE_RIG.HIP_Z,L.th);
+      return [x, v[1], z-drop];
+    }) });
+  }
+  return out;
+}
+
 const MODELS = {};
+const FIGURE = {};        // which entries are figures: posed, lifted, stood on their feet
 for(const k of Object.keys(window.VOXCARS||{}).sort((a,b)=>parseInt(a.split('@')[1])-parseInt(b.split('@')[1]))) MODELS[k+' (voxel)'] = voxMesh(VOXCARS[k]);
 MODELS['muscle (game, reference)'] = MUSCLE;
+// the sentry, from SPRITEVOX. Same reader; flagged as a figure so it gets the
+// lift, the walk rig and the game's feet-on-the-floor framing.
+for(const k of Object.keys(window.SPRITEVOX||{}).sort((a,b)=>parseInt(a.split('@')[1])-parseInt(b.split('@')[1]))){
+  const name = k+' (sentry)';
+  MODELS[name] = voxMesh(SPRITEVOX[k]);
+  FIGURE[name] = true;
+}
 
 // ---------------------------------------------------------------- rasterCar (index.html)
 const KY = 0.62, KZ = Math.sqrt(1-KY*KY);
@@ -165,17 +242,47 @@ function rasterCar(sctx, mesh, yaw, col, flash, fw, fh, ax, ay, ky, kz, vsc){
   return img;
 }
 
-// one frame of a car into a canvas, the way bakeCarSheet / bakeFpsSprites do it
-function frameCanvas(mesh, yaw, col, scale, ky, kz, shadow){
-  const fw=Math.ceil(52*scale), fh=Math.ceil(52*scale), ax=Math.round(fw/2), ay=Math.round(fh*0.62);
+// A FIGURE is framed the way foeSheetNew frames it: the cell is sized from the
+// model's own radius and height, and the anchor puts z=0 (the feet) near the
+// bottom instead of in the middle. A car centred in a 52-unit cell is fine; a
+// 22-tall, 12-wide figure in the same cell floats in the air with its feet in
+// the middle of the frame, which is not what the game draws.
+function figureFrame(mesh, ky, scale){
+  let R=0, zmax=0;
+  for(const f of mesh) for(const p of f.v){
+    const r=Math.hypot(p[0],p[1]); if(r>R) R=r;
+    if(p[2]>zmax) zmax=p[2];
+  }
+  const kz=Math.sqrt(1-ky*ky);
+  const fw=Math.ceil(2*R*scale)+2, fh=Math.ceil((zmax*kz + 2*R*ky)*scale)+2;
+  return { fw, fh, ax:fw/2, ay:fh - 1 - R*ky*scale };
+}
+
+// one frame of a model into a canvas, the way bakeCarSheet / bakeFpsSprites do for
+// a car and foeSheetEnsure does for the sentry. opt.lift is the game's brightness
+// filter, applied at COMPOSITE time exactly as foeSheetEnsure applies it - not
+// inside the raster, so the maths stays identical for both.
+function frameCanvas(mesh, yaw, col, scale, ky, kz, shadow, opt){
+  opt = opt || {};
+  let fw, fh, ax, ay;
+  if(opt.feet){
+    const F=figureFrame(mesh, ky, scale);
+    fw=F.fw; fh=F.fh; ax=F.ax; ay=F.ay;
+  } else {
+    fw=Math.ceil(52*scale); fh=Math.ceil(52*scale); ax=Math.round(fw/2); ay=Math.round(fh*0.62);
+  }
   const out=document.createElement('canvas'); out.width=fw; out.height=fh;
   const g=out.getContext('2d'); g.imageSmoothingEnabled=true;
   if(shadow){ g.save(); g.translate(ax+3*scale, ay+2*scale); g.scale(scale, scale*KY);
-    g.fillStyle='rgba(8,5,12,.40)'; g.beginPath(); g.ellipse(0,0,15,8,yaw,0,Math.PI*2); g.fill(); g.restore(); }
+    g.fillStyle='rgba(8,5,12,.40)'; g.beginPath();
+    const rx=opt.feet?6:15, ry=opt.feet?4:8;
+    g.ellipse(0,0,rx,ry,yaw,0,Math.PI*2); g.fill(); g.restore(); }
   const sc=document.createElement('canvas'); sc.width=fw*SS; sc.height=fh*SS;
   const sctx=sc.getContext('2d');
   sctx.putImageData(rasterCar(sctx, mesh, yaw, col, false, fw, fh, ax, ay, ky, kz, scale), 0, 0);
+  if(opt.lift && opt.lift !== 1) g.filter='brightness('+opt.lift+')';
   g.drawImage(sc, 0,0,sc.width,sc.height, 0,0,fw,fh);
+  g.filter='none';
   return out;
 }
 
@@ -236,12 +343,63 @@ const sel=$('model');
 for(const k of Object.keys(MODELS)){ const o=document.createElement('option'); o.value=k; o.textContent=k+' · '+MODELS[k].length+' faces'; sel.appendChild(o); }
 if([...sel.options].some(o=>o.value.startsWith('aspen@64'))) sel.value=[...sel.options].find(o=>o.value.startsWith('aspen@64')).value;
 
+// the figure controls only mean anything for a figure, and the sentry wants its
+// own colour (FOE_COL) and the game's lift rather than a car's orange
+let lastWasFig=null;
+function syncModelUI(){
+  const fig=!!FIGURE[sel.value];
+  $('figbar').style.display = fig ? 'inline-flex' : 'none';
+  if(fig !== lastWasFig){
+    $('color').value = fig ? FOE_COL : '#c8452a';
+    $('lift').value  = fig ? FOE_LIFT : 1;
+    if(fig) $('dist').value = 0.9;        // a sentry is read further off than a car
+    lastWasFig = fig;
+  }
+  $('pose').max = FOE_RIG.POSES-1;
+}
+sel.addEventListener('change', syncModelUI);
+syncModelUI();
+
+// URL CONTROL, so this page can be screenshotted and linked. Any control can be
+// set by its own id - ?model=sentry@96&pose=2&speed=0 - and `model` matches on a
+// prefix so the "(sentry)" suffix need not be typed. It exists because a
+// screenshot's setup JS runs BEFORE this script has filled the <select>, and
+// under Chrome's virtual time there is no later tick to fix it up in (see
+// PROJECT.md on --virtual-time-budget).
+(function fromURL(){
+  const q = new URLSearchParams(location.search.slice(1) || location.hash.slice(1));
+  if(!q.toString()) return;
+  const want = q.get('model');
+  if(want){
+    const hit = [...sel.options].find(o => o.value.indexOf(want) === 0) ||
+                [...sel.options].find(o => o.value.indexOf(want) >= 0);
+    if(hit){ sel.value = hit.value; syncModelUI(); }
+  }
+  for(const [k, v] of q){
+    if(k === 'model') continue;
+    const el = document.getElementById(k);
+    if(!el) continue;
+    if(el.type === 'checkbox') el.checked = !(v === '0' || v === 'false');
+    else el.value = v;
+  }
+  if(q.get('pose') != null) $('walk').checked = false;
+})();
+
+function dims(mesh){            // world-unit bounds, to compare with FOE.H 22
+  let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9,z1=-1e9;
+  for(const f of mesh) for(const p of f.v){
+    if(p[0]<x0)x0=p[0]; if(p[0]>x1)x1=p[0];
+    if(p[1]<y0)y0=p[1]; if(p[1]>y1)y1=p[1];
+    if(p[2]>z1)z1=p[2];
+  }
+  return `${z1.toFixed(1)} tall, ${(y1-y0).toFixed(1)} wide, ${(x1-x0).toFixed(1)} deep`;
+}
 const SGAME=1.6;                          // PX 2 x ZOOM_H 0.8
 const topCv=$('top'), tctx=topCv.getContext('2d');
 const top1=$('top1'), t1ctx=top1.getContext('2d');
 const asc=$('asc'), actx=asc.getContext('2d');
 asc.width=ascCols*GW; asc.height=ascRows*GH;
-let paused=false, yaw=0, last=performance.now(), frameMs=0;
+let paused=false, yaw=0, poseT=0, last=performance.now(), frameMs=0;
 $('pause').onclick=()=>{ paused=!paused; $('pause').textContent=paused?'play':'pause'; };
 // rotate by dragging either view
 for(const c of [topCv, asc]){ let dx=null;
@@ -252,27 +410,57 @@ for(const c of [topCv, asc]){ let dx=null;
 let bakeInfo='';
 $('bake').onclick=()=>{
   // what the game pays: 32 yaw frames x 2 rows (colour + white flash) per sheet, both cameras
-  const mesh=MODELS[sel.value], col=$('color').value;
+  const base=MODELS[sel.value], col=$('color').value, fig=!!FIGURE[sel.value];
+  // A car sheet is 32 yaws x 2 rows (colour + white flash). A sentry sheet is
+  // FOE_RIG.YAWS x FOE_RIG.POSES, and every pose is a fresh posedMesh - so the
+  // rig itself is part of what the bake costs.
+  const n = fig ? FOE_RIG.YAWS*FOE_RIG.POSES : 64;
+  const yawN = fig ? FOE_RIG.YAWS : 32;
+  const opt = { feet:fig, lift:fig?FOE_LIFT:1 };
+  const posed = [];
+  for(let p=0;p<(fig?FOE_RIG.POSES:1);p++) posed.push(fig?posedMesh(base,p):base);
   const t0=performance.now();
-  for(let f=0;f<64;f++) frameCanvas(mesh, f/32*Math.PI, col, SGAME, KY, KZ, true);
+  for(let f=0;f<n;f++) frameCanvas(posed[f%posed.length], f/yawN*Math.PI*2, col, SGAME, KY, KZ, true, {feet:fig,lift:fig?FOE_LIFT_2D:1});
   const t1=performance.now();
-  for(let f=0;f<64;f++) frameCanvas(mesh, f/32*Math.PI, col, 1, KY_FPS, KZ_FPS, false);
+  const vsc=parseFloat($('vsc').value)||1;        // the FP sheet bakes at vsc
+  for(let f=0;f<n;f++) frameCanvas(posed[f%posed.length], f/yawN*Math.PI*2, col, vsc, KY_FPS, KZ_FPS, false, opt);
   const t2=performance.now();
-  bakeInfo=`bake (${sel.value}): top-down sheet ${(t1-t0).toFixed(0)} ms · FP sheet ${(t2-t1).toFixed(0)} ms  (64 frames each, game today ~30 ms a sheet)`;
+  bakeInfo=`bake (${sel.value}): top-down sheet ${(t1-t0).toFixed(0)} ms · FP sheet at vsc ${vsc} ${(t2-t1).toFixed(0)} ms  (${n} frames each` +
+           (fig?` = ${FOE_RIG.YAWS} yaws x ${FOE_RIG.POSES} poses`:` = 32 yaws x 2 rows`) + `, game today ~30 ms a sheet)`;
 };
 
+$('pose').addEventListener('input', ()=>{ $('walk').checked=false; });
 function draw(now){
+  $('poseN').textContent = $('pose').value;
+  $('liftN').textContent = parseFloat($('lift').value).toFixed(2);
+  $('vscN').textContent = $('vsc').value;
   const dt=Math.min(0.1,(now-last)/1000); last=now;
   if(!paused) yaw += dt*parseFloat($('speed').value)*Math.PI;
-  const mesh=MODELS[sel.value], col=$('color').value;
-  const shown = $('snap').checked ? Math.round(yaw/(Math.PI*2)*32)/32*Math.PI*2 : yaw;
+  const base=MODELS[sel.value], col=$('color').value;
+  const fig=!!FIGURE[sel.value];
+  // A figure snaps to FOE_RIG.YAWS (16), not to the cars' 32 - a sentry turns
+  // rarely and is nine character rows tall, so the game halves the bake.
+  const snapN = fig ? FOE_RIG.YAWS : 32;
+  const shown = $('snap').checked ? Math.round(yaw/(Math.PI*2)*snapN)/snapN*Math.PI*2 : yaw;
+  // the walk phase runs on the spin here, which stands in for distance walked
+  if(fig && $('walk').checked && !paused){
+    poseT += dt*parseFloat($('speed').value)*FOE_RIG.POSES*0.9;
+    $('pose').value = Math.floor(poseT) % FOE_RIG.POSES;
+  }
+  const pose = fig ? (parseInt($('pose').value)||0) : 0;
+  const mesh = fig ? posedMesh(base, pose) : base;
+  const liftUI = parseFloat($('lift').value);
+  // the game uses a different lift per camera; keep that ratio as the slider moves
+  const lift2D = fig ? liftUI*(FOE_LIFT_2D/FOE_LIFT) : 1;
+  const liftFP = fig ? liftUI : 1;
+  const opt2D = { feet:fig, lift:lift2D }, optFP = { feet:fig, lift:liftFP };
   const t0=performance.now();
 
   // top-down: the game-size frame, then enlarged
   const z=parseInt($('zoom').value);
-  const f=frameCanvas(mesh, shown, col, SGAME, KY, KZ, true);
+  const f=frameCanvas(mesh, shown, col, SGAME, KY, KZ, true, opt2D);
   top1.width=f.width; top1.height=f.height; t1ctx.drawImage(f,0,0);
-  const big=frameCanvas(mesh, shown, col, SGAME*z, KY, KZ, true);
+  const big=frameCanvas(mesh, shown, col, SGAME*z, KY, KZ, true, opt2D);
   topCv.width=f.width*z; topCv.height=f.height*z;
   tctx.imageSmoothingEnabled=false; tctx.drawImage(big,0,0,topCv.width,topCv.height);
 
@@ -283,9 +471,17 @@ function draw(now){
   rcCtx.fillStyle=sky; rcCtx.fillRect(0,0,RC_W,hor);
   const gr=rcCtx.createLinearGradient(0,hor,0,RC_H); gr.addColorStop(0,'#1c1620'); gr.addColorStop(1,'#3a3040');
   rcCtx.fillStyle=gr; rcCtx.fillRect(0,hor,RC_W,RC_H-hor);
+  // SPRITE RESOLUTION, the cheap half of "why does it look blocky".
+  // bakeFoeSheet rasters at vsc = 1: one sheet pixel per world unit, so the
+  // 22-unit sentry becomes a 26 px sprite and is then MAGNIFIED by distance -
+  // 2.1x at 60 units, 6.9x at 18 (which is FOE_AI.STOP, where a provoked sentry
+  // stops in your face). Baking at vsc and dividing it straight back out keeps
+  // the drawn size identical, so the slider changes the SOURCE resolution and
+  // nothing else. That is the A/B: flip it with ASCII set to "off (raw FP)".
   const mag=1/parseFloat($('dist').value);
-  const fp=frameCanvas(mesh, shown, col, 1, KY_FPS, KZ_FPS, false);
-  const w=fp.width*mag*1.6, h=fp.height*mag*1.6, gy=Math.min(RC_H-3, hor+(RC_H-hor)*0.3*mag);
+  const vsc=parseFloat($('vsc').value)||1;
+  const fp=frameCanvas(mesh, shown, col, vsc, KY_FPS, KZ_FPS, false, optFP);
+  const w=fp.width*mag*1.6/vsc, h=fp.height*mag*1.6/vsc, gy=Math.min(RC_H-3, hor+(RC_H-hor)*0.3*mag);
   rcCtx.imageSmoothingEnabled=false;
   rcCtx.drawImage(fp, RC_W/2-w/2, gy-h*0.62, w, h);
   const mode=parseInt($('amode').value);
@@ -293,11 +489,18 @@ function draw(now){
   else { actx.imageSmoothingEnabled=false; actx.drawImage(rc,0,0,asc.width,asc.height); }
 
   frameMs = frameMs*0.9 + (performance.now()-t0)*0.1;
-  const d=VOXCARS[sel.value.split(' ')[0]];
+  const key=sel.value.split(' ')[0];
+  const d=(window.VOXCARS||{})[key] || (window.SPRITEVOX||{})[key];
   $('stats').innerHTML =
     `<b>${sel.value}</b> · ${mesh.length} faces` + (d ? ` · voxel ${d.vox.toFixed(3)} units = ${(d.vox*SGAME).toFixed(2)} px top-down` : '') +
-    `\nyaw ${(((shown*180/Math.PI)%360+360)%360).toFixed(0)}°  ·  view cost ${frameMs.toFixed(1)} ms/frame (3 rasters + ASCII)` +
-    (bakeInfo ? '\n'+bakeInfo : '\n[time bake] measures what the game would pay to bake this car');
+    (fig ? ` · ${dims(base)}` : '') +
+    `\nyaw ${(((shown*180/Math.PI)%360+360)%360).toFixed(0)}°  (snaps to ${snapN})` +
+    (fig ? `  ·  pose ${pose}/${FOE_RIG.POSES}  ·  lift ${liftFP.toFixed(2)} FP / ${lift2D.toFixed(2)} top-down` : '') +
+    `\nFP sprite: source ${fp.width}x${fp.height} px at vsc ${vsc}` +
+    `  ·  drawn ${Math.round(w)}x${Math.round(h)} px` +
+    `  ·  ${h > fp.height ? 'MAGNIFIED x'+(h/fp.height).toFixed(1) : 'downscaled x'+(fp.height/h).toFixed(1)+' (crisp)'}` +
+    `  ·  view cost ${frameMs.toFixed(1)} ms/frame (3 rasters + ASCII)` +
+    (bakeInfo ? '\n'+bakeInfo : `\n[time bake] measures what the game would pay to bake this ${fig?'sentry':'car'}`);
   requestAnimationFrame(draw);
 }
 requestAnimationFrame(draw);
