@@ -263,6 +263,35 @@ Nothing is committed to yet — pick from here or bring something new.
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
 
+### 2026-11-10 — city enemies: movers, camera shake, sprite resolution, and the demo's story
+Four things, all in `HANDOFF.md` in full. Short version:
+
+- **Camera shake.** `explode()` had **no distance term** and never had — invisible while blasts only
+  happened under your own bumper, fatal once hunter cars started mowing sentries down all over the
+  city. `SHAKE` (config 7b) + `shakeFade()`: full inside 110, nothing past 700, and the sentry's own
+  blast dropped from 1.2 (a whole car) to 0.45. `Snd.boom()` is gated on the same fade, so an
+  off-screen death is neither felt nor heard. 13-27% of frames shaking down to 3-9%.
+- **Sentry density settled**: `FOE_POP` MEAN 5 / SD 2.0-equivalent / MAX 12 / ROADSIDE 0.45. The
+  city-centre set (MEAN 25, ~377 live) is **kept in the config comments** for when the centre gets
+  its own density.
+- **Moving sentries** (`FOE_WALK`, config 3f) — a *separate* population whose position is a **pure
+  function of the clock**, so an off-screen mover is a plan entry costing nothing. 132 movers
+  against 141 standers. POLICE walks a full lap of a block; the rest ping-pong.
+- **`FOE_VSC = 4`** — the first-person sentry sprite was baked at 1 px per world unit (a 26 px
+  sprite magnified up to 6.9x at arm's length). Now 103 px, which is the model's own resolution.
+  **No new art.** `voxcar-viewer.html` grew a `vsc` slider and now takes the sentry; that is where
+  the call was made.
+- **The demo is decided**: three city quests (rescue her / blow the datacenter / cement the
+  bunker), one per run with the other sites still standing, briefed over the radio, two locations
+  each (gear, then the job). Story, canon and open questions are in HANDOFF's quest entry.
+
+**Two harness traps cost real time this session, both written up in HANDOFF's mover entry:**
+`headless.js` must be ticked **once before the match starts** or `acc` goes permanently negative
+and `step()` never runs again; and in the city `keys['ArrowUp']` drives **north, out of the gate**,
+so an unattended "soak" can measure empty wasteland.
+
+`node tools/selftest_foe.js` is now **150 checks**.
+
 ### 2026-11-05 — raycaster: direct wall writes + building occlusion (in place)
 (The "still 42 fps" report was an old copy of the file; the ASCII fix had worked. He asked for the
 two CPU-side ideas anyway - explicitly NOT a WebGL path, so the game never needs a GPU.)

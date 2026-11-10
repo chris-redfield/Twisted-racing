@@ -270,7 +270,7 @@ function onPress(code){
   if(code==='KeyI') devMode=!devMode;
   if(code==='KeyR') setRes(SCALES[(SCALES.indexOf(PX)+1)%SCALES.length]);
   if(code===SOUND_KEY) Snd.toggle();
-  if(code==='KeyG') asciiMode = (asciiMode+1)%3;     // off -> ascii -> ascii on solid cells
+  if(code==='KeyG'){ asciiMode = (asciiMode+1)%3; carSheetsReset(); }   // off -> ascii -> ascii on solid cells
   if(code==='KeyB'){ showBuildings = !showBuildings; if(race && track) buildRingsLoop(); }
   if(code==='KeyH'){ showFence = !showFence; if(race && track) buildRingsLoop(); }
   if(code==='KeyP' && state==='play') paused=!paused;
@@ -4545,12 +4545,26 @@ function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog, slant){
 const KY_FPS = 0.16, KZ_FPS = Math.sqrt(1 - 0.16*0.16);
 const FPS_SHEETS = new Map();
 
+// How sharp the car's first-person sheet is - see CAR_VSC in config.js. 1 while
+// ASCII is on, because asciiBlit quantises the pane into glyphs and the detail
+// cannot survive it, so holding a sharp sheet then is pure memory.
+function carVsc(){ return asciiMode === 0 ? CAR_VSC : 1; }
+// Pressing G changes what carVsc() returns, so the cached sheets are the wrong
+// resolution from that moment. Dropping them keeps ONE set in memory instead of
+// both, at the price of a rebake on the keypress.
+function carSheetsReset(){
+  FPS_SHEETS.clear();
+  for(const c of cars) c.fps = null;
+}
 function bakeFpsSprites(c){
-  const key = (c.mesh ?? c.model ?? 0)+'|'+c.color;
+  const vsc = carVsc();
+  const key = (c.mesh ?? c.model ?? 0)+'|'+c.color+'|'+vsc;
   const hit = FPS_SHEETS.get(key);
   if(hit) return hit;
   const sc = c.scale || 1;
-  const n=32, fw=Math.ceil(52*sc), fh=Math.ceil(52*sc), ax=fw/2, ay=Math.round(fh*0.62);
+  // vsc multiplies the frame AND the raster together, so at vsc 1 this is exactly
+  // what it has always been and the draw divides it straight back out.
+  const n=32, fw=Math.ceil(52*sc*vsc), fh=Math.ceil(52*sc*vsc), ax=fw/2, ay=Math.round(fh*0.62);
   const mesh = MODELS[(c.mesh ?? c.model ?? 0) % MODELS.length];
   const cvs=document.createElement('canvas');
   cvs.width=fw*n; cvs.height=fh*2;
@@ -4561,11 +4575,11 @@ function bakeFpsSprites(c){
   for(let f=0;f<n;f++){
     for(let row=0;row<2;row++){
       sctx.putImageData(rasterCar(sctx, mesh, f/n*Math.PI*2, c.color, row===1,
-                                  fw, fh, ax, ay, KY_FPS, KZ_FPS, 1), 0, 0);
+                                  fw, fh, ax, ay, KY_FPS, KZ_FPS, vsc), 0, 0);
       g.drawImage(scratch, 0,0,scratch.width,scratch.height, f*fw, row*fh, fw, fh);
     }
   }
-  const sheet={ cv:cvs, n, fw, fh, ax, ay };
+  const sheet={ cv:cvs, n, fw, fh, ax, ay, vsc };
   FPS_SHEETS.set(key, sheet);
   return sheet;
 }
@@ -4719,7 +4733,9 @@ function rcSprites(camX, camY, bearing){
 
     if(bb.kind==='car'){
       const c=bb.ref;
-      const sp=c.fps || (c.fps=bakeFpsSprites(c));
+      // the cached sheet is stale the moment G changes what carVsc() wants
+      let sp=c.fps;
+      if(!sp || sp.vsc !== carVsc()) sp = c.fps = bakeFpsSprites(c);
       // pick the frame from the car's heading relative to the line of sight.
       // The bake's camera looks along -y, hence the quarter turn.
       const look=Math.atan2(bb.ref.y-camY, bb.ref.x-camX);
@@ -4730,7 +4746,9 @@ function rcSprites(camX, camY, bearing){
       // magnified about the anchor (ax, 0.62*fh), which is the contact patch, so
       // the wheels stay on the true ground line and the sprite still sits at the
       // column the gun is actually pointing down
-      const s3=scale*(onFoot ? 1 : carMag(perp));
+      // the sheet's own scale divides back out, so the car lands exactly where
+      // and how big it did at vsc 1
+      const s3=scale*(onFoot ? 1 : carMag(perp))/sp.vsc;
       const w=sp.fw*s3, h=sp.fh*s3;
       const dx=sx-sp.ax*s3, dy=ground-sp.ay*s3;
       rcCtx.globalAlpha=(1-fog*0.55) * clamp((1-bb.e)/CAR_FADE, 0, 1);

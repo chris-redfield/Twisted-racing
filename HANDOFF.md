@@ -7,6 +7,9 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-10 | [voxcar-viewer.html takes the sentry, and grew the vsc A/B](#2026-11-10--voxcar-viewerhtml-takes-the-sentry-and-grew-the-vsc-ab) | built; the lab the FOE_VSC call was made on; **its walk rig is a COPY of foe.js's** |
+| 2026-11-10 | [Moving sentries: a second population driven by the clock](#2026-11-10--moving-sentries-a-second-population-driven-by-the-clock) | built, 150 headless checks; **played**; read the harness traps at the end |
+| 2026-11-10 | [The sentry's first-person sprite: FOE_VSC](#2026-11-10--the-sentrys-first-person-sprite-foe_vsc) | built, **played and his idea**; 26 px sprite -> 103 px, no new art |
 | 2026-11-10 | [NEXT: the demo is three city quests](#2026-11-10--next-the-demo-is-three-city-quests) | **plan — START HERE**; the story is settled, nothing built |
 | 2026-11-10 | [Camera shake fell off a cliff; sentry density settled at MEAN 5](#2026-11-10--camera-shake-fell-off-a-cliff-sentry-density-settled-at-mean-5) | built, 120 headless checks; **played — he reported the shake** |
 | 2026-11-09 | [Sentries in the city, with their own AI](#2026-11-09--sentries-in-the-city-with-their-own-ai) | built; 120 headless checks + screenshots; **played, and the first cut was invisible — read "the one that got away"**; its DENSITY figures are superseded by the 2026-11-10 entry |
@@ -52,6 +55,291 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-10 — voxcar-viewer.html takes the sentry, and grew the `vsc` A/B
+
+The lab page that shows a voxel model through the game's own renderer — top-down bake on the left,
+first-person bake through the ASCII filter on the right — now takes the **sentry** as well as the
+cars. It is what the `FOE_VSC` decision was made on.
+
+- **The asset formats are identical.** `tools/sprite_voxelize.py` emits the same
+  `{res, vox, lo, roles, f}` shape as `car_voxelize.py`, so one `voxMesh` reads both. The sentry
+  comes from `window.SPRITEVOX`, the cars from `window.VOXCARS`.
+- **The walk rig is copied in** (`FOE_RIG`, `rot2`, `foeLegs`, `foeDrop`, `posedMesh`) with a pose
+  slider and a "walk the rig" tick. **It is a COPY of foe.js's — keep them in step.** Verified
+  vertex-for-vertex identical to the game across all 6 poses (4,520 faces each); there is a
+  comparison script pattern in the session log if it needs re-checking.
+- **The lighting lift is applied**, or the page would flatter the sentry into a dark smudge the way
+  the game used to: `rasterCar`'s `LIGHT` has a negative y, and a standing figure shows the camera
+  its +y faces, so it bakes at flat 0.44 ambient. `FOE_LIFT` 1.9 first-person, `FOE_LIFT_2D` 1.4
+  top-down, applied as a canvas brightness filter at composite time exactly as `foeSheetEnsure`
+  does. The slider keeps the game's ratio between the two cameras.
+- **A figure is framed like the game frames it** — cell sized from the model's own radius and
+  height, feet near the bottom (`foeSheetNew`'s rule), not centred in a 52-unit cell like a car.
+- **`sprite res (vsc)` slider, 1-4.** It bakes the FP frame at `vsc` and divides it straight back
+  out, so the **drawn size is unchanged** and the slider moves the source resolution and nothing
+  else. That is the A/B: set ASCII to **"off (raw FP)"** and flip it. It applies to cars too — the
+  `scale` argument feeds both the frame size and `rasterCar`'s `vsc`. Shots: `.shots/vsc-1.png`
+  through `.shots/vsc-4.png`.
+- **Figures snap to `FOE_RIG.YAWS` (16)**, cars to 32, as the game bakes them. The "time bake"
+  button costs `YAWS x POSES` for a figure and follows the `vsc` slider.
+
+### Screenshotting it
+
+The page reads **URL parameters** — `?model=sentry@96&pose=2&speed=0` — any control by its own id,
+`model` matching on a prefix. That exists because a `shot.js` setup runs in a `setTimeout(200)`,
+which under Chrome's virtual time is **after every animation frame has already run**, so a setup
+that sets the `<select>` has no later tick to take effect in.
+
+`shot.js` opens the file path directly, so a query string breaks it. **What works** is setup JS that
+sets the controls and then forces a synchronous repaint, because `draw` and `syncModelUI` are
+top-level function declarations and therefore global:
+
+```
+node tools/shot.js voxcar-viewer.html out.png \
+  "const m=document.getElementById('model'); \
+   m.value=[...m.options].find(o=>o.value.indexOf('sentry@96')===0).value; syncModelUI(); \
+   document.getElementById('amode').value='0'; document.getElementById('vsc').value=3; \
+   draw(performance.now());" 3 "document.getElementById('stats').textContent"
+```
+
+The same trick works on `index.html` with `render()` — see `.shots/game-vsc4.png`.
+
+**Virtual time still freezes `performance.now()`**, so the page's own "view cost" and "time bake"
+readings are meaningless in a screenshot run (they come back 0 ms). Those numbers need a real
+browser.
+
+---
+
+## 2026-11-10 — Moving sentries: a second population driven by the clock
+
+His ask: keep the standing sentries exactly as they are, add **movers** that walk A to B, make it
+**very lightweight**, parametrize everything, and *"if the thing is not on screen, why bother"*.
+
+`FOE_WALK` (config.js **3f**) is a completely separate sample. Nothing in it reads `FOE_POP`, and
+`FOE_WALK.ON = false` removes every mover without touching the standing city.
+
+### The one idea the whole thing rests on
+
+**A mover on duty is never simulated. Its position is read out of the clock.**
+
+```
+route        = an arc of its block's pavement ring (two distances along it)
+position(t)  = ringPoint(ring, lerp(s0, s1, pingpong(t)))
+```
+
+That buys four things at once:
+
+- **No pathfinding.** The ring is the same line `foeSpot` already stands sentries on, so it is
+  pavement by construction. `FLOW` is no use here anyway — it points at the player and its
+  clearances are a *car's*.
+- **Nothing to run off screen.** A mover with no body is one plan entry. We do not step it, we
+  *evaluate* it when it comes into range. Measured: **1,298 routes in memory, 161 with bodies.**
+- **No teleport on return.** Walk away, come back, and the schedule says where it should be at this
+  instant whether or not anyone was watching. Verified: **0.000 units** off.
+- **No drift, no collision, no stuck.** None of `foeCollide` / `foeSeparate` / `foeStuck` runs for a
+  mover on duty.
+
+The only stateful part is being **shot**: a provoked mover leaves the schedule, chases on the normal
+`FOE_AI` path, then rejoins.
+
+### Routes
+
+A route is an arc of the block's pavement ring, inset by `LANE` (0.25 of `CITY_STYLE.PAVE`) so the
+movers walk the **kerb** side and the standers keep the middle.
+
+- **POLICE has `loop: true`** — a full lap of the ring, one direction, no turning round, no pause.
+  **1166 to 2894 units, median 1912.** It is the longest route in the game *and* the cheapest,
+  because there is no ping-pong to work out.
+- **The other four ping-pong.** After he asked for 4x longer: **min 900, median 1490, max 2397.**
+
+**The ceiling is geometric, and he should know it:** a ping-pong route lives on ONE block's ring, so
+it cannot be longer than that ring (1166 min, 1904 median). 4x the old median (521 → 2084) is longer
+than a whole lap of a median block and **cannot exist**. We reached **2.9x**; ~3.3x is the hard
+limit at `ARC_MAXF` 0.90. **To go further a route must cross a street onto the next block** — new
+machinery, not a knob.
+
+`walkFit` trims a route that does not fit instead of throwing the **mover** away, and demotes a
+lapper whose ring is blocked to ping-pong. It **never fires today** — 0 of 2,790 routes need it,
+every ring here is walkable — but `CITY_STYLE` (SLUMS / WIDE / DOWNTOWN) changes block sizes, so it
+is kept, and it is proved by 9 checks against a stubbed `cityGround` rather than left as code that
+has never run.
+
+### The reasons are parameters
+
+`REASONS` is a weight, a speed multiplier and a pause multiplier, so adding one is a line: POLICE
+(lap, slow), DELIVERY, REMOVAL, MILITARY (fast), SOCIAL (his joke, kept — two robots going nowhere
+slowly is free character). Verified to appear at their weights over 2,790 routes.
+
+**Not built**, each needing art or paired movement rather than a knob: a carried box for DELIVERY,
+two sentries carrying one crate for REMOVAL, a file of three for MILITARY, a pair for SOCIAL. The
+schedule already supports them — give two movers the same route and a phase offset.
+
+### Density
+
+`MEAN` 5 / `SD` 2.0 / `MAX` 16 → **132 movers against 141 standers, a true half-and-half.** Doubling
+`MEAN` meant moving all three: `SD` is in the same units (the `FOE_POP.SD` trap) and `MAX` 8 would
+have capped it, since slack starts at `MEAN + 3*SD` = 11.
+
+### Cost
+
+`updateFoes` **0.063 ms**, placement **0.265 ms**, of a 16.7 ms frame, with 164 standers + 162
+movers. The 98 movers are the cheap half at ~0.02 ms. Worst case (everyone provoked) is
+self-limiting at ~45, because `foeThink` un-provokes anything past `GIVE_UP` 900 — so
+`foeSeparate`'s O(n²) cannot blow up by raising `MEAN`.
+
+### Three real bugs
+
+1. **`citySentries` was culling movers.** It culls anything with an `f.key` and movers have one, so
+   it removed them and deleted their keys from the **standing** index — **36 of 97 movers
+   permanently orphaned**. Same trap as `clearFoes` vs `foeLive`. Both sites now skip `f.route`.
+2. **The rejoin never converged.** It walked back at working pace toward a point that itself moves
+   at up to 1.45x that — 140 units adrift after ten seconds, for ever. It now hurries at
+   `CHASE_SPD`, with `REJOIN_T` as a backstop. **`CHASE_SPD` must stay above the fastest mover** or
+   this breaks again; that is a check.
+3. **`SHRINK` fractions compounded** (1, 0.72, 0.36, 0.12…) instead of applying to the original.
+
+### Two false alarms of mine, both from bad measurement
+
+- I reported movers dropping 132 → 102 from longer routes being rejected. That was a **four-spot
+  average against a single spot**. The real figure is 132 either way, no loss.
+- Two test failures were my own premises: one measured a **detached object** after its body was
+  culled past `DROP`, the other assumed a mover would give up while it was actually **closing** on a
+  stationary walker at 52 u/s with `GIVE_UP` at 900. Park the walker at a *measured* distance —
+  over `GIVE_UP`, under `DROP`.
+
+### Harness traps, both of which cost time
+
+- **`last = performance.now()` is the real clock and `headless.js` ticks from `t = 0`.** If the match
+  is already in `state === 'play'` on the **first** tick, `dt` is about **-1.8e9 s**, `acc` goes
+  permanently negative and **`step()` never runs again** — the game looks alive and simulates
+  nothing. **Tick once before starting the match.** `selftest_foe.js` only gets away with it because
+  earlier heads tick while the state is `title`.
+- In the city **`keys['ArrowUp']` drives north, back out through the gate**, and `toggleOnFoot()`
+  leaves the walker at the origin. A 40 s "soak in the city" was measuring empty wasteland. Pin the
+  position, face `-Math.PI/2`, and assert the sentry count mid-run.
+
+`node tools/selftest_foe.js` — **150 checks**.
+
+---
+
+## 2026-11-10 — The sentry's first-person sprite: `FOE_VSC`
+
+**He played it and said the sentries were "a squaredy mess".** They were, and nothing was wrong
+with the art.
+
+`rasterCar`'s `vsc` is **pixels per world unit**. `bakeFoeSheet` passed **1**, so the 22-unit
+sentry baked into a **26-pixel** sprite and was then magnified by distance:
+
+| distance | drawn | magnification of a 26 px sheet |
+|---|---|---|
+| 200 u | 16 px | none — the sheet was bigger than needed |
+| 120 u | 27 px | x1.0 |
+| 60 u | 54 px | x2.1 |
+| 25 u | 129 px | x5.0 |
+| **18 u** | **179 px** | **x6.9** — and 18 is `FOE_AI.STOP`, where a provoked sentry stops in your face |
+
+So it looked worst exactly when it mattered most. Over 15 s of ordinary walking it was **never**
+magnified (biggest draw 16 px, 0 of 13,256 draws) — at street distance the blockiness is the
+**pane**, not the sprite, and no amount of sheet resolution touches it.
+
+`sentry@96` is voxelised at res 96 and the bake was throwing roughly three quarters of it away.
+**No new art, no re-voxelising** — the same model rasterised finer. `FOE_VSC = 4` makes a 103 px
+frame, which *is* the model's native resolution, so 4 is the ceiling rather than a preference.
+
+**The change is three lines:** `bakeFoeSheet` passes `FOE_VSC`; `drawFoeBillboard` divides it
+back out (`const k = scale/sp.vsc`); the sheet cache keys on `FOE_VSC` so turning the knob
+rebuilds instead of silently keeping the old sheet. `bakeFoe2D` is untouched — the driving pane
+already bakes at `S` and divides by `zk = S/sp.S`, which is why it always looked better.
+
+### The bug this nearly shipped with
+
+`foeSheetNew` padded the frame `+2` and anchored at `fh - 1 - R*ky*vsc`, **both in sheet pixels**.
+Invisible while `vsc` was always 1 — but the billboard divides `sp.vsc` back out, so a flat margin
+shrinks with it and the sentry would have **floated about 1 world unit off the ground**, 14 px
+adrift at arm's length. Margin and anchor now scale with `vsc`. Verified against the old vsc-1
+geometry across billboard scales 0.5 → 8: worst difference 0.25 px at normal range, 2 px with a
+sentry filling the screen, all of it `Math.ceil` rounding — and *finer* at vsc 4, because the frame
+now rounds in quarter-units instead of whole ones. **At vsc 1 the new formula is byte-identical to
+the old**, so nothing else built on `foeSheetNew` moved.
+
+### What it costs
+
+| vsc | frame | sheet | memory |
+|---|---|---|---|
+| 1 (before) | 15x26 | 240x156 | 0.14 MB |
+| 3 | 44x78 | 704x468 | 1.26 MB |
+| **4 (now)** | **59x103** | **944x618** | **2.23 MB** |
+
+All of it **one-off and shared by every sentry alive** — the sheet is keyed by model name, so 274
+of them cost what one does — and the bake is **lazy per pose** (`foeSheetEnsure`), so it arrives
+spread over the first six poses rather than as a hitch.
+
+**Per frame it costs nothing extra.** The blit runs with `imageSmoothingEnabled = false`, so it is
+destination-bound, and the destination size does not change. The only source-sized per-frame path
+is `hitFrame` (the hurt flash), 2,960 px at vsc 3 against 5,141 at vsc 4, for 0.12 s after a hit.
+And the frustum cull means **max 16 billboard draws a frame** at 221 live sentries.
+
+**It is paid whether or not ASCII is on.** `asciiBlit` is a post-process that reads the finished
+pane back (index.html ~4806), so the billboard is drawn identically either way — **G** only decides
+whether the detail survives. Dropping `FOE_VSC` to 3 while in ASCII would be a real saving if the
+memory ever matters.
+
+**Not measured:** actual bake milliseconds. Headless stubs the canvas and Chrome's virtual time
+freezes `performance.now()`, so screenshot runs report 0 ms. Use the viewer's **time bake** button
+in a real browser, or dev mode (**I**) in game for fps.
+
+Proof: `.shots/game-vsc4.png` (in game, 34 units, ASCII off — both optic lenses readable) against
+`.shots/vsc-1.png` (the old smear).
+
+### The cars got the same treatment — `CAR_VSC`, but only with ASCII off
+
+`bakeFpsSprites` rastered at `vsc = 1` too, and a car magnifies **harder** than a sentry because you
+can walk right up to one: x1.4 at 150 units, x2.3 at 80, x4.5 at 40, **x9.0 at 20**.
+
+Same three-line shape: the frame and the raster both take `vsc`, the draw divides it back out
+(`s3 = scale*(onFoot ? 1 : carMag(perp))/sp.vsc`), and the sheet key carries the vsc. At vsc 1 it is
+byte-identical to before; worst drawn-rect difference is 0.33 px at normal range, 3 px with a car
+filling the screen — all `Math.round(fh*0.62)` rounding.
+
+**But a car sheet is not the sentry's.** The sentry has ONE shared sheet (2.23 MB, 274 of them cost
+what one does). Cars are keyed by **mesh and colour**, so there is one per livery, and the frame is
+`ceil(52 * c.scale * vsc)` with `c.scale` running to 1.5 in play. Measured on foot, 7 cars, 4
+distinct sheets:
+
+| vsc | frames | total |
+|---|---|---|
+| 1 (before) | 52/78/42/79 | **4.1 MB** |
+| 2 | 104/156/83/157 | 16.3 MB |
+| **3 (now)** | 156/233/124/235 | **36.4 MB** |
+| 4 | 208/311/165/313 | 64.7 MB |
+
+So vsc 4 is cheap for the sentry and 65 MB for the cars. **`CAR_VSC = 3`.**
+
+**His idea, and it is the right one: only pay it with ASCII off.** `carVsc()` returns `CAR_VSC` when
+`asciiMode === 0` and **1** otherwise, because `asciiBlit` quantises the pane into glyphs and the
+detail cannot survive it. Pressing **G** calls `carSheetsReset()`, which clears `FPS_SHEETS` and
+nulls every `c.fps`, so only one set is ever resident — 36.4 MB with ASCII off, **1.5 MB with it
+on**. The cost is a rebake on the keypress, which is the right trade.
+
+Unlike the sentry's, a car sheet bakes **all 64 frames at once** (the sentry's is lazy per pose), so
+that hitch is real.
+
+**The obvious next win, deliberately not done:** a car mesh is 35.0 x 18.2 x 11.0, projecting to
+about **35x14 inside a 52x52 cell** — roughly 4.6x more sheet than the car needs. Sizing the cell
+from the mesh the way `foeSheetNew` does for a figure would make vsc 4 cost less than vsc 2 does
+now. It is not a free change: `ay = round(fh*0.62)` **is** the contact patch the wheels stand on, so
+the anchor has to be rederived from the mesh at the same time or every car floats.
+
+Two things noticed in passing, both pre-existing and **not** touched:
+- The sheet key is `mesh|colour` but **not `c.scale`**, while the frame size depends on scale. Two
+  cars of the same mesh and colour at different scales share whichever sheet was baked first.
+- `c.scale` changes the frame size but `rasterCar` was called with a fixed `vsc` of 1, so scaling a
+  car added padding rather than making the car bigger in its cell.
+
+Proof: `.shots/car-vsc3.png`.
+
+---
 
 ## 2026-11-10 — NEXT: the demo is three city quests
 

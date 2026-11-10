@@ -172,7 +172,7 @@ const SAINTS = {
 // unreadable smear. Nothing was wrong with the ART: sentry@96 is voxelised at
 // res 96 and the bake was throwing three quarters of it away.
 //
-// 4 is the CEILING, not a taste: it makes a 97 px frame, which is the model's own
+// 4 is the CEILING, not a taste: it makes a 103 px frame, which is the model's own
 // 96-voxel resolution. Past that there is nothing left to extract and you would
 // have to re-voxelise. 3 (74 px) already looks close; 1 does not.
 //
@@ -180,8 +180,10 @@ const SAINTS = {
 // keyed by model name, so 220 of them cost what one does):
 //        vsc | frame  | sheet    | memory
 //          1 | 15x26  | 240x156  | 0.14 MB   <- what this used to be
-//          3 | 40x74  | 640x444  | 1.08 MB
-//          4 | 53x97  | 848x582  | 1.88 MB   <- here
+//          2 | 30x52  | 480x312  | 0.57 MB
+//          3 | 44x78  | 704x468  | 1.26 MB
+//          4 | 59x103 | 944x618  | 2.23 MB   <- here
+// (measured off sentry@96: R 6.31, zmax 22.0, through foeSheetNew's own formula)
 // Per FRAME it costs nothing extra: the blit runs with imageSmoothingEnabled
 // false, so it is destination-bound, and the destination size does not change.
 // The bake is lazy per pose (foeSheetEnsure), so it is spread over the first few
@@ -191,6 +193,44 @@ const SAINTS = {
 // reads the finished pane back, so the billboard is drawn the same either way -
 // G only decides whether the detail survives.
 const FOE_VSC = 4;
+
+// The cars have the same problem in first person, and worse. bakeFpsSprites also
+// rasters at 1 px per world unit, and a car is magnified HARDER than a sentry
+// because you can get right up against one:
+//        600 u  34 px  (downscaled)       80 u  117 px  x2.3
+//        300 u  56 px  x1.1               40 u  234 px  x4.5
+//        150 u  71 px  x1.4               20 u  468 px  x9.0
+//
+// But a car sheet is NOT the sentry's single shared one - it is keyed by mesh AND
+// colour, so there is one per livery, and the frame is ceil(52*c.scale*vsc) with
+// c.scale running to 1.5 in play. MEASURED on foot in the city, 7 cars present,
+// 4 distinct mesh|colour sheets, frames 52/78/42/79 at vsc 1:
+//        vsc | frames (4 sheets) | total
+//          1 | 52/78/42/79       |  4.1 MB   <- what it was
+//          2 | 104/156/83/157    | 16.3 MB
+//          3 | 156/233/124/235   | 36.4 MB   <- here
+//          4 | 208/311/165/313   | 64.7 MB
+// So vsc 4 is cheap for the sentry (ONE shared sheet, 2.23 MB) and expensive for
+// the cars - 65 MB of canvas. 3 is the compromise. Before raising it to 4, do the
+// padding fix below instead: it buys about 4.6x and would put vsc 4 near 14 MB.
+//
+// AND IT IS ONLY PAID WHEN ASCII IS OFF. asciiBlit quantises the pane into glyphs,
+// so the extra detail cannot survive it - there is no reason to hold a sharp sheet
+// while G has ASCII on. carVsc() returns 1 in ASCII mode, the sheet key carries the
+// vsc, and pressing G drops the cached sheets so only one set is ever in memory.
+// The cost of that is a rebake when you toggle G, which is the right trade: you
+// pay a hitch on a keypress instead of 20 MB all the time.
+//
+// Unlike the sentry's, a car sheet bakes all 64 frames AT ONCE (the sentry's is
+// lazy per pose), so the hitch is real. If it bites, the cheap fix is not a lower
+// vsc but the frame. A car mesh is 35.0 long x 18.2 wide x 11.0 tall, which at
+// KY_FPS projects to about 35x14 - inside a 52x52 cell. That is ~18 px of padding
+// above the roof and ~20 below the contact patch, about 4.6x more sheet than the
+// car needs. Sizing the cell from the mesh the way foeSheetNew does for a figure
+// would make vsc 4 cost less than vsc 2 does now. NOT DONE: ay = round(fh*0.62)
+// is the contact patch the wheels stand on, so the anchor has to be rederived
+// from the mesh at the same time or every car floats. Worth doing deliberately.
+const CAR_VSC = 3;
 
 // -----------------------------------------------------------------------------
 // 3d. THE SENTRY'S RIG - posing the voxel model (foe.js)
