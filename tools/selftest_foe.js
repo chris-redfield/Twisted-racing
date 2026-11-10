@@ -353,8 +353,22 @@ ok('the density per block is near FOE_POP.MEAN, not a multiple of it',
 // a block's count comes from one draw of a normal, so the shape to look for is
 // "most blocks empty, a few with more than one" - not a flat rate
 const occupied = E('(() => { const m = {}; for(const v of foePlans.values()) for(const p of v){ const k = p.ck + ":" + p.key.split(":")[2]; m[k] = (m[k] || 0) + 1; } return Object.values(m); })()');
-ok('most blocks are empty', occupied.length < blocksSeeded*0.6,
-   `${occupied.length} of ${blocksSeeded} blocks have anybody on them`);
+// The shape to hold on to is "a DRAW per block", not a flat rate - block counts
+// must vary. "Most blocks empty" is only true while MEAN is low, so it is
+// asserted as what it is: a property of a low MEAN, not of the design. Without
+// this the test fails the moment the knob is turned up, which is exactly when
+// you least want to be arguing with your own suite.
+ok('block counts vary - it is a distribution, not a flat rate',
+   new Set(occupied).size > 1 || occupied.length < blocksSeeded,
+   'counts: ' + occupied.slice().sort((a, b) => b - a).slice(0, 8).join(','));
+const MEAN = E('FOE_POP.MEAN');
+if(MEAN <= 0.5)
+  ok('at a low MEAN most blocks are empty', occupied.length < blocksSeeded*0.6,
+     `${occupied.length} of ${blocksSeeded} blocks occupied at MEAN ${MEAN}`);
+else
+  ok(`at MEAN ${MEAN} most blocks are occupied, as they should be`,
+     occupied.length > blocksSeeded*0.4,
+     `${occupied.length} of ${blocksSeeded} blocks occupied`);
 ok('...and some hold more than one', occupied.some(n => n > 1),
    'counts: ' + occupied.sort((a, b) => b - a).slice(0, 6).join(','));
 ok('none is placed inside the 1500-unit billboard cull on the frame it appears',

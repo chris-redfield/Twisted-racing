@@ -238,11 +238,39 @@ const FOE_AI = {
 // 14 of them per side. MEAN 0.22 with SD 0.80 rounds and clamps to roughly: six
 // blocks in ten empty, three with one sentry, one with two or three.
 const FOE_POP = {
-  MEAN:    0.4,    // sentries per block, on average
+  MEAN:    2.5,    // sentries per block, on average. THIS IS THE KNOB: it is the
+                   // only number that changes how many there are. Measured along
+                   // the road, averaged over four spots (live = bodies within
+                   // KEEP, view = most visible in one first-person look):
+                   //    MEAN  MAX | live  nearest  <300  <600  in one view
+                   //     0.4   3  |  15     256     1.3   2.3      7
+                   //     0.8   3  |  20     293     1.3   3.0      8
+                   //     1.2   4  |  24     277     0.8   2.8     11
+                   //     1.8   5  |  38     253     1.8   4.8     16
+                   //     2.5   6  |  60     249     3.3   8.0     23
+                   //     3.5   8  |  80     190     5.0  11.0     28
+                   // Below ~1.2 the curve is flat and noisy: at those rates the
+                   // few blocks near the road dominate and luck decides. Raise
+                   // MAX with it or MAX becomes the real limit (see below).
   SD:     0.80,    // the spread about it. Rounded and clamped at nought, and that
                    // clamp is what leaves most blocks empty - the whole left half
                    // of the curve lands on none.
-  MAX:       3,    // never more than this on one block
+  MAX:       6,    // never more than this on one block. NOT a second density
+                   // knob - it is a ceiling, and a ceiling only does something
+                   // while it is being hit. Swept on its own at MEAN 2.5:
+                   //    MAX | live  nearest  <600  in view   blocks at the cap
+                   //      2 |  43     250      5.5    14            87%
+                   //      3 |  55     245      7.0    19            56%
+                   //      4 |  60     249      8.0    22            10%
+                   //      5 |  60     249      8.0    23             1%
+                   //      6 |  60     249      8.0    23             0%   <- here
+                   //     8+ |  60     249      8.0    23             0%
+                   // So above 5 it is identical: raising it further is a no-op,
+                   // and the only thing it can do is HOLD DENSITY BACK. The rule
+                   // of thumb is that MAX stops mattering past about
+                   // MEAN + 3*SD; below that it quietly caps MEAN, which is why
+                   // the old MAX of 3 made MEAN stop answering past ~1.5.
+                   // Leave it slack and treat MEAN as the only dial.
   SEED:   4231,    // its own seed, NOT CITY_SEED: changing the city's layout seed
                    // should not also shuffle where its guards are standing
   KEEP:   1800,    // a sentry gets a BODY inside this radius of you...

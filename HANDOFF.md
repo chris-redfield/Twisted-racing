@@ -132,24 +132,37 @@ from 485 units to **183**, and sentries met on a 32-second walk from **1 to 6**.
 
 ### How many there actually are — measured, not guessed
 
-At `MEAN 0.4` / `ROADSIDE 0.6` / `KEEP 1800`, from the spot you arrive at:
+**`FOE_POP.MEAN` is the knob** — the only number that changes how many there are. Swept along
+the road and averaged over four spots (`live` = bodies inside `KEEP`, `view` = most visible in
+one first-person look). The same table is in config.js beside the knob:
 
-| | |
-|---|---|
-| sentries with a body | **15** |
-| nearest | **183 units** (readable; past ~600 one is a speck 3-10 px tall) |
-| inside 300 / inside 600 | 2 / 2 |
-| most visible in one first-person view | 9 |
-| met on a 32-second walk down the road | **6** (it was 1) |
-| visible in the driving pane from the car | 3 |
+| MEAN | MAX | live | nearest | <300 | <600 | in one view |
+|---|---|---|---|---|---|---|
+| 0.4 | 3 | 15 | 256 | 1.3 | 2.3 | 7 |
+| 0.8 | 3 | 20 | 293 | 1.3 | 3.0 | 8 |
+| 1.2 | 4 | 24 | 277 | 0.8 | 2.8 | 11 |
+| **2.5** | **6** | **60** | **249** | **3.3** | **8.0** | **23** | *(set here)* |
+| 3.5 | 8 | 80 | 190 | 5.0 | 11.0 | 28 |
 
-The clamp at nought is what lifts the realised rate above `MEAN`: the whole left half of the
-normal lands on "none", so the mean of what is *kept* is higher than the mean you asked for.
+**Two things the table will not tell you unless you look at it.** Below about **1.2 the curve is
+flat and noisy** — at those rates the handful of blocks near the road dominate and luck decides,
+which is why 0.4 and 0.8 both give ~1 sentry inside 300 units. And **`MAX` is the real ceiling**:
+leave it at 3 and winding `MEAN` past ~1.5 does nothing, because every block clamps and the knob
+stops answering. Raise them together.
 
-**Two knobs, and `ROADSIDE` is the one that matters.** `MEAN` scales the total; `ROADSIDE`
-decides whether you ever meet any of them. Winding `MEAN` up with `ROADSIDE` at 0 just fills the
-back streets. `devMode` (I) prints `SENTRIES n` — and `ON YOU n` in red when any are provoked —
-on the on-foot HUD, so both can be turned by looking rather than by guessing.
+`ROADSIDE` is the other half and is not interchangeable with `MEAN`: it decides *whether you ever
+meet* the sentries, where `MEAN` only decides how many exist. Winding `MEAN` up with `ROADSIDE`
+at 0 just fills the back streets — that is exactly the failure above. The clamp at nought also
+lifts the realised rate above `MEAN`, since the normal's whole left half lands on "none".
+
+**Cost at MEAN 2.5** (41 alive at the arrival spot), out of a 16.7 ms frame: `updateFoes` 0.004,
+`citySentries` 0.014, `foeRam` 0.0005, `gatherBillboards` 0.019 — **0.04 ms the lot**. Even the
+pathological case of every sentry provoked at once is 1.5 ms. Density is not what will cost
+frames here; the per-sentry work is all O(n) over small n and the sheets are shared, so count is
+very nearly free.
+
+`devMode` (I) prints `SENTRIES n` — and `ON YOU n` in red when any are provoked — on the on-foot
+HUD, so all of this can be turned by looking rather than by guessing.
 
 ### What is reused, and the one thing that is not
 
@@ -218,7 +231,10 @@ Each is small, each is flagged here because it is a decision and not an instruct
 
 ### What is checked
 
-`node tools/selftest_foe.js` — **107 checks, ~31 s** (48 before). It covers the five-shot count,
+`node tools/selftest_foe.js` — **108 checks, ~31 s** (48 before). Note the density checks are
+written against whatever `MEAN` is set to, not against a fixed expectation: "most blocks are
+empty" is only true while `MEAN` is low, and a suite that fails the moment the knob is turned up
+is a suite you end up arguing with instead of using. It covers the five-shot count,
 the ignore→provoke→chase→give-up cycle, "only your fire angers it", no coordination through the
 death blast, the stop distance, solidity (and the door probe *not* seeing them), every car weapon,
 the flow-field refill on foot, the per-block density shape, determinism of the layout, that a
