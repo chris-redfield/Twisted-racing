@@ -73,6 +73,46 @@ ok('one directly behind you is outside the FOV and dropped',
 E('clearFoes()');
 ok('clearFoes empties the list', E('foes.length') === 0);
 
+// The kerb is a `low` ring: it is knee-high, it is left out of rcZ on purpose,
+// and before the clip existed that meant it never hid anything at all - a
+// sentry standing BEHIND it drew its boots straight over it. rcWalls now
+// records the kerb's front per column and rcSprites clips a farther sprite at
+// it. The canvas is a stub here, so this checks the mechanism, not the picture
+// (the picture is in HANDOFF.md).
+head('the kerb hides the bottom of a sentry standing behind it');
+E('clearFoes(); walker.x = ROAD_HW - 90; walker.y = cars[0].y; walker.a = 0; walker.pitch = 0');
+frame();
+ok('we are still on foot, looking across the road at the barrier', E('onFoot') === true);
+ok('the barrier is a low ring on foot', E('rings.filter(r => r.low).length') > 0);
+ok('rcWalls recorded a low wall in front of us', E('rcLowAny') === true);
+const kerbD = E('rcLowD[RC_W >> 1]');
+ok('...at the barrier\'s distance (~90 units)', Math.abs(kerbD - 90) < 20, String(kerbD));
+const kerbY = E('rcLowY[RC_W >> 1]');
+ok('...with a top row inside the pane', kerbY > 0 && kerbY < E('RC_H'), String(kerbY));
+ok('...stored as a whole row, so the clip path merges into runs', kerbY === Math.round(kerbY));
+ok('a sprite BEHIND the kerb is clipped', E('rcLowClip(140, RC_W/2, 40)') === true);
+E('rcCtx.restore()');
+ok('a sprite IN FRONT of it is not', E('rcLowClip(40, RC_W/2, 40)') === false);
+ok('and it is still not CULLED - the kerb only takes its boots',
+   E('clearFoes(); spawnFoe(walker.x + 140, walker.y, Math.PI); ' +
+     'gatherBillboards(walker.x, walker.y, walker.a).filter(b => b.kind==="foe").length') === 1);
+E('clearFoes()');
+
+head('driving, there is no kerb and the clip costs nothing');
+E('walkReset()');
+frame(2);
+ok('back in the car', E('onFoot') === false);
+// `low` is read at build time (`low: onFoot`), and the headless harness never
+// draws the gunner pane, so the rings here are still the walk view's. Build and
+// cast them the way a driving frame does, with onFoot now false.
+E('buildConvoyRings(cars[0].y, cars[0].x, cars[0].y, cars[0].angle); ' +
+  'rcWalls(cars[0].x, cars[0].y, cars[0].angle)');
+ok('no low rings at the wheel', E('rings.filter(r => r.low).length') === 0);
+ok('so rcLowAny is false and rcLowClip returns at once',
+   E('rcLowAny') === false && E('rcLowClip(500, RC_W/2, 40)') === false);
+E('cars[0].vx = 0; cars[0].vy = 0; if(!onFoot) toggleOnFoot()');
+frame();
+
 head('the voxel model (tools/sprite_voxelize.py)');
 ok('sentry-vox.js is loaded', E('typeof SPRITEVOX') === 'object');
 const vkey = E('Object.keys(SPRITEVOX)[0]');

@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-10 | [The kerb hides what stands behind it](#2026-11-10--the-kerb-hides-what-stands-behind-it) | built, 162 headless checks + screenshots; **his bug report**; the fix is a CLIP, not a depth test |
 | 2026-11-10 | [voxcar-viewer.html takes the sentry, and grew the vsc A/B](#2026-11-10--voxcar-viewerhtml-takes-the-sentry-and-grew-the-vsc-ab) | built; the lab the FOE_VSC call was made on; **its walk rig is a COPY of foe.js's** |
 | 2026-11-10 | [Moving sentries: a second population driven by the clock](#2026-11-10--moving-sentries-a-second-population-driven-by-the-clock) | built, 150 headless checks; **played**; read the harness traps at the end |
 | 2026-11-10 | [The sentry's first-person sprite: FOE_VSC](#2026-11-10--the-sentrys-first-person-sprite-foe_vsc) | built, **played and his idea**; 26 px sprite -> 103 px, no new art |
@@ -55,6 +56,59 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-10 — The kerb hides what stands behind it
+
+His report: *"in the city main road, in ASCII, there is this drawn curb which is basically a
+plane. It is drawn behind the characters - even if an enemy is behind it, the enemy still appears
+in front of it."* Right, and it was never going to do anything else.
+
+**What the kerb is.** On foot the road barrier is drawn at `WALK_BARRIER_H` (7) instead of
+`BARRIER_H` (16) — you step over it, so at the gunner's height it read as a wall. 7 is under
+`WALK_EYE` (16), so `rcWalls` also draws its **top ribbon**, and that is the "plane" he is looking
+at. `buildCityRings` / `buildConvoyRings` flag that ring **`low: onFoot`**.
+
+**Why it hid nothing.** `rcZ` is **one depth per column**, and `rcWalls` fills it from the nearest
+hit *that is not `low`*. `rcSprites` then culls with a single test, `perp > rcZ[col]`. So a `low`
+ring is invisible to the only occlusion a billboard gets.
+
+That was deliberate, and the reason is still good: one depth per column can only hide a billboard
+**whole**. The kerb is 7 units tall and a sentry (`FOE.H`) is 22, so culling one standing behind it
+would be a worse bug than drawing its boots over the kerb. The old comment says as much — *"a
+`low` ring does not hide billboards, so the parked car still shows over it"*. The mistake was
+treating "hide all of it" and "hide none of it" as the only two options.
+
+**The fix: clip, don't cull.** `rcWalls` now records the front of the nearest low wall per column —
+`rcLowD[x]` its perpendicular depth, `rcLowY[x]` the **topmost row** it covers (the top ribbon's
+far edge, `yFar`, not the face's `top`, because the ribbon reaches higher). `rcSprites` calls
+`rcLowClip(perp, sx, rad)` before each billboard: in the columns where the kerb is nearer, the
+canvas clip is cut at that row; everything else is left whole, and the clip is popped after the
+sprite. `rcZ` and the tall-wall cull are untouched.
+
+Three details that make it cheap and safe:
+
+- **`rcLowY` is stored as a whole row**, so neighbouring columns share a value and the path merges
+  into runs. Measured on a deliberately overloaded frame (152 sentries, 80 billboards, far past
+  what the game shows): **1-4 rectangles per sprite**, over spans of 3-61 columns.
+- **Outside `[sx-rad, sx+rad]` the path is full height.** `rad` is a generous guess
+  (`90*scale` for a car, `50*scale` otherwise), so too small a guess costs a pixel of accuracy at
+  a sprite's edge and can **never** slice a sprite in half.
+- **Driving costs nothing.** `low` is `onFoot` at build time, so at the wheel there are no low
+  rings, `rcLowAny` stays false and `rcLowClip` returns on its first line. Probed in Chrome:
+  `{lowRings: 0, rcLowAny: false}`.
+
+**Checked.** `tools/selftest_foe.js` is **162** (was 150) — a new head records the kerb's depth and
+row, asserts a sprite behind it clips and one in front does not, and asserts the sentry behind it
+is still in `gatherBillboards` (clipped, *not* culled). Screenshots: pixel mode, one sentry each
+side of the kerb — the far one's boots stop at the kerb's top edge, the near one draws over the
+band intact (`.shots/kerb-before.png`, `.shots/kerb-after.png`). `scrapheap-gun-lab.html` regenerated (`python3 tools/make_gun_lab.py`).
+
+**The trap for next time:** the canvas in `tools/headless.js` stubs `clip`/`save`/`restore`, so the
+suite can only prove the mechanism — which columns clip, and at what row. Whether the cut lands on
+the right pixel is a `tools/shot.js` question, and the honest shot is pixel mode, not ASCII: ASCII
+averages a 22-unit sentry into a few glyphs and will hide a wrong answer from you.
+
+---
 
 ## 2026-11-10 — voxcar-viewer.html takes the sentry, and grew the `vsc` A/B
 

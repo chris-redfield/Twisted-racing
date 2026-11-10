@@ -3958,6 +3958,10 @@ let RC_PANE=null;                   // the pane the raycaster is sized for (P2's
 let rcStripe=null;
 let rcSin=null, rcCos=null, rcInvCos=null, rcTan=null;   // per-column, constant
 let rcZ=null, rcImg=null, rcPix=null, rcPix32=null;
+// The front of the nearest LOW wall in each column - its depth, and the topmost
+// screen row it covers. Low walls stay out of rcZ (see rcWalls), so this is what
+// lets a knee-high kerb hide the BOTTOM of a billboard standing behind it.
+let rcLowD=null, rcLowY=null, rcLowAny=false;
 // Two switches for the walk view's cost (benchmarked 2026-11-05, see PROJECT.md):
 //  RC_DIRECT  - walls and windows are written straight into rcPix, like the
 //               floor, instead of one fillStyle+fillRect per strip (~4000 a
@@ -3981,6 +3985,7 @@ function rcInit(pane){
   rcCtx.imageSmoothingEnabled = false;
   RC_HORIZON = Math.round(RC_H*0.44);   // more road, less empty sky
   rcZ = new Float32Array(RC_W);
+  rcLowD = new Float32Array(RC_W); rcLowY = new Float32Array(RC_W);
   rcImg = rcCtx.createImageData(RC_W, RC_H);
   rcPix = rcImg.data;
   rcPix32 = new Uint32Array(rcPix.buffer);
@@ -4300,7 +4305,8 @@ function rcWalls(camX, camY, bearing){
   }
   // camera looks along world `bearing`; rotating by -bearing puts forward on +x,
   // so swap into (right, forward) = (-y, x)
-  for(let x=0;x<RC_W;x++) rcZ[x]=1e9;
+  for(let x=0;x<RC_W;x++){ rcZ[x]=1e9; rcLowD[x]=1e9; }
+  rcLowAny=false;
 
   // Bucket every segment by the columns it can cover, so each column only
   // tests the walls actually in front of it. Testing every segment from every
@@ -4442,12 +4448,28 @@ function rcWalls(camX, camY, bearing){
       // The top surface, when the wall is shorter than the gunner. Its far edge
       // is one wall-thickness further along the ray, which is what turns a low
       // barrier into something you can see you are looking down onto.
+      let yTop = top;                 // topmost row this column of wall covers
       if(r.h < EYE_Z){
         const dFar = perp + WALL_T*cosA*rcHitK[k];
         const yFar = RC_HORIZON + (EYE_Z-r.h)*RC_VD/dFar;
+        yTop = yFar;                  // the top ribbon reaches higher than the face
         let r0=yFar|0, r1=top|0;
         if(r0<0) r0=0; if(r1>RC_H) r1=RC_H;
         if(r1>r0) rcSpan(x, r0, r1, r.top, (1 - fog*0.6) * ((band & 1) ? 0.88 : 1));
+      }
+
+      // A `low` ring is deliberately left out of rcZ (see `near` above): it is
+      // knee-high, rcZ can only hide a billboard WHOLE, and hiding a sentry
+      // because its boots are behind the kerb would be worse than the bug.
+      // Record the kerb's front instead - depth, and the topmost row it covers -
+      // and rcSprites clips the part of a farther sprite that falls below that
+      // row. Hits are drawn far to near, so the last write is the nearest.
+      // The row is stored as an integer, so neighbouring columns share a value
+      // and the clip path merges into a handful of rectangles.
+      if(r.low){
+        rcLowD[x] = perp;
+        rcLowY[x] = yTop < 0 ? 0 : (yTop > RC_H ? RC_H : (yTop|0));
+        rcLowAny = true;
       }
     }
   }
@@ -4717,6 +4739,41 @@ function hitFrame(sp, f, row, lift){
   return hitCv;
 }
 
+// Clip a sprite against the kerb it is standing behind. `perp` is the sprite's
+// depth, `sx` the column it stands on, `rad` a generous half-width in columns.
+// Every column inside that span where rcWalls found a nearer low wall is cut at
+// that wall's top row; everything outside the span is left whole, so too small
+// a `rad` costs a pixel of accuracy at the sprite's edge and can never slice a
+// sprite in half. Returns true if a clip was pushed - the caller restores.
+//
+// Why a clip and not a depth test: the kerb is WALK_BARRIER_H (7) tall and a
+// sentry FOE.H (22), so standing right behind it only its boots are hidden.
+// rcZ answers one question per column - "is this sprite behind a wall" - and
+// both answers are wrong for a kerb, which is why `low` rings stay out of it.
+function rcLowClip(perp, sx, rad){
+  if(!rcLowAny) return false;
+  let c0 = Math.floor(sx - rad), c1 = Math.ceil(sx + rad);
+  if(c0 < 0) c0 = 0;
+  if(c1 > RC_W) c1 = RC_W;
+  let need = false;
+  for(let x=c0; x<c1; x++) if(rcLowD[x] < perp){ need = true; break; }
+  if(!need) return false;
+  rcCtx.save();
+  rcCtx.beginPath();
+  if(c0 > 0)    rcCtx.rect(0, 0, c0, RC_H);          // outside the span: uncut
+  if(c1 < RC_W) rcCtx.rect(c1, 0, RC_W-c1, RC_H);
+  let x = c0;
+  while(x < c1){
+    const cut = rcLowD[x] < perp ? rcLowY[x] : RC_H;
+    let e = x+1;
+    while(e < c1 && (rcLowD[e] < perp ? rcLowY[e] : RC_H) === cut) e++;
+    if(cut > 0) rcCtx.rect(x, 0, e-x, cut);
+    x = e;
+  }
+  rcCtx.clip();
+  return true;
+}
+
 function rcSprites(camX, camY, bearing){
   const list=gatherBillboards(camX, camY, bearing);
   if(foes.length && !foeImg.n) foeImagesReady();
@@ -4730,6 +4787,8 @@ function rcSprites(camX, camY, bearing){
     if(col<0 || col>=RC_W) continue;
     if(perp > rcZ[col]) continue;                 // behind a barrier
     const fog=Math.min(0.78, perp/1100);
+    // ...and behind the kerb, which only takes the bottom of it
+    const clipped = rcLowClip(perp, sx, (bb.kind==='car' ? 90 : 50)*scale);
 
     if(bb.kind==='car'){
       const c=bb.ref;
@@ -4802,6 +4861,7 @@ function rcSprites(camX, camY, bearing){
       rcCtx.fillRect(sx-s2/2, ground - p.z*scale - s2/2, s2, s2);
       rcCtx.globalAlpha=1;
     }
+    if(clipped) rcCtx.restore();
   }
 }
 
