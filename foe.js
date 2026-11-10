@@ -169,13 +169,18 @@ function foeSheetNew(mesh, col, ky, kz, vsc, lift){
     if(p[2] > zmax) zmax = p[2];
   }
   const n = FOE_RIG.YAWS, P = FOE_RIG.POSES;
-  const fw = Math.ceil(2*R*vsc) + 2;
-  const fh = Math.ceil((zmax*kz + 2*R*ky)*vsc) + 2;
+  // The margin is in WORLD units, not sheet pixels. It used to be a flat +2, which
+  // was invisible while vsc was always 1 - but the billboard divides sp.vsc back
+  // out when it draws, so a flat margin shrinks with vsc and the sentry creeps up
+  // off the ground (1 world unit at vsc 4, which is 14 px at arm's length).
+  // Scaling it keeps every derived number identical to the vsc=1 geometry.
+  const fw = Math.ceil(2*R*vsc + 2*vsc);
+  const fh = Math.ceil((zmax*kz + 2*R*ky)*vsc + 2*vsc);
   const cv = document.createElement('canvas');
   cv.width = fw*n; cv.height = fh*P;
   return { cv, n, fw, fh, poses:P, mesh, col, ky, kz, vsc, lift,
            ax: fw/2,
-           ay: fh - 1 - R*ky*vsc,          // model z=0 (the feet) near the bottom
+           ay: fh - vsc - R*ky*vsc,       // model z=0 (the feet) near the bottom
            done: new Array(P).fill(false) };
 }
 
@@ -183,7 +188,7 @@ const foeSheets = Object.create(null);
 function bakeFoeSheet(col, want){
   const k = foeVoxName(want);
   if(!k) return null;
-  if(foeSheets[k] && foeSheets[k].poses === FOE_RIG.POSES) return foeSheets[k];
+  if(foeSheets[k] && foeSheets[k].poses === FOE_RIG.POSES && foeSheets[k].vsc === FOE_VSC) return foeSheets[k];
   const mi = foeMesh(k);
   if(mi < 0) return null;
   // rasterCar's LIGHT is (-0.42,-0.58,0.70): for a CAR the lit faces are the
@@ -192,7 +197,7 @@ function bakeFoeSheet(col, want){
   // the whole sentry bakes at the flat 0.44 ambient. The lift puts it back.
   // vsc=1, so one sheet pixel is one world unit and the billboard scales by
   // distance alone.
-  const sp = foeSheetNew(MODELS[mi], col, KY_FPS, KZ_FPS, 1, FOE_LIFT);
+  const sp = foeSheetNew(MODELS[mi], col, KY_FPS, KZ_FPS, FOE_VSC, FOE_LIFT);
   foeSheetEnsure(sp, 0);
   return (foeSheets[k] = sp);
 }
@@ -941,8 +946,12 @@ function drawFoeBillboard(f, sx, ground, scale, perp, camX, camY){
       const pose = foePose(f);
       foeSheetEnsure(sp, pose);
       const row = foeRow(sp, pose, false);
-      const dx = sx - sp.ax*scale, dy = ground - sp.ay*scale;
-      const w = sp.fw*scale, h = sp.fh*scale;
+      // sp.fw/ax/ay are in SHEET pixels, and the sheet is baked at sp.vsc pixels
+      // per world unit - so the sheet's own scale divides straight back out and
+      // the sentry lands exactly where and how big it did at vsc 1.
+      const k = scale/sp.vsc;
+      const dx = sx - sp.ax*k, dy = ground - sp.ay*k;
+      const w = sp.fw*k, h = sp.fh*k;
       rcCtx.globalAlpha = 1 - fog0*0.55;
       // unlike a car, this recolours in BOTH panes: a car has a white flash row
       // baked and a sentry has none, so there is nothing else to show here.

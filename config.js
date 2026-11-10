@@ -156,6 +156,43 @@ const SAINTS = {
 };
 
 // -----------------------------------------------------------------------------
+// 3c-bis. HOW SHARP THE SENTRY'S FIRST-PERSON SPRITE IS
+// -----------------------------------------------------------------------------
+// rasterCar's `vsc` is pixels per world unit. bakeFoeSheet used to pass 1, so the
+// 22-unit sentry baked into a 26-pixel sprite and was then MAGNIFIED by distance:
+//
+//     distance   drawn    magnification of a 26 px sheet
+//       200 u     16 px   none (the sheet was bigger than needed)
+//       120 u     27 px   x1.0
+//        60 u     54 px   x2.1
+//        25 u    129 px   x5.0
+//        18 u    179 px   x6.9   <- FOE_AI.STOP: where a provoked sentry stops
+//
+// So the closer one got, the worse it looked, and at arm's length it was an
+// unreadable smear. Nothing was wrong with the ART: sentry@96 is voxelised at
+// res 96 and the bake was throwing three quarters of it away.
+//
+// 4 is the CEILING, not a taste: it makes a 97 px frame, which is the model's own
+// 96-voxel resolution. Past that there is nothing left to extract and you would
+// have to re-voxelise. 3 (74 px) already looks close; 1 does not.
+//
+// What it costs, all of it ONE-OFF and shared by every sentry alive (the sheet is
+// keyed by model name, so 220 of them cost what one does):
+//        vsc | frame  | sheet    | memory
+//          1 | 15x26  | 240x156  | 0.14 MB   <- what this used to be
+//          3 | 40x74  | 640x444  | 1.08 MB
+//          4 | 53x97  | 848x582  | 1.88 MB   <- here
+// Per FRAME it costs nothing extra: the blit runs with imageSmoothingEnabled
+// false, so it is destination-bound, and the destination size does not change.
+// The bake is lazy per pose (foeSheetEnsure), so it is spread over the first few
+// poses rather than paid in one hitch.
+//
+// NOTE it is paid whether or not ASCII is on. asciiBlit is a post-process that
+// reads the finished pane back, so the billboard is drawn the same either way -
+// G only decides whether the detail survives.
+const FOE_VSC = 4;
+
+// -----------------------------------------------------------------------------
 // 3d. THE SENTRY'S RIG - posing the voxel model (foe.js)
 // -----------------------------------------------------------------------------
 // The enemy is one voxel model carved from one drawing (tools/sprite_voxelize.py),
