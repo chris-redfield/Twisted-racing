@@ -7,7 +7,9 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
-| 2026-11-09 | [Sentries in the city, with their own AI](#2026-11-09--sentries-in-the-city-with-their-own-ai) | **built — START HERE**; 107 headless checks + screenshots; **played, and the first cut was invisible — read "the one that got away"** |
+| 2026-11-10 | [NEXT: the demo is three city quests](#2026-11-10--next-the-demo-is-three-city-quests) | **plan — START HERE**; the story is settled, nothing built |
+| 2026-11-10 | [Camera shake fell off a cliff; sentry density settled at MEAN 5](#2026-11-10--camera-shake-fell-off-a-cliff-sentry-density-settled-at-mean-5) | built, 120 headless checks; **played — he reported the shake** |
+| 2026-11-09 | [Sentries in the city, with their own AI](#2026-11-09--sentries-in-the-city-with-their-own-ai) | built; 120 headless checks + screenshots; **played, and the first cut was invisible — read "the one that got away"**; its DENSITY figures are superseded by the 2026-11-10 entry |
 | 2026-11-09 | [NEXT: sentries in the city, with their own AI](#2026-11-09--next-sentries-in-the-city-with-their-own-ai) | plan, done (this is what shipped) |
 | 2026-11-09 | [The sentry walks: a rig on the voxel model](#2026-11-09--the-sentry-walks-a-rig-on-the-voxel-model) | built, 48 headless checks + screenshots; **reads side-on, barely reads head-on** |
 | 2026-11-09 | [One drawing -> a voxel model: sprite_voxelize.py](#2026-11-09--one-drawing---a-voxel-model-sprite_voxelizepy) | built, 35 headless checks + screenshots; rotates, and is the only version the top-down view can draw |
@@ -51,6 +53,262 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+## 2026-11-10 — NEXT: the demo is three city quests
+
+**This is the demo.** The city is currently an endless free drive with sentries in it and no
+reason to go anywhere. Three quests give it one. Nothing here is built yet; the shape and the
+story are settled, the details marked OPEN are not.
+
+### The canon this rests on — read before changing any of it
+
+`assets/comic/COMIC_SCRIPT.md` and the 2026-11-06 story entry are the source. Short version:
+
+- Everyone is **nameless**.
+- **HIM:** a mechanic robot, an older model. A welding visor flipped up on his head, a leather
+  apron, one rusted arm and one chrome. He built the war-car from scrap.
+- **HER:** sleeker, newer, with **a square socket on her chest where an old data chip glows
+  cyan**. The chip carries code the city needs. The **Collectors** (the armoured hunter cars)
+  took her and keep her **intact**, because they don't know whether they can get the code out
+  without breaking her.
+- **The techno-lords** rule the neon city behind its walls. Everything that didn't make the cut
+  was left outside, in the **Scrapheap**.
+- **The Scrap Saints** are the rebels — they fight the lords, *or whoever controls them*. They
+  don't care which; they pay bounty for any state property you wreck. Their line:
+  *"We don't care who's holding the leash. We cut the leash."*
+- Old models are beneath the guards' notice. The guards **only fear high-tech androids packed
+  with powerful energy attacks** — that is the in-world reason the sentries ignore you.
+
+**New (2026-11-10): her memory has been flashed.** She is intact, but she does not remember who
+she is or what she carries. The chip is still in the socket — they daren't pull it. So rescuing
+her does **not** answer anything, and "retrieve her memory" is a later quest, not this demo.
+
+### Nobody knows what the techno-lords are. That is the point.
+
+Three claims circulate in the city, and **the game never settles it**:
+
+1. **The AI took power.** It overthrew the humans and rules in their place.
+2. **The humans are still there.** The lords are a front; the hand is behind the curtain.
+3. **The robots are their own faction now,** at war with humans because *the humans tried to
+   destroy the robots first*.
+
+Each claim explains the one fact the player has already *played* — "they hunt only new tech" —
+a different way: the regime fears being outclassed / the humans fear a machine that could
+refuse / the state is **conscripting** the best machines for a war that never ended.
+
+The mechanic came first and the lore explains it three ways. Keep it that way: no quest resolves
+it, and each one yields a single hard fact that fits more than one claim.
+
+Cheap way to put the argument in the world: **graffiti on the building walls**, one slogan per
+claim, placed by the same deterministic per-chunk trick as the sentries. The player reads the
+argument off the city and no character has to explain it. The sentries never say what they
+believe — they just stand there and let you walk past.
+
+### The quest shape (decided)
+
+**Radio briefs you; two locations per quest; gear first, job second.**
+
+- **The radio gives the quest.** No dialogue system, no interiors, no talking heads needed — and
+  it talks **while you drive**, which turns travel into the story beat instead of dead air. An NPC
+  in a room can't follow you.
+- **Location 1 is where the GEAR is.** Not a talker. The reason you must go is that the *object*
+  is there. A location whose only content is text is the oldest bad quest design there is.
+- **Location 2 is the job.**
+- **PRACTICAL RULE: the gear site sits SHALLOWER than the target** (smaller `|y|`), so a quest is
+  one continuous push deeper into the city and never a backtrack over ground you've cleared.
+  This is just a number per site, so it is free — don't get it wrong anyway.
+- The radio **drops a marker on the map** (`M`, `MAP_RADII`, city overview already exist). That is
+  the objective UI, and it is diegetic rather than a HUD arrow.
+
+**He is a mechanic.** Every gear job fits his profession — he cuts, he assembles, he drives. Use
+that instead of inventing specialists.
+
+### Quest 1 — RESCUE HER  (OPEN: the least decided of the three)
+
+- **Nobody briefs you.** This one is not offered. The Saints would rather you hit the datacenter;
+  the old model would rather you seal the bunker. You go anyway — it is the comic's last line,
+  *"Hold on. I'm coming."*, and it is the only quest that defies both factions.
+- **Location 2:** wherever they are holding her. OPEN.
+- **The escape is the design.** The whole game teaches that nobody looks at you. The moment she is
+  on your back **you are carrying new tech** and every sentry in the city can see you. The way out
+  is the way in with the rule inverted — and that is `f.mad` / `foeMadN`, code that already ships.
+  *"They never looked at me twice. They looked at her the whole way out."*
+- **Gear — OPEN, and note the trap:** he already has a welding visor, so a cutting torch is not
+  something he needs to buy. The gear has to be something he cannot improvise. Candidates: a
+  **Collector transponder** so the grabbing arms read him as one of theirs; a **power cell**
+  because the holding block is shielded and his torch won't bite; a **blank memory core** to catch
+  whatever is left of her (which comes back empty — that is the hook for the later memory quest).
+- **Fact it yields:** she is out, and she does not know who she is. She says one thing that fits
+  none of the three claims cleanly, because she is the only one who has been inside.
+
+### Quest 2 — THE DATACENTER  (a fight in a huge city square)
+
+- **The Saints brief you** over the radio. It is their war aim: if claim 1 is true, the usurper
+  lives in the machine.
+- **Location 2 is a huge city square** — a plaza where the lords' physical plant is exposed, and
+  **you have to fight something there**. Not a stealth bomb run.
+- **The canon already wrote the boss.** The guards "only fear high-tech androids packed with
+  powerful energy attacks". That is exactly what should be standing in the square: the thing even
+  the lords' own guards are afraid of. The player has spent the whole city being ignored; here is
+  the one machine that does not ignore him.
+- **Location 1 — the supplier:** explosives **assembled** from parts bought separately (fuel,
+  oxidiser, detonator). A bomb built from three purchases feels earned in a way a bought bomb
+  doesn't, and the assembly is a mechanic's job. Reuses the store screen and `cash`.
+- **Fact it yields:** the datacenter dies and **something keeps giving orders anyway.**
+
+### Quest 3 — CEMENT THE BUNKER  (the best-shaped one — build it when you want a set-piece)
+
+- **The radio: "there is a hidden bunker in the city, and we just got intel on that."** The intel
+  comes from **an old model, and he is telling the truth** — he was there, he saw it. Read him
+  narrowly: he is reliable **about the bunker**, not omniscient about who runs the state. "A human
+  is alive in a hole" and "humans are still running things" are different statements. He knows the
+  first. Nobody knows the second.
+- **Location 1 is a yard, and you STEAL A CONCRETE MIXER.** This is the best first location in the
+  game because it is not a waypoint, it is a transformation: you arrive in the war-car and leave
+  driving a slow, heavy truck. It is the only quest that changes how driving *feels*.
+- **Location 2:** the bunker's air intake. You back the mixer up and **pour**.
+- **You do not kill the last human.** You seal him in and drive away. Very robot, and the best of
+  the three endings: *he wanted the world to wait for him. Now it can.*
+- **Fact it yields:** the air handlers were **already running on a timer** — nobody inside has
+  touched anything for decades.
+- **Cost: this is the expensive one.** A second drivable vehicle with its own handling.
+
+### The chirp language (his idea, 2026-11-10)
+
+Dialogue should **sound** like the machine-to-machine language — R2-D2-ish chirps — while the
+text types out. This is nearly free and it fits machinery that already exists:
+
+- The comic **already types captions** at `COMIC.TYPE_SPEED` letters/second. Fire one chirp per
+  revealed character and the speech paces itself off the existing typewriter.
+- `Snd` is fully synthesised WebAudio with `blip(freq, dur, type, vol, slide)` and
+  `noise(dur, vol, cutStart, cutEnd)` already in hand. Derive the pitch from the character code so
+  a given line always chirps the same way, add a slide for the warble, and skip the chirp on
+  spaces and punctuation so it phrases.
+- Give each speaker a pitch band and a waveform so the Saints, the old model and the radio are
+  distinguishable without a portrait. She should sound different from everyone.
+
+### Engineering notes
+
+- **The city has no unique buildings at all.** It is infinite and procedural (`makeCityChunk`,
+  `cityRng`, `hash3`). Placing sites is the **same problem as the sentries**, and `foeChunkPlan` is
+  the template: deterministic, keyed, materialised within a radius.
+- The one difference: sites are **unique and must appear exactly once at a known depth**, so they
+  want a fixed table — `CITY_SITES = [{kind, atY, ...}]` — not a random draw.
+- **`makeCityChunk` has to reserve a `core`** for a site, or a procedural building will grow on
+  top of it. This is the first real change to the city generator.
+- "Drive deeper to reach your objective" also gives the city the **progression it currently
+  lacks**. Gear sites shallow, targets deep (the practical rule above).
+- The radio wants a tiny queue: a line, a speaker, a chirp band, and a map marker.
+
+### Before building any of it — test the traversal
+
+More locations is only better if **crossing the city is already fun**. Drive 2,000 units across it
+and ask whether you'd want to do that twice per quest. If the answer is no, the fix is in the city,
+not in the quest structure, and two locations per quest would make it worse. Ten-minute test; do it
+first.
+
+### Open decisions
+
+- The rescue: where she is held, and what the gear is (see the trap above).
+- What is standing in the square, in detail.
+- Whether the three quests are **pick one per run** (three endings, replay) or all three in one
+  run in any order. Not settled.
+- Whether the graffiti ships with the demo or later.
+
+---
+
+## 2026-11-10 — Camera shake fell off a cliff; sentry density settled at MEAN 5
+
+Two things, both from winding the sentry density up and then back down.
+
+### The shake bug: `explode()` had no distance term, and never had
+
+He played it and reported "the screen is shaking a lot". `explode()` is the only thing that kicks
+the camera, and it did so at **full strength from anywhere in the world**:
+
+```js
+cam.shake = Math.min(9, cam.shake + power*3);   // no distance term at all
+```
+
+That was invisible as a bug for the whole life of the game, because explosions were rare and
+always happened under your own bumper. The sentries broke it: `foeDie` calls `explode` and hunter
+cars cruise at `CITY_CRUISE` 115, well over `FOE.RAM_MIN` 40, so **they mow sentries down all over
+the city** — and the 2D pane only shows ±160 × ±90 world units, so almost none of it is on screen.
+
+Measured at MEAN 25, driving and **never firing a shot**: 3 deaths in 30 s, **all three further
+than 600 units away**, screen shaking 13% of frames. Firing: 27 deaths, 25 off screen, 27% of
+frames, average `cam.shake` 0.89 and pegged near the cap of 9 two thirds of the time.
+
+A sentry's blast was also rated `1.2` — **identical to a whole car exploding** (barrel 0.8,
+missile 1.0, mine 1.1, car 1.2, car bomb 2.4).
+
+**The fix** — `SHAKE` in config.js §7b, and `shakeFade(x, y)` in index.html:
+
+- Full kick inside `SHAKE.NEAR` 110, linear to **zero at `SHAKE.FAR` 700**.
+- `SHAKE.SENTRY` 0.45 instead of 1.2. One person popping is a bump (1.35 kick, 0.1 s), not a bomb.
+- A blast **beside** you is untouched: car bomb at your feet still 7.20, car wreck still 3.60.
+
+After: 4% of frames while driving, 9% while firing — in a run that had **more** deaths (35 vs 3;
+hunter AI varies a lot run to run, so compare rates, not single runs).
+
+### The booms too (his call: "if it is offscreen don't add the boom sfx")
+
+`Snd.boom()` takes no arguments — one fixed-volume bang regardless of distance — so it is gated on
+the **same** `shakeFade`, which keeps exactly one definition of "too far to matter" for both the
+kick and the bang. Past `SHAKE.FAR` you get neither.
+
+Safe because **nothing the player fires can reach that far**: a missile is 190 units/s for 2.6 s
+= **494 units**, mines land behind you, barrels are beside you. So it can only ever silence an
+explosion someone else caused, off screen. **That bound is now a test** — raise missile range past
+`SHAKE.FAR` and the suite fails instead of the game quietly going deaf.
+
+### Density: settled at MEAN 5 (and the city-centre set is on record)
+
+Swept to 10× and back. **Every number in `FOE_POP` has to move together** — this is the trap:
+
+- `SD` is in the **same units as MEAN**. At MEAN 2.5, SD 0.8 is a 33% spread and blocks really
+  differ; leave SD at 0.8 and raise MEAN to 25 and it is a **3% spread** — every block gets exactly
+  25 and "some blocks busy, some empty" is gone, replaced by a flat rate.
+- `MAX` is a ceiling, not a second knob, and only does something while it is being hit. It stops
+  mattering past about `MEAN + 3*SD`; below that it quietly caps MEAN.
+- **`ROADSIDE` moves OPPOSITE to MEAN.** Low MEAN needs it high or you meet nobody (0.6 at MEAN
+  2.5); high MEAN needs it low or the frontage packs shoulder to shoulder and the city reads as a
+  guard of honour lining the route. Compare `.shots/extreme-mean-25.png` (0.6) with
+  `.shots/extreme-roadside-0.2.png` (0.2) — same 377 sentries, completely different city.
+- New: **`FOE_POP.GAP` 16**. At MEAN 25 sentries were being placed **inside each other** (closest
+  pair 0 units; already only 4 at MEAN 2.5, because `foeSeparate` only separates *provoked* ones).
+  `foeSpot` now rejects a spot too near an already-placed one, which also makes density
+  **self-limiting**: a block that runs out of room just skips that sentry.
+
+**Now: `MEAN 5, SD 1.6, MAX 12, ROADSIDE 0.45`** → 148 live, nearest 200, 14.3 within 600,
+28 in a good look.
+
+**The city-centre set, measured and kept** for when the centre gets its own density:
+`MEAN 25, SD 8, MAX 60, ROADSIDE 0.2` → ~377 live, ~190 in one view, nearest ~180, **0.28 ms of a
+16.7 ms frame**. CPU is not what breaks at 10×; the distribution and the overlaps are.
+
+Both sweep tables live in comments beside the knobs in config.js, with a note that rows are only
+comparable **at equal `ROADSIDE`** — the MEAN 5 row has twice the bodies of the MEAN 3.5 row but
+*fewer* within 300 units, purely because a smaller share stands on the frontage.
+
+### Tests and one harness trap worth knowing
+
+`node tools/selftest_foe.js` — **120 checks** (108 before; 12 new across the shake and the booms).
+Plus `selftest_boost.js` 30 and `selftest_pad.js` 60.
+
+**The harness trap:** `last = performance.now()` is the real clock, and `headless.js` ticks from
+`t = 0`. If the match is already in `state === 'play'` on the **first** tick, `dt` comes out at
+about **−1.8e9 seconds**, `acc` goes permanently negative and **`step()` never runs again** — the
+game looks alive and simulates nothing. **Tick once before starting the match** (the title branch
+returns early and resets `last`). `selftest_foe.js` gets away with it only because earlier heads
+tick while the state is still `title`.
+
+Second trap, same session: in the city, `keys['ArrowUp']` drove the car **north, back out through
+the gate**, and `toggleOnFoot()` left the walker at the origin — 14,027 units from the nearest
+sentry. A 40 s "soak in the city" was measuring empty wasteland. Pin the position and face
+`-Math.PI/2`, and assert the sentry count mid-run.
+
+---
+
 ## 2026-11-09 — Sentries in the city, with their own AI
 
 **Start here.** The plan below is what this was built from; everything under that is older and
@@ -83,8 +341,9 @@ weapon in the code at all, and adding one is a new decision, not a gap to be fil
 - **`FOE_AI`** — `CHASE_SPD 52` (he walks 46, runs 92, so a sentry out-paces a stroll and loses a
   sprint — that is the whole reason `GIVE_UP` means anything), `TURN 3.2`, `NEAR 170`, `STOP 18`,
   `GIVE_UP 900`, `LOSE_T 1.2`, `STUCK_T/STUCK_D`.
-- **`FOE_POP`** — `MEAN 0.22` sentries per block, `SD 0.80`, `MAX 3`, `SEED 4231`, `KEEP 3000`,
-  `DROP 4200`, `TRIES 8`.
+- **`FOE_POP`** — **superseded: see the 2026-11-10 density entry for the settled values.** As
+  first built: `MEAN 0.22` sentries per block, `SD 0.80`, `MAX 3`, `SEED 4231`, `KEEP 3000`,
+  `DROP 4200`, `TRIES 8` (no `GAP` yet).
 
 **`foe.js`** — `FOE.HP 90`, `FOE.HIT_R 8` (the pistol's tolerance on a sentry; `PISTOL.HIT_R` 14
 is a car's number), `FOE.SHOT_R 9`, `FOE.RAM 0.9` / `RAM_MIN 40`, `FOE_HIT_LIFT 0.5`.
@@ -231,7 +490,7 @@ Each is small, each is flagged here because it is a decision and not an instruct
 
 ### What is checked
 
-`node tools/selftest_foe.js` — **108 checks, ~31 s** (48 before). Note the density checks are
+`node tools/selftest_foe.js` — **120 checks** as of 2026-11-10 (108 at the time of this entry, 48 before that). Note the density checks are
 written against whatever `MEAN` is set to, not against a fixed expectation: "most blocks are
 empty" is only true while `MEAN` is low, and a suite that fails the moment the knob is turned up
 is a suite you end up arguing with instead of using. It covers the five-shot count,
