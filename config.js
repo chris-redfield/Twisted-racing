@@ -223,13 +223,22 @@ const FOE_VSC = 4;
 //
 // Unlike the sentry's, a car sheet bakes all 64 frames AT ONCE (the sentry's is
 // lazy per pose), so the hitch is real. If it bites, the cheap fix is not a lower
-// vsc but the frame. A car mesh is 35.0 long x 18.2 wide x 11.0 tall, which at
-// KY_FPS projects to about 35x14 - inside a 52x52 cell. That is ~18 px of padding
-// above the roof and ~20 below the contact patch, about 4.6x more sheet than the
-// car needs. Sizing the cell from the mesh the way foeSheetNew does for a figure
-// would make vsc 4 cost less than vsc 2 does now. NOT DONE: ay = round(fh*0.62)
-// is the contact patch the wheels stand on, so the anchor has to be rederived
-// from the mesh at the same time or every car floats. Worth doing deliberately.
+// vsc but the FRAME, which is SQUARE while a car is wide and flat. The mesh is
+// 35.0 long x 18.2 wide x 11.0 tall, rotation radius R = 19.1, so every yaw fits
+// in about 41x19 - and it is given 52x52. The car occupies roughly screen rows
+// 21..35 of 52; everything above and below is empty. MEASURED saving from sizing
+// the cell off the mesh the way foeSheetNew does for a figure: x3.95, flat across
+// every vsc.
+//        vsc | square (now) | tight  | tight frames
+//          1 |      4.1 MB  |  1.0 MB | 41x19/33x15/53x30/49x28
+//          2 |     16.3 MB  |  4.1 MB |
+//          3 |     36.4 MB  |  9.2 MB |
+//          4 |     64.7 MB  | 16.4 MB | 161x76/132x60/209x120/195x112
+// So TIGHT AT VSC 4 (16.4 MB) costs less than half of SQUARE AT VSC 3 (36.4 MB).
+// NOT DONE: ay = round(fh*0.62) is the contact patch the wheels stand on, so the
+// anchor has to be rederived from the mesh at the same time or every car floats.
+// The rule is foeSheetNew's: ay = fh - pad - R*ky*vsc, because a vertex at
+// (0,0,0) lands exactly on ay and the draw does dy = ground - ay*s3.
 const CAR_VSC = 3;
 
 // -----------------------------------------------------------------------------
