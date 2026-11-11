@@ -7,6 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-10 | [The kerb is REMOVED from the first-person view](#2026-11-10--the-kerb-is-removed-from-the-first-person-view) | built, selftest_foe 165 + screenshots; **his call** after the geometric clip still looked wrong; next idea: a volumetric kerb |
+| 2026-11-10 | [The kerb clip, done by geometry: sentries stopped losing their legs](#2026-11-10--the-kerb-clip-done-by-geometry-sentries-stopped-losing-their-legs) | built, selftest_foe 176 + screenshots; **his bug report**; supersedes the clip half of "The kerb hides what stands behind it" |
 | 2026-11-10 | [Quest 1 built: the cement and the billionaire's bunker](#2026-11-10--quest-1-built-the-cement-and-the-billionaires-bunker) | **built in index.html**, selftests 30/171/60 + an end-to-end quest bot + screenshots; **not played**; also: city hunters reworked |
 | 2026-11-10 | [Radio lab: dialogue on screen, two layouts + chirps](#2026-11-10--radio-lab-dialogue-on-screen-two-layouts--chirps) | **now IN index.html** (bottom box lowered onto the hull plate - his call); selftests 30/171/60 pass; sites decided RANDOM IN DEPTH BANDS |
 | 2026-11-10 | [The pistol shoots where the crosshair is](#2026-11-10--the-pistol-shoots-where-the-crosshair-is) | built, 171 headless checks + screenshots; **his bug report**; aim now has a VERTICAL - read the 210-unit note |
@@ -59,6 +61,60 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-10 — The kerb is REMOVED from the first-person view
+
+He played the geometric clip (entry below) and it was still wrong: *"the sentries now appear as if
+in the front of the clearer part of it"* - the kerb is a flat ribbon (a wall face plus a top
+strip), and no single cut row can layer a billboard against a strip seen at a grazing angle.
+His call: **remove it from the first-person view altogether**, and later maybe build a
+**volumetric kerb, like the sentries** (voxels / a real 3D object rather than a raycast ribbon).
+
+Done in `index.html`:
+- `buildConvoyRings` and `buildCityRings` add **no barrier rings on foot** (`rings = onFoot ? [] :
+  ...` / `if(!onFoot) for(...barrierSpans...)`). From the gunner's seat the barrier is still drawn
+  at full `BARRIER_H`. Collision never read these rings (walking over the barrier was always
+  allowed; car collision is unchanged).
+- `rcKerbClip` and its call in `rcSprites` are deleted - an invisible kerb must not cut sprites.
+  `WALK_BARRIER_H` (config.js) is now unused. `rcWalls` still has the generic `low`-ring code
+  (`rcLowD/rcLowY/rcLowAny`); nothing creates a low ring any more.
+- The pavement still reads, as the lighter floor band.
+- selftest_foe **165**: the kerb block is replaced by "no barrier ring on foot, no low rings, a
+  sentry just past the barrier line is drawn, at the wheel the rings are back full height".
+- Screens `.shots/kerb-gone.png`, `kerb-gone-ascii.png`.
+
+---
+
+## 2026-11-10 — The kerb clip, done by geometry: sentries stopped losing their legs
+
+His report: *"when the sentinels are close to the curb, lots of times the lower half of their
+bodies vanish"* (he offered to remove the kerb; not needed).
+
+**Measured first** (headless, the clip's cut row against the sentry's head/feet rows):
+- Looking ALONG the road, a sentry standing on the road beside the kerb showed only **64-88%** of
+  its body. `rcLowClip` searched `50*scale` columns round the sprite - ~4x a sentry's width - and
+  the kerb running BESIDE it was nearer than it in those columns, so it counted as in front.
+- Looking straight ACROSS, a sentry standing BEHIND solid kerb was **not clipped at all**.
+
+**Fix: `rcKerbClip(camX, camY, bx, by, perp)`** replaces `rcLowClip`. In the city the kerb is two
+straight lines, x = +/-ROAD_HW, so: are you and the sprite on opposite sides of one; is there
+barrier (not a street gap, `barrierSpans`) where the sight line crosses it; the cut is that
+crossing's kerb-top row, `RC_HORIZON + (EYE_Z - WALK_BARRIER_H)*RC_VD/(perp*t)`, ceil'd (errs to
+showing more). Still ONE integer rect - the cost table in the old entry still applies, and the
+test is a division plus one `barrierSpans` per sprite that is actually across a kerb. Billboards
+now carry their world `x, y` (`gatherBillboards`). Only on foot in the city (`onFoot && street`).
+`rcLowD/rcLowY/rcLowAny` are still recorded by `rcWalls` but nothing clips with them any more.
+
+After: on the road beside/in front of the kerb **100%** shown everywhere; behind solid kerb
+**74-80%** (boots gone); behind a street gap 100%. Screens `.shots/kerb-fixed.png` and
+`kerb-fixed-ascii.png` (four sentries along the kerb, whole).
+
+**selftest_foe 176** (was 171): behind clipped and only its boots (60-85% shown), in front not,
+beside-looking-along not (the bug), street gap not, from the pavement YOUR kerb clips a sentry on
+the road, and nothing at the wheel. The chase-speed test now holds the sentry's gun (`gunT`):
+since sentries plant to fire it was flaky - it failed once in this session.
+
+---
 
 ## 2026-11-10 — Quest 1 built: the cement and the billionaire's bunker
 

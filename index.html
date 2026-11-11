@@ -4358,14 +4358,13 @@ function buildConvoyRings(center, camX, camY, bearing){
     return pts;
   };
   const flat = ROAD_HW + FENCE_OUT_C;
-  // On foot the barrier is drawn knee-high (WALK_BARRIER_H), because you step
-  // over it: at the gunner's 16 it stood above a person's eye and read as a wall.
-  // Render only - the driving pane and the car's collision never read this. A
-  // `low` ring does not hide billboards, so the parked car still shows over it.
-  const bh = onFoot ? WALK_BARRIER_H : BARRIER_H;
-  rings = [
-    { pts:line(-ROAD_HW), h:bh, col:'#6a5570', top:'#a894b0', open:true, low:onFoot },
-    { pts:line( ROAD_HW), h:bh, col:'#6a5570', top:'#a894b0', open:true, low:onFoot }
+  // ON FOOT THERE IS NO KERB in the first-person view (his call, 2026-11-10).
+  // It was a flat ribbon that no clip could layer correctly against the sentries
+  // (HANDOFF "The kerb clip..."), so it is gone until it comes back as a real
+  // volume, like the sentries. Render only - collision never read this ring.
+  rings = onFoot ? [] : [
+    { pts:line(-ROAD_HW), h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true },
+    { pts:line( ROAD_HW), h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true }
   ];
   if(showFence) rings.push(
     { pts:line(-flat),    h:FENCE_H,   col:'#2e2536', top:'#463a50', open:true },
@@ -4380,16 +4379,16 @@ function buildRings(){ buildConvoyRings(0); }
 // STREET: the barrier in pieces (it opens where the streets come in), the city
 // wall at the edge of the strip, the city's plots near you, and the skyline
 function buildCityRings(center, camX, camY, bearing){
-  const bh = onFoot ? WALK_BARRIER_H : BARRIER_H;
   const span = Math.max(RING_SPAN, VIEW_D + 200), sky = Math.max(SKY_REACH, VIEW_D + 1500);
   rings = [];
   for(const side of [-1, 1]){
-    for(const sp of barrierSpans(side, center - span, center + span)){
+    // the barrier: only from the gunner's seat - on foot there is no kerb (see buildConvoyRings)
+    if(!onFoot) for(const sp of barrierSpans(side, center - span, center + span)){
       const pts = [];
       for(let y = sp[0]; y < sp[1]; y += RING_STEP) pts.push({ x:side*ROAD_HW, y });
       pts.push({ x:side*ROAD_HW, y:sp[1] });
       if(pts.length < 2) continue;
-      rings.push({ pts, h:bh, col:'#6a5570', top:'#a894b0', open:true, low:onFoot, u0:sp[0] });
+      rings.push({ pts, h:BARRIER_H, col:'#6a5570', top:'#a894b0', open:true, u0:sp[0] });
     }
     const wall = [];
     const n = Math.ceil(2*span/RING_STEP);
@@ -4981,7 +4980,7 @@ function gatherBillboards(camX, camY, bearing){
     let b=Math.atan2(dy,dx)-bearing;
     b=((b+Math.PI)%(Math.PI*2)+Math.PI*2)%(Math.PI*2)-Math.PI;
     if(b<-lim || b>lim) return;
-    bbList.push({d,b,z,kind,ref,e:e||0});
+    bbList.push({d,b,z,kind,ref,e:e||0,x,y});
   };
   // on foot there is no driving pane to agree with: every car is honest, and the
   // one you parked is just another car in the street
@@ -5068,48 +5067,6 @@ function hitFrame(sp, f, row, lift){
   return hitCv;
 }
 
-// Clip a sprite against the kerb it is standing behind. `perp` is the sprite's
-// depth, `sx` the column it stands on, `rad` a generous half-width in columns.
-// Returns true if a clip was pushed - the caller restores.
-//
-// Why a clip and not a depth test: the kerb is WALK_BARRIER_H (7) tall and a
-// sentry FOE.H (22), so standing right behind it only its boots are hidden.
-// rcZ answers one question per column - "is this sprite behind a wall" - and
-// both answers are wrong for a kerb, which is why `low` rings stay out of it.
-//
-// ONE axis-aligned rectangle, on INTEGER rows. That is not tidiness, it is the
-// whole cost of this feature. Measured in Chrome on the 320x180 buffer, 20
-// occluded sprites a frame (us for all 20):
-//
-//     no clip                              179
-//     1 rect, integer rows                 209      <- here
-//     1 rect, fractional rows              272
-//     2 rects                              505
-//     4 rects                              699
-//
-// A drawImage through a single integer rect keeps Skia's fast blit; a second
-// rectangle, or a fractional edge, drops it onto a path that costs 4x. The
-// honest per-column cut needs one rect per run of equal rows, which measured
-// +345 us a frame - so this takes the LOWEST row the kerb reaches across the
-// sprite instead, and cuts flat there. The kerb's top moves 1-4 rows across a
-// sprite's span (measured on a 49-billboard frame), an ASCII cell is ASC_CH = 3
-// rows tall, and taking the lowest errs toward showing MORE of the sprite, so
-// the error is a couple of boot pixels over the kerb and never a gap above it.
-function rcLowClip(perp, sx, rad){
-  if(!rcLowAny) return false;
-  let c0 = Math.floor(sx - rad), c1 = Math.ceil(sx + rad);
-  if(c0 < 0) c0 = 0;
-  if(c1 > RC_W) c1 = RC_W;
-  let cut = -1;
-  for(let x=c0; x<c1; x++) if(rcLowD[x] < perp && rcLowY[x] > cut) cut = rcLowY[x];
-  if(cut < 0 || cut >= RC_H) return false;     // kerb behind the sprite, or off the pane
-  rcCtx.save();
-  rcCtx.beginPath();
-  rcCtx.rect(0, 0, RC_W, cut);
-  rcCtx.clip();
-  return true;
-}
-
 function rcSprites(camX, camY, bearing){
   const list=gatherBillboards(camX, camY, bearing);
   if(foes.length && !foeImg.n) foeImagesReady();
@@ -5123,8 +5080,6 @@ function rcSprites(camX, camY, bearing){
     if(col<0 || col>=RC_W) continue;
     if(perp > rcZ[col]) continue;                 // behind a barrier
     const fog=Math.min(0.78, perp/1100);
-    // ...and behind the kerb, which only takes the bottom of it
-    const clipped = rcLowClip(perp, sx, (bb.kind==='car' ? 90 : 50)*scale);
 
     if(bb.kind==='car'){
       const c=bb.ref;
@@ -5207,7 +5162,6 @@ function rcSprites(camX, camY, bearing){
       rcCtx.fillRect(sx-s2/2, ground - p.z*scale - s2/2, s2, s2);
       rcCtx.globalAlpha=1;
     }
-    if(clipped) rcCtx.restore();
   }
 }
 
