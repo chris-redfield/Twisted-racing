@@ -843,6 +843,12 @@ const VIEW_LOD = 900, VIEW_LOD_PX = 2.5;   // past VIEW_LOD, skip buildings unde
 let   RC_FOV = 95 * Math.PI/180;     // field of view (- = to tune)
 let   EYE_Z  = 26;                   // gunner's eye height ([ ] to tune)
 let   CAR_MAG_MAX = 2.2;             // distant-car exaggeration in first person (, . to tune)
+// On foot a car was drawn at plain perspective scale - CAR_MAG_MAX is the
+// GUNNER's distance exaggeration and never applied to the walker - and it read
+// too small beside you. This is a DRAW size only: the box you walk into and
+// shoot is still CAR_HL x CAR_HW, and the top-down pane is untouched, so the two
+// views disagree by this much on purpose.
+const CAR_FOOT_MAG = 1.15;           // how much bigger a car is drawn on foot
 let   ASC_LO = 16, ASC_HI = 100, ASC_GAMMA = 1.0;   // ASCII: luminance -> glyph tone curve
 
 // -----------------------------------------------------------------------------

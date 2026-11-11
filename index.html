@@ -5127,7 +5127,7 @@ function rcSprites(camX, camY, bearing){
       // column the gun is actually pointing down
       // the sheet's own scale divides back out, so the car lands exactly where
       // and how big it did at vsc 1
-      const s3=scale*(onFoot ? 1 : carMag(perp))/sp.vsc;
+      const s3=scale*(onFoot ? CAR_FOOT_MAG : carMag(perp))/sp.vsc;
       const w=sp.fw*s3, h=sp.fh*s3;
       const dx=sx-sp.ax*s3, dy=ground-sp.ay*s3;
       rcCtx.globalAlpha=(1-fog*0.55) * clamp((1-bb.e)/CAR_FADE, 0, 1);
