@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-10 | [Radio lab: dialogue on screen, two layouts + chirps](#2026-11-10--radio-lab-dialogue-on-screen-two-layouts--chirps) | **now IN index.html** (bottom box lowered onto the hull plate - his call); selftests 30/171/60 pass; sites decided RANDOM IN DEPTH BANDS |
 | 2026-11-10 | [The pistol shoots where the crosshair is](#2026-11-10--the-pistol-shoots-where-the-crosshair-is) | built, 171 headless checks + screenshots; **his bug report**; aim now has a VERTICAL - read the 210-unit note |
 | 2026-11-10 | [The kerb hides what stands behind it](#2026-11-10--the-kerb-hides-what-stands-behind-it) | built, 171 headless checks + screenshots; **his bug report**; a CLIP, not a depth test - and read why it is ONE rectangle |
 | 2026-11-10 | [voxcar-viewer.html takes the sentry, and grew the vsc A/B](#2026-11-10--voxcar-viewerhtml-takes-the-sentry-and-grew-the-vsc-ab) | built; the lab the FOE_VSC call was made on; **its walk rig is a COPY of foe.js's** |
@@ -57,6 +58,56 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-10 — Radio lab: dialogue on screen, two layouts + chirps
+
+**Decisions he made this session (feed the quests plan below):**
+- **Traversal test: passed by his say-so** - crossing the city "is not unpleasant". Place the sites,
+  play, and pull them closer if too far. Scale reminder: `RUN.UNITS_PER_M` = 10, so 2,000 units is
+  only **200 m**; talk to him in metres, never units.
+- **Quest sites: RANDOM within DEPTH BANDS** (per run). Each site kind gets a `|y|` band in metres
+  (gear band shallower than target band, so the no-backtrack rule cannot break); position inside
+  the band is rolled per run. Bands are config knobs. Not built yet.
+- **Dialogue on screen: A/B it.** Built both, he decides by playing.
+
+**Built: `scrapheap-radio.html`** (fork of `index.html`; `index.html` untouched). Search
+`the radio` for the module, `RADIO` for its knobs.
+- `radioSay(who, text)` queues a line; lines type at `RADIO.TYPE_SPEED` 30/s with extra pauses
+  after `,` (0.12 s) and `.!?` (0.30 s) - the pauses are what make the chirps PHRASE. A finished
+  line holds `HOLD + len*HOLD_PER`, fades, gap, next. Never pauses the game; ticks on real `dt`
+  in `frame()`, stops while paused.
+- **Chirps:** one `Snd.voice` blip per letter (spaces/punctuation silent), pitch from the letter
+  pair so a line always sounds the same, odd/even char code slides up/down for the warble, vowels
+  longer. Per speaker in `RADIO.SPEAKERS`: colour, waveform, pitch band, volume, crackle on/off.
+  SAINTS square high, OLD MODEL triangle low, HER sine very high, YOU sawtooth mid.
+- **Layout `bottom`:** comic-yellow caption box (reuses `COMIC.CAPTION_*`), uppercase, name tag in
+  the speaker colour, bottom edge at VH 284 - just above the `E GET OUT` prompt and hull plate.
+- **Layout `corner`:** dark panel under THE CITY panel (x 6, y 58, 220 wide), mixed case
+  monospace, border in speaker colour, an LED and waveform bars that jump with each chirp.
+- **Keys (in play): `L` flips layout, `T` replays the demo.** Demo starts on `enterCity`.
+- `RADIO.DEMO` lines are **PLACEHOLDER** to judge look and sound, not the quest script.
+- Screenshots: `.shots/radio-bottom.png`, `radio-corner.png`, `radio-foot-bottom.png`,
+  `radio-foot-corner.png`. Six demo lines take ~43 s of driving.
+
+**Update, same day - BAKED INTO `index.html`.** He liked the boxes but the bottom one floated
+~30 VH above the hull/boost plate ("unpleasant gap"). Now `RADIO.BOTTOM_Y` = 308 (plate starts at
+314). The `E GET OUT` / `E GET IN` prompt used to live in that gap, so while the bottom box is up
+the prompt hops above it: `radioPromptY(y)` reads `radio.boxTop` (set by the LAST frame's
+`drawRadio`, because the HUD draws before the radio). Both layouts ship, `L` still flips them,
+default `bottom`; `T` replays. The demo still auto-plays on `enterCity` - **placeholder lines**, to
+be replaced by the quest script. index.html and the fork differ only in comments. Screenshot
+`.shots/radio-index.png`. Selftests (boost 30, foe 171, pad 60) all pass, run directly now that the line endings are fixed.
+
+**Open:** whether `corner` is ever wanted or gets deleted; whether chirps need tuning by ear (nobody has HEARD them - headless is
+silent); when folded into `index.html`, the radio also wants a map marker per line.
+
+**LINE ENDINGS - FIXED same day (his OK):** all files converted back to LF, matching HEAD; nothing staged. Was: every file git shows as modified (index.html, config.js,
+tools/*, HANDOFF.md...) differs from HEAD **only** by CRLF line endings
+(`git diff --ignore-cr-at-eol --stat` is empty). That breaks `tools/headless.js` (its `<script>\n`
+regex) so `tools/selftest_foe.js` cannot load `index.html`. Fork is LF and loads fine. Asked him
+before touching it.
+
+---
 
 ## 2026-11-10 — The pistol shoots where the crosshair is
 

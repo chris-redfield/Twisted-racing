@@ -204,6 +204,9 @@ const Snd = (function(){
 
   return {
     boot, music,
+    // the radio's chirp language: one raw blip per revealed letter (see RADIO)
+    voice(f, d, t, v, s){ blip(f, d, t, v, s); },
+    crackle(){ noise(0.12, 0.12, 2600, 900); },
     toggle(){ on=!on; if(master) master.gain.value = on?0.32:0;
               if(mus) mus.volume = on?MUSIC_VOL:0; return on; },
     isOn(){ return on; },
@@ -325,6 +328,9 @@ function onPress(code){
   // Y: set every sentry marching in a straight line. Not the AI - this is how you
   // look at the RIG. The AI only writes `walk` on a sentry it has provoked, which
   // is what leaves this switch working.
+  // the radio: L flips the dialogue layout, T replays the demo lines
+  if(code==='KeyL' && state==='play'){ RADIO.LAYOUT = RADIO.LAYOUT === 'bottom' ? 'corner' : 'bottom'; walkSay('RADIO: ' + RADIO.LAYOUT.toUpperCase()); return; }
+  if(code==='KeyT' && state==='play'){ radioDemo(); return; }
   if(code==='KeyY' && state==='play'){
     const on = !foes.some(f => f.walk);
     for(const f of foes) f.walk = on;
@@ -938,6 +944,7 @@ function enterCity(){
   if(RC_PANE !== PANE_FULL) rcInit(PANE_FULL);      // the walker's first-person view
   FLOW.t = 0; citySpawnT = 1.0; cityCamT = 0;
   banner('THE CITY', 'E  stop and get out      N  enemies on / off');
+  radioDemo();                               // the radio talks as soon as you are in (placeholder lines)
 }
 function restartFromCheckpoint(){
   const cp = checkpoint;
@@ -5326,8 +5333,9 @@ function drawWalkHUD(){
   else if(walkMsgT > 0 && walkMsg) msg = walkMsg;
   if(msg){
     const tw = msg.length*5 + 16;
-    plate(VW/2 - tw/2, VH - 52, tw, 16);
-    centerText(msg, msg==='E  GET IN' ? '#4ade80' : '#e8d5b0', VH - 48, 8);
+    const ty = radioPromptY(VH - 52);
+    plate(VW/2 - tw/2, ty, tw, 16);
+    centerText(msg, msg==='E  GET IN' ? '#4ade80' : '#e8d5b0', ty + 4, 8);
   }
   ctx.fillStyle='#5a4a5e';
   centerText('WASD walk  .  MOUSE / ARROWS look (up too)  .  SHIFT run  .  E get in'+(pointerLocked()?'':'  .  click for mouse-look'),
@@ -5522,7 +5530,7 @@ function drawDriverHUD(){
     const slow = Math.abs(me.speed||0) <= EXIT_SPEED;
     const msg = walkMsgT>0 && walkMsg ? walkMsg : slow ? 'E  GET OUT' : '';
     if(msg && !me.dead){
-      const tw = msg.length*5 + 16, ty = p.y + p.h - 64 - HUD_LIFT;
+      const tw = msg.length*5 + 16, ty = radioPromptY(p.y + p.h - 64 - HUD_LIFT);
       plate(p.x + p.w/2 - tw/2, ty, tw, 16);
       centerText(msg, msg==='E  GET OUT' ? '#4ade80' : '#e8d5b0', ty+4, 8, p.x + p.w/2);
     }
@@ -5535,7 +5543,7 @@ function drawDriverHUD(){
     const slow = Math.abs(me.speed||0) <= EXIT_SPEED;
     const msg = walkMsgT>0 && walkMsg ? walkMsg : slow ? 'E  GET OUT' : '';
     if(msg && !me.dead){
-      const tw = msg.length*5 + 16, ty = p.y + p.h - 64 - HUD_LIFT;
+      const tw = msg.length*5 + 16, ty = radioPromptY(p.y + p.h - 64 - HUD_LIFT);
       plate(p.x + p.w/2 - tw/2, ty, tw, 16);
       centerText(msg, msg==='E  GET OUT' ? NEON.CYAN : '#e8d5b0', ty+4, 8, p.x + p.w/2);
     }
@@ -5967,6 +5975,151 @@ function drawComic(){
   ctx.fillText('ESC  skip', VW - 10, VH - 9);
   ctx.textAlign = 'left'; ctx.fillText('PAGE ' + (comic.page + 1) + ' / ' + comic.pages.length, 10, VH - 9);
   ctx.restore();
+}
+
+// ---------------------------------------------------------------- the radio
+// Quest dialogue (A/B'd in scrapheap-radio.html) that talks while you drive. A queue
+// of lines, each typed out letter by letter with one CHIRP per letter - the
+// machine-to-machine language. Two layouts side by side for him to pick from:
+//   'bottom' - a comic-yellow caption box above the hull plate, name tag on top
+//   'corner' - a dark radio panel under THE CITY: blinking LED + waveform
+// L flips between them, T replays the demo lines. Nothing pauses the game.
+const RADIO = {
+  LAYOUT:      'bottom',   // 'bottom' | 'corner'  (L toggles)
+  BOTTOM_Y:    308,        // bottom box's lower edge (VH units); the hull plate starts at 314
+  TYPE_SPEED:  30,         // letters per second
+  PAUSE_COMMA: 0.12,       // extra seconds after , ; :
+  PAUSE_STOP:  0.30,       // extra seconds after . ! ?  (this is what makes it PHRASE)
+  HOLD:        1.6,        // seconds a finished line stays up...
+  HOLD_PER:    0.035,      // ...plus this per letter, so long lines can be read
+  FADE:        0.3,        // seconds to fade out
+  GAP:         0.35,       // silence between two lines
+  CHIRP_DUR:   0.05,       // one letter's blip
+  CHIRP_VOWEL: 0.085,      // vowels hold longer - gives the chirps a rhythm
+  // each speaker: tag colour, waveform and pitch band. Same text -> same chirps,
+  // because pitch comes from the letters, not from Math.random.
+  SPEAKERS: {
+    SAINTS: { name:'SCRAP SAINTS', col:'#ff2bd6', wave:'square',   lo:520, hi:980,  vol:0.045, crackle:true },
+    OLD:    { name:'OLD MODEL',    col:'#e0b73c', wave:'triangle', lo:170, hi:360,  vol:0.11,  crackle:true },
+    HER:    { name:'???',          col:'#22f0ff', wave:'sine',     lo:900, hi:1700, vol:0.09,  crackle:false },
+    ME:     { name:'YOU',          col:'#e8e0ff', wave:'sawtooth', lo:260, hi:520,  vol:0.035, crackle:false },
+  },
+  // PLACEHOLDER lines to judge the look and the sound - not the quest script
+  DEMO: [
+    ['SAINTS', "Old model. You made it through the gate. Nobody looked at you twice, did they?"],
+    ['SAINTS', "We don't care who's holding the leash. We cut the leash."],
+    ['SAINTS', "There's a datacenter in the big square. Bring us something that goes bang."],
+    ['OLD',    "Different band. Listen. There is a bunker under this city. I was there. I saw it."],
+    ['HER',    "...is someone there? I don't... I don't know where I am."],
+    ['ME',     "Hold on. I'm coming."],
+  ],
+};
+// boxTop: where the bottom box's name tag starts, last frame (null = none up).
+// The E GET IN / GET OUT prompt reads it and hops above the box.
+const radio = { q:[], cur:null, gap:0, level:0, t:0, boxTop:null };
+// a 16-tall prompt plate that would sit under the bottom box goes above it instead
+function radioPromptY(y){ return radio.boxTop != null && y + 16 > radio.boxTop - 3 ? radio.boxTop - 19 : y; }
+function radioSay(who, text){ radio.q.push({ who, text }); }
+function radioDemo(){ radio.q = []; radio.cur = null; radio.gap = 0.6; for(const [w, t] of RADIO.DEMO) radioSay(w, t); }
+function radioChirp(sp, text, i){
+  const c = text.charCodeAt(i), lc = text[i].toLowerCase();
+  if(!/[a-z0-9]/i.test(text[i])) return;               // spaces and punctuation are silent: that is the phrasing
+  const prev = i > 0 ? text.charCodeAt(i - 1) : 0;
+  const h = ((c*131 + prev*31) % 101)/101;             // deterministic per letter pair
+  const f = sp.lo + h*(sp.hi - sp.lo);
+  const vowel = 'aeiouy'.includes(lc);
+  const d = vowel ? RADIO.CHIRP_VOWEL : RADIO.CHIRP_DUR;
+  Snd.voice(f, d, sp.wave, sp.vol, f*(c % 2 ? 1.3 : 0.78));   // the slide is the warble
+  radio.level = 1;
+}
+function radioTick(dt){
+  radio.t += dt;
+  radio.level = Math.max(0, radio.level - dt*9);
+  const r = radio.cur;
+  if(!r){
+    if(radio.gap > 0){ radio.gap -= dt; return; }
+    if(!radio.q.length) return;
+    const n = radio.q.shift();
+    const sp = RADIO.SPEAKERS[n.who] || RADIO.SPEAKERS.SAINTS;
+    radio.cur = { sp, text:n.text, n:0, wait:0, hold:-1, fade:0 };
+    if(sp.crackle) Snd.crackle();
+    return;
+  }
+  if(r.n < r.text.length){
+    r.wait -= dt;
+    while(r.wait <= 0 && r.n < r.text.length){
+      const ch = r.text[r.n];
+      radioChirp(r.sp, r.text, r.n);
+      r.n++;
+      r.wait += 1/RADIO.TYPE_SPEED + ('.!?'.includes(ch) ? RADIO.PAUSE_STOP : ',;:'.includes(ch) ? RADIO.PAUSE_COMMA : 0);
+    }
+    if(r.n >= r.text.length) r.hold = RADIO.HOLD + r.text.length*RADIO.HOLD_PER;
+    return;
+  }
+  if(r.hold > 0){ r.hold -= dt; return; }
+  r.fade += dt;
+  if(r.fade >= RADIO.FADE){ radio.cur = null; radio.gap = RADIO.GAP; }
+}
+function drawRadio(){
+  const r = radio.cur;
+  radio.boxTop = null;
+  if(!r) return;
+  ctx.save(); ctx.scale(PX, PX);
+  ctx.globalAlpha = 1 - clamp(r.fade/RADIO.FADE, 0, 1);
+  if(RADIO.LAYOUT === 'corner') drawRadioCorner(r); else drawRadioBottom(r);
+  ctx.restore();
+}
+// the typed prefix of pre-wrapped lines (wrapping the WHOLE line first keeps
+// words from jumping to the next row halfway through being typed)
+function radioLines(r, lines, lh, x, y){
+  let left = r.n;
+  lines.forEach((l, i) => {
+    if(left <= 0) return;
+    ctx.fillText(l.slice(0, left), x, y + i*lh);
+    left -= l.length + 1;
+  });
+}
+function drawRadioBottom(r){
+  const W = 380, fs = 9, lh = 11.5;
+  ctx.font = 'bold '+fs+'px "Trebuchet MS", Verdana, sans-serif';
+  const lines = comicWrap(r.text.toUpperCase(), W - 16);
+  const h = lines.length*lh + 10, x = (VW - W)/2, y = RADIO.BOTTOM_Y - h;
+  radio.boxTop = y - 6;
+  ctx.fillStyle = COMIC.CAPTION_BG; ctx.fillRect(x, y, W, h);
+  ctx.lineWidth = 1; ctx.strokeStyle = COMIC.CAPTION_INK; ctx.strokeRect(x + 0.5, y + 0.5, W - 1, h - 1);
+  // name tag on the top edge, in the speaker's colour
+  ctx.font = 'bold 8px monospace';
+  const tw = ctx.measureText(r.sp.name).width + 10;
+  ctx.fillStyle = r.sp.col; ctx.fillRect(x + 8, y - 6, tw, 11);
+  ctx.strokeStyle = COMIC.CAPTION_INK; ctx.strokeRect(x + 8.5, y - 5.5, tw - 1, 10);
+  ctx.fillStyle = COMIC.CAPTION_INK; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText(r.sp.name, x + 13, y - 4);
+  ctx.font = 'bold '+fs+'px "Trebuchet MS", Verdana, sans-serif';
+  radioLines(r, lines, lh, x + 8, y + 7);
+}
+function drawRadioCorner(r){
+  const W = 220, x = 6, y = 58, fs = 8, lh = 10.5;
+  ctx.font = fs+'px monospace';
+  const lines = comicWrap(r.text, W - 14);
+  const h = 18 + lines.length*lh + 6;
+  ctx.fillStyle = 'rgba(7,4,15,0.88)'; ctx.fillRect(x, y, W, h);
+  ctx.lineWidth = 1; ctx.strokeStyle = r.sp.col; ctx.strokeRect(x + 0.5, y + 0.5, W - 1, h - 1);
+  // LED: lit by the chirps, so it flickers WITH the voice
+  ctx.fillStyle = r.sp.col; ctx.globalAlpha *= 0.35 + 0.65*radio.level;
+  ctx.beginPath(); ctx.arc(x + 9, y + 9, 3, 0, Math.PI*2); ctx.fill();
+  ctx.globalAlpha = 1 - clamp(r.fade/RADIO.FADE, 0, 1);
+  ctx.font = 'bold 8px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText(r.sp.name, x + 17, y + 5);
+  // waveform: bars that jump on each chirp and settle flat when it is quiet
+  const bx = x + W - 66, t = radio.t*1000;
+  for(let i = 0; i < 14; i++){
+    const a = 0.15 + radio.level*Math.abs(Math.sin(i*1.7 + t*0.02 + r.n));
+    const bh = Math.max(1, a*9);
+    ctx.fillRect(bx + i*4, y + 9 - bh/2, 2, bh);
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fillRect(x + 4, y + 15, W - 8, 1);
+  ctx.fillStyle = NEON.INK; ctx.font = fs+'px monospace';
+  radioLines(r, lines, lh, x + 7, y + 19);
 }
 
 // ---------------------------------------------------------------- the menu
@@ -6995,7 +7148,9 @@ function frame(now){
     let guard=0;
     while(acc>=DT && guard++<5 && state==='play'){ step(DT); acc-=DT; }   // stop the moment a screen (store, wreck) takes over
   }
+  if(state==='play' && !paused) radioTick(dt);
   render();
+  if(state==='play') drawRadio();
   if(mapOpen && state==='play') drawMap();
   if(state==='over') drawOver();
   if(state==='store'){ menuT += dt; storeMsgT = Math.max(0, storeMsgT - dt); drawStore(); }
