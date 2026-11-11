@@ -736,5 +736,64 @@ E('cityGround = globalThis.__og');
 ok('with no pavement anywhere the route is refused (the block keeps one fewer)', none === false);
 ok('ARC_MIN is the floor it refuses below', E('FOE_WALK.ARC_MIN') > 0);
 
+// ---------------------------------------------------------------------------
+// INTO THE CITY THROUGH THE GATE, not skipToCity(). Every other check in this
+// file (and in the quest bot) enters with skipToCity, which calls enterCity()
+// from OUTSIDE the frame loop - so for a long time nothing tested the one frame
+// a real run actually takes: placeCam() -> runEvents() -> updateSpawner(dt).
+// runEvents parks the cement truck at the yard, thousands of units ahead, and
+// then the leg culler runs in that same frame. It used to splice the truck out.
+head('the gate: the cement truck survives the frame that enters the city');
+E('stage = "run"'); E('startMatch(1)'); frame(1);
+E('checkpoint = { camV, wave, kills:convoyKills, cash, up:Object.assign({}, runUp) }');
+E('camS = ROAD.gateS - 300; distance = camS; placeCam();');
+E(`(function(){ const f = roadFrame(ROAD.gateS + 60), me = cars[0];
+     me.x = f.x; me.y = f.y; me.angle = Math.atan2(f.ty, f.tx);
+     me.vx = f.tx*CAM_VMAX; me.vy = f.ty*CAM_VMAX; me.speed = CAM_VMAX; })()`);
+E('runEvents()');
+ok('the gate put us in the city', E('street') === true);
+ok('and the quest parked a truck', E('!!(quest && quest.truck)') === true);
+ok('the truck is far enough ahead to be inside the leg culler\'s reach',
+   E('roadProject(quest.truck.x, quest.truck.y).s - camS') > E('halfExtent(roadFrame(camS)) + 460'));
+E('updateSpawner(1/60)');
+ok('the leg culler does NOT cull it (it is parked)', E('cars.indexOf(quest.truck)') > 0);
+ok('nor your own car, were you to leave one on a leg',
+   E(`(function(){ const c = makeCar(nextId++, false, cars[0].x + 4000, cars[0].y, 0, 0);
+        c.parked = true; c.role = 'parked'; cars.push(c); updateSpawner(1/60);
+        const kept = cars.indexOf(c) > 0; if(kept) cars.splice(cars.indexOf(c), 1); return kept; })()`) === true);
+// and the map says where it is: a CEMENT mark on the local map AND on the
+// city-overview panel (the thing he calls the minimap)
+const marks = E(`(function(){
+  const got = [], f = ctx.fillText;
+  ctx.fillText = s => got.push(String(s));
+  mapOpen = true; drawMap(); mapOpen = false;
+  ctx.fillText = f;
+  return got.filter(s => /CEMENT|TRUCK/.test(s)).length;
+})()`);
+ok('the map draws the truck twice: local map + city overview', marks === 2, 'marks=' + marks);
+
+// ---------------------------------------------------------------------------
+// In the city you drive BOTH ways. A pad is placed "ahead", and ahead used to mean
+// deeper in road-s whichever way you were pointing - so after the quest, when you
+// turn round, all four pads stayed deeper than you and none was ever recycled.
+head('pads are placed the way you are DRIVING, not the way the road runs');
+E('stage = "run"'); E('startMatch(1)'); frame(1); E('skipToCity()'); frame(30);
+const padNear = () => E('Math.min(...pads.map(p => Math.hypot(p.x - cars[0].x, p.y - cars[0].y)))');
+const roll = (dy, n) => { for(let i = 0; i < n; i++){
+  E(`(function(){ const me = cars[0]; me.x = 0; me.y += ${dy}; cam.x = 0; cam.y = me.y;
+       me.vx = 0; me.vy = ${dy > 0 ? 1 : -1}*120; })()`); frame(20); } };
+E('(function(){ const me = cars[0]; me.x = 0; me.y = cityLimitY - 300; cam.x = 0; cam.y = me.y; })()');
+frame(20);
+roll(-300, 10);                                  // driving deeper, the way in
+const deepNear = padNear();
+ok('driving deeper, a pad is always near the road ahead', deepNear < 900, 'nearest ' + Math.round(deepNear));
+roll(300, 14);                                   // turn round, drive back out
+const outNear = padNear();
+ok('driving back out, pads follow you instead of stranding deep in the city',
+   outNear < 900, 'nearest ' + Math.round(outNear));
+ok('and they still hold items', E('pads.filter(p => p.item).length') === E('pads.length'));
+ok('on the legs "ahead" is still forward (padFwd 1)',
+   E('(function(){ street = false; padAimUpdate(); const d = padFwd; street = true; return d; })()') === 1);
+
 console.log(`\n${total - fails}/${total} passed`);
 process.exit(fails ? 1 : 0);

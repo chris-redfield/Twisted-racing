@@ -865,6 +865,13 @@ function updateSpawner(dt){
   const reach = halfExtent(roadFrame(camS));
   for(let i=cars.length-1;i>=1;i--){
     const c=cars[i];
+    // your parked car and the quest truck are never culled - the same rule the
+    // city culler has (citySpawner). This matters on ONE frame: the gate fires
+    // runEvents() -> enterCity() -> questSpawnTruck(), which parks the truck at
+    // the yard thousands of units ahead, and THIS cull still runs after it in
+    // that frame. Without the guard the truck was spliced out the instant you
+    // drove into the city, so it never appeared in the yard or on the map.
+    if(c.parked) continue;
     // fwd = signed forward distance from the camera anchor; lat = lateral offset
     const q = roadProject(c.x, c.y);
     const fwd = q.s - camS, lat = q.lat;
@@ -2261,14 +2268,29 @@ const ITEMS = {
 };
 // pads drift down the road; when one falls behind, it re-seeds ahead with a fresh
 // item, so ammo drops keep coming toward you.
+// Which way is AHEAD for a pad. On the legs the scroll only ever runs forward, so
+// it is +1. In the city you drive both ways, and that broke the pads: "ahead" was
+// always DEEPER in road-s, so the moment you turned round after the quest all four
+// pads sat deeper than you, none of them ever counted as behind, and nothing was
+// ever recycled in front of you again - no pickups for the rest of the run.
+// Updated once a frame in updatePads, not per pad: it reads the change in camS.
+let padFwd = 1, padS0 = null;
+function padAimUpdate(){
+  if(!street){ padFwd = 1; padS0 = null; return; }
+  if(padS0 != null){
+    const d = camS - padS0;
+    if(Math.abs(d) > 1.5 && Math.abs(d) < 2000) padFwd = d > 0 ? 1 : -1;   // the 2000 skips a restart's jump
+  }
+  padS0 = camS;
+}
 function recycleAhead(p){
   const lat = rnd(-ROAD_HW+30, ROAD_HW-30);
-  const at = roadPoint(camS + halfExtent(roadFrame(camS)) + rnd(80,360), lat);
+  const at = roadPoint(camS + padFwd*(halfExtent(roadFrame(camS)) + rnd(80,360)), lat);
   p.x = at.x; p.y = at.y;
   p.item = pick(['health','missile','missile','mine']);
   p.bob = 0;
 }
-function padBehind(p){ return roadProject(p.x, p.y).s - camS < -(halfExtent(roadFrame(camS)) + 120); }
+function padBehind(p){ return padFwd*(roadProject(p.x, p.y).s - camS) < -(halfExtent(roadFrame(camS)) + 120); }
 function updatePads(dt){
   const me=cars[0];
   if(race){
@@ -2289,6 +2311,7 @@ function updatePads(dt){
     }
     return;
   }
+  padAimUpdate();                  // which way "ahead" is, before any pad is placed
   for(const p of pads){
     if(padBehind(p)){ recycleAhead(p); continue; }
     if(!p.item){ p.timer-=dt; if(p.timer<=0) recycleAhead(p); continue; }
@@ -4006,13 +4029,16 @@ function drawQuestGround(){
 }
 // objective line + pour gauge, under the radio pane
 function drawQuestHUD(){
-  if(!quest || !questSites || !street) return;
+  // sealed: no objective line - and, more to the point, no guard count to ask for.
+  // questGuardsLeft() goes through foeChunkPlan(), which BUILDS the chunk on a miss,
+  // and both caches drop what is far from the camera. Asking from a draw function
+  // every frame for a quest that is already over is work for nothing.
+  if(!quest || !questSites || !street || quest.done) return;
   ctx.save(); ctx.scale(PX, PX);
   ctx.font = '8px monospace'; ctx.textBaseline = 'top'; ctx.textAlign = 'right';
   let msg = '';
   const me = cars[0], left = quest.said.guards ? questGuardsLeft() : -1;
-  if(quest.done) msg = '';
-  else if(!(me && me.truck) && !(quest.truck && quest.truck.dead)) msg = left === 0 ? 'GET THE TRUCK TO THE VENT' : 'TAKE THE CEMENT TRUCK  (M: yard)';
+  if(!(me && me.truck) && !(quest.truck && quest.truck.dead)) msg = left === 0 ? 'GET THE TRUCK TO THE VENT' : 'TAKE THE CEMENT TRUCK  (M: yard)';
   else if(left !== 0) msg = left > 0 ? 'GUARDS LEFT: ' + left : 'DRIVE TO THE BUNKER  (M)';
   else if(quest.ps && !quest.ps.ok) msg = quest.ps.why === 'angle' ? 'BACK IN - DRUM TO THE VENT' : quest.ps.why === 'moving' ? 'STOP TO POUR' : 'BACK THE DRUM ONTO THE VENT';
   else msg = 'POURING';
