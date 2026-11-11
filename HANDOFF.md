@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-10 | [Bolts leave the torso; pistol hits chip the sentry](#2026-11-10--bolts-leave-the-torso-pistol-hits-chip-the-sentry) | built, selftests 30/165/60 + screenshots; **his asks**; not played |
 | 2026-11-10 | [The kerb is REMOVED from the first-person view](#2026-11-10--the-kerb-is-removed-from-the-first-person-view) | built, selftest_foe 165 + screenshots; **his call** after the geometric clip still looked wrong; next idea: a volumetric kerb |
 | 2026-11-10 | [The kerb clip, done by geometry: sentries stopped losing their legs](#2026-11-10--the-kerb-clip-done-by-geometry-sentries-stopped-losing-their-legs) | built, selftest_foe 176 + screenshots; **his bug report**; supersedes the clip half of "The kerb hides what stands behind it" |
 | 2026-11-10 | [Quest 1 built: the cement and the billionaire's bunker](#2026-11-10--quest-1-built-the-cement-and-the-billionaires-bunker) | **built in index.html**, selftests 30/171/60 + an end-to-end quest bot + screenshots; **not played**; also: city hunters reworked |
@@ -61,6 +62,33 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-10 — Bolts leave the torso; pistol hits chip the sentry
+
+(After this entry's predecessors: the multi-pitch car-sprite experiment was built, benchmarked
+and **rejected by him** - he reverted it with `git checkout .`; see memory
+`car-pitch-bake-rejected`. Nothing of it is in the code.)
+
+- **Bolt height:** `FOE_GUN.MUZZLE_Z` 11 -> **16** (FOE.H is 22). He: "they look like they exit a
+  lower part of their body". The wind-up sparks use the same height, so the tell moved with it.
+  Screen `.shots/bolt-torso.png`.
+- **Chipping (`FOE_CHIP`, config.js):** a pistol hit on a sentry now throws a miniature explosion
+  at the exact point it went in - his spec, "a smaller scale explosion, with less effects, like
+  only 3 things coming out": a small flash ring (r 1 -> 9 over 0.16 s) and **3 chips** (plating
+  greys + one hot fleck, 35-80 u/s out, 25-60 up, gravity, 0.3-0.55 s). Placed `FOE.R*0.8` in
+  front of his centre along your aim (the face you shot) at the height the aim line crossed him
+  (`eye - DROP*bd`, the same z the hit test uses). The white hit-flash he already had stays.
+  Code: `gunFire` in fpsgun.js; new `fxRing()` helper in index.html next to `particles()` -
+  inside `gunFire` the name `fx` is the AIM direction, not the effects list (that bit me: it
+  threw in the selftest). Screen `.shots/chip-hit.png`.
+- **Death blast at the torso (his ask):** `foeDie` centred everything on the feet (explode at z 0,
+  sparks at 8). Now `FOE_BLAST_Z` = 15 (config.js): `explode(..., { z: FOE_BLAST_Z - 6, floor: 0 })`
+  puts the ring at 13 and the sparks at 15, its own particles at 15 / 11. `explode()` gained an
+  `opt.floor` (defaults to `opt.z`, so the pit blasts are unchanged) - without it the debris of a
+  raised blast would rest in mid-air at its own height. Measured: ring 13, sparks 11-15, floor 0,
+  all gone within 2 s. Screen `.shots/death-torso.png`.
+
+---
 
 ## 2026-11-10 — The kerb is REMOVED from the first-person view
 

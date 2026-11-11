@@ -295,6 +295,22 @@ const FOE_RIG = {
 // Visible energy bolts, slow enough to sidestep, and every shot is telegraphed:
 // it stops, a glow builds at its gun hand for WINDUP, then it fires.
 // Range = the cars' guns (430 u/s for 1 s). Slow and weak for now, on purpose.
+// A pistol round that finds a sentry chips it: a miniature explosion at the exact
+// point it hit - a small flash ring and N chips of its plating flying off and
+// falling - on top of the white hit-flash it already had. His spec: "a smaller
+// scale explosion, with less effects, like only 3 things coming out".
+// where a sentry's death blast is centred: the torso, not the feet (his ask, 2026-11-10)
+const FOE_BLAST_Z = 15;                  // FOE.H is 22; the bolts leave at 16
+const FOE_CHIP = {
+  N:      3,                              // chips per hit
+  COL:    ['#d9dee8', '#9aa3b4', '#ffe9a8'],   // its plating, darker plating, one hot fleck
+  SPD:    [35, 80],                       // units/s outward
+  UP:     [25, 60],                       // units/s upward
+  LIFE:   [0.3, 0.55],                    // seconds
+  SIZE:   1.6,
+  RING:   9,                              // the flash ring grows to this radius
+  RING_T: 0.16,                           // over this long
+};
 const FOE_GUN = {
   RANGE:   430,          // units - the same reach as a car's gun
   SPD:     180,          // units/s: you walk 46 and run 92, so a sidestep clears it
@@ -302,7 +318,7 @@ const FOE_GUN = {
   REST:    [2.6, 4.0],   // seconds between shots, rolled each time
   DMG_WALK: 3,           // on foot (WALK_HP 40)
   DMG_CAR:  5,           // on a car or the truck
-  MUZZLE_Z: 11,          // the gun hand's height
+  MUZZLE_Z: 16,          // where the bolt leaves: the torso (FOE.H is 22). 11 read as the hip
   COL:     '#ff3b8b',    // hot pink: nothing else in the game is this colour
   GLOW:    '#ffc2e0',
 };

@@ -373,10 +373,13 @@ function foeDamage(f, amount, ownerId){
 function foeDie(f, ownerId){
   f.hp = 0; f.dead = true; f.walk = false; f.mad = false;
   if(f.key) foeKilled.add(f.key);       // and it stays wrecked if you come back
-  explode(f.x, f.y, SHAKE.SENTRY, null, 0, 10);   // power only drives the camera kick
-  particles(f.x, f.y, 8, 14, {col:[FOE_COL, '#ffa820', '#3a3040'],
+  // centred on the TORSO (FOE_BLAST_Z): explode() puts its ring 4 and its sparks 6
+  // above `z`, and its debris still falls to the ground (floor 0)
+  const bz = typeof FOE_BLAST_Z !== 'undefined' ? FOE_BLAST_Z : 8;
+  explode(f.x, f.y, SHAKE.SENTRY, null, 0, 10, { z:bz - 6, floor:0 });   // power only drives the camera kick
+  particles(f.x, f.y, bz, 14, {col:[FOE_COL, '#ffa820', '#3a3040'],
     spd0:50, spd1:190, size:2, life0:0.3, life1:0.9});
-  particles(f.x, f.y, 2,  8, {col:['#4a3f50', '#6b5c72'],
+  particles(f.x, f.y, bz - 4,  8, {col:['#4a3f50', '#6b5c72'],
     spd0:10, spd1:60, size:3, life0:0.5, life1:1.2, grav:20});
   if(ownerId === 0) gunnerKill = 1.1;   // the driving pane's kill flash
 }

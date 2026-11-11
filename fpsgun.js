@@ -137,7 +137,19 @@ function gunFire(){
   if(best || bestFoe){
     // five of these kills a sentry, which is the number FOE.HP is set from
     if(best) damage(best, PISTOL.DMG, 0);
-    else     foeDamage(bestFoe, PISTOL.DMG, 0);
+    else {
+      foeDamage(bestFoe, PISTOL.DMG, 0);
+      // FOE_CHIP: chips fly off where the round went in - on the side facing you,
+      // at the height the aim line crossed him
+      if(typeof FOE_CHIP !== 'undefined' && typeof particles === 'function'){
+        const back = Math.min(bd, (FOE.R || 6)*0.8), hd = bd - back;
+        const hx = w.x + fx*hd, hy = w.y + fy*hd;
+        const hz = Math.max(2, Math.min(FOE.H - 1, eye - DROP*bd));
+        if(typeof fxRing === 'function') fxRing(hx, hy, hz, FOE_CHIP.RING_T, 1, FOE_CHIP.RING);   // (`fx` here is the aim, not the effects list)
+        particles(hx, hy, hz, FOE_CHIP.N, { col:FOE_CHIP.COL, spd0:FOE_CHIP.SPD[0], spd1:FOE_CHIP.SPD[1],
+          up0:FOE_CHIP.UP[0], up1:FOE_CHIP.UP[1], life0:FOE_CHIP.LIFE[0], life1:FOE_CHIP.LIFE[1], size:FOE_CHIP.SIZE });
+      }
+    }
     gunHits++; gunMarkT = 0.15;
     if(typeof Snd !== 'undefined') Snd.hit();
   }

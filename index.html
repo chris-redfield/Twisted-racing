@@ -1329,6 +1329,8 @@ function blockHitPoint(x,y,r){
 }
 
 // ---------------------------------------------------------------- effects
+// a flash ring on its own (explode has a big one; FOE_CHIP a tiny one)
+function fxRing(x, y, z, life, r0, r1){ fx.push({ ring:true, x, y, z, t:0, life, r0, r1 }); }
 function particles(x,y,z,n,opt){
   for(let i=0;i<n;i++){
     const a=Math.random()*Math.PI*2, s=rnd(opt.spd0||20,opt.spd1||120);
@@ -1348,6 +1350,7 @@ function shakeFade(x, y){
 function explode(x,y,power,owner,dmg,radius,opt){
   opt = opt || {};
   const z = opt.z || 0;                 // height of the blast above the floor plane
+  const floor = opt.floor == null ? z : opt.floor;   // where its debris lands (a blast in the air still drops to the ground)
   const clip = opt.clip || null;        // confine the debris, e.g. to the mouth of a pit
   const tight = clip ? 0.4 : 1;         // a blast in a hole cannot throw debris across the arena
   // Both of these are scaled by how far the CAMERA is from the blast - see SHAKE
@@ -1361,9 +1364,9 @@ function explode(x,y,power,owner,dmg,radius,opt){
   cam.shake = Math.min(9, cam.shake + power*3*fade);
   fx.push({ ring:true, x, y, z:z+4, t:0, life:0.35, r0:6, r1:radius||58, clip });
   particles(x,y,z+6,18,{col:['#ffe9a8','#ff9d3d','#e04a20'],spd0:40*tight,spd1:200*tight,
-    size:3,life0:0.25,life1:0.7,floor:z,clip,up1:70*tight});
+    size:3,life0:0.25,life1:0.7,floor,clip,up1:70*tight});
   particles(x,y,z+6,10,{col:['#4a3f50','#6b5c72'],spd0:10*tight,spd1:60*tight,
-    size:4,life0:0.5,life1:1.2,grav:20,floor:z,clip});
+    size:4,life0:0.5,life1:1.2,grav:20,floor,clip});
   const R = radius||58;
   for(const c of cars){
     if(c.dead) continue;
