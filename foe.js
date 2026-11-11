@@ -453,7 +453,8 @@ function foeRam(){
       if(d > R) continue;
       const k = (R + 2 - d)/(d || 1);
       f.x += dx*k; f.y += dy*k;                              // thrown clear either way
-      if(sp > FOE.RAM_MIN) foeDamage(f, sp*FOE.RAM, c.id);
+      // a guard is braced for it: shoved, never hurt - you have to get out and fight
+      if(sp > FOE.RAM_MIN && !f.guard) foeDamage(f, sp*FOE.RAM, c.id);
     }
   }
 }
@@ -472,10 +473,26 @@ function foeRam(){
 // is built with CAR clearances; the only cost of borrowing it is that a sentry
 // keeps to the roadway, and a pedestrian variant is a later nicety.
 function foeThink(f, dt){
+  // QUEST 1's bunker guards don't wait to be shot: get close and they come
+  if(f.guard && !f.mad && typeof cityTarget === 'function'){
+    const T0 = cityTarget();
+    if(Math.hypot(T0.x - f.x, T0.y - f.y) < QUEST.GUARD_AGGRO){ f.mad = true; f.loseT = 0; }
+  }
   if(!f.mad) return;              // ignoring you: whatever `walk` is, it is not the AI's
   const T = cityTarget();
   const dx = T.x - f.x, dy = T.y - f.y, dist = Math.hypot(dx, dy);
-  if(dist > FOE_AI.GIVE_UP){
+  // ...and when they reach you, they hit: you on foot, or whatever you drive
+  if(f.guard){
+    f.hitT = Math.max(0, (f.hitT || 0) - dt);
+    const reach = FOE_AI.STOP + (onFoot ? 6 : (cars[0].rad || 14) + 4);
+    if(dist < reach && f.hitT <= 0){
+      f.hitT = QUEST.GUARD_HIT_T;
+      if(onFoot) hurtWalker(QUEST.GUARD_DMG_WALK);
+      else if(!devMode) damage(cars[0], QUEST.GUARD_DMG_CAR, -1);
+      Snd.hit();
+    }
+  }
+  if(dist > (f.guard ? QUEST.GUARD_GIVE_UP : FOE_AI.GIVE_UP)){
     f.loseT += dt;
     if(f.loseT > FOE_AI.LOSE_T){ f.mad = false; f.loseT = 0; f.walk = false; f.side = 0;
       if(f.route) f.rejoin = true;        // a mover goes back to its round
@@ -497,6 +514,45 @@ function foeThink(f, dt){
   if(f.side) want += f.side*1.2;                  // wedged: shoulder past it
   f.a += clamp(angDiff(f.a, want), -FOE_AI.TURN*dt, FOE_AI.TURN*dt);
   f.walk = dist > FOE_AI.STOP;                    // stops at arm's length
+  foeGun(f, dt, T, dist);
+}
+// FOE_GUN: rest, then (in range, with a clear line) stop and glow for WINDUP,
+// then one bolt at where you are NOW. No lead: a bolt you see coming is one
+// you can step out of the way of.
+function foeGun(f, dt, T, dist){
+  if(typeof FOE_GUN === 'undefined' || typeof shots === 'undefined') return;
+  if(f.gunT === undefined) f.gunT = FOE_GUN.REST[0]*Math.random();   // they don't all open up at once
+  const mx = () => f.x + Math.cos(f.a)*6, my = () => f.y + Math.sin(f.a)*6;
+  if(f.charge > 0){
+    f.walk = false;                                 // planted while it aims
+    f.charge -= dt;
+    // the tell: sparks gathering at the gun hand, thicker as it builds
+    f.glowT = (f.glowT || 0) - dt;
+    if(f.glowT <= 0 && typeof particles === 'function'){
+      f.glowT = 0.04;
+      const k = 1 - f.charge/FOE_GUN.WINDUP;
+      particles(mx(), my(), FOE_GUN.MUZZLE_Z, 1 + (k*2|0), { col:[FOE_GUN.COL, FOE_GUN.GLOW], spd0:4, spd1:14 + 20*k,
+        size:1 + k, life0:0.06, life1:0.14, grav:0, up0:-4, up1:4 });
+    }
+    if(f.charge <= 0){
+      f.charge = 0;
+      f.gunT = FOE_GUN.REST[0] + Math.random()*(FOE_GUN.REST[1] - FOE_GUN.REST[0]);
+      const a = Math.atan2(T.y - my(), T.x - mx());
+      shots.push({ kind:'bolt', foe:true, x:mx(), y:my(), z:FOE_GUN.MUZZLE_Z,
+        vx:Math.cos(a)*FOE_GUN.SPD, vy:Math.sin(a)*FOE_GUN.SPD,
+        life:FOE_GUN.RANGE/FOE_GUN.SPD, owner:-2, dmg:FOE_GUN.DMG_CAR, dmgWalk:FOE_GUN.DMG_WALK });
+      if(typeof particles === 'function')
+        particles(mx(), my(), FOE_GUN.MUZZLE_Z, 6, { col:[FOE_GUN.GLOW, '#ffffff', FOE_GUN.COL], spd0:20, spd1:70, size:1.5, life0:0.05, life1:0.14, grav:0 });
+      if(typeof Snd !== 'undefined' && Snd.voice) Snd.voice(1100, 0.16, 'sawtooth', 0.05, 260);   // a zap, not a bang
+      f.x -= Math.cos(a)*1.5; f.y -= Math.sin(a)*1.5;                                            // a little kick
+    }
+    return;
+  }
+  f.gunT -= dt;
+  if(f.gunT > 0 || dist > FOE_GUN.RANGE) return;
+  const inCity = typeof street !== 'undefined' && street;
+  if(inCity && typeof cityClear === 'function' && !cityClear(f.x, f.y, T.x, T.y)) return;   // no line, no shot
+  f.charge = FOE_GUN.WINDUP; f.glowT = 0;
 }
 // Wedged on a corner the field routed it into, or shouldering the car: lean off
 // to ONE side for a while - the same side until it comes free, so it does not
@@ -639,6 +695,22 @@ function foeChunkPlan(k, side){
   const ch = cityChunk(k, side);
   const rng = cityRng(hash3(k, side > 0 ? 1 : 2, FOE_POP.SEED)*4294967296);
   plan = [];
+  // QUEST 1: the bunker's chunk is held by GUARDS instead, spaced round the
+  // bunker's own pavement, all facing out
+  if(ch.bunker && typeof QUEST !== 'undefined'){
+    const d = ch.bunker, P = CITY_STYLE.PAVE*0.5, n = QUEST.GUARDS;
+    const w = d.x1 - d.x0, h = d.y1 - d.y0, per = 2*(w + h);
+    for(let i = 0; i < n; i++){
+      let s = (i + 0.5)/n*per, x, y;
+      if(s < w){ x = d.x0 + s; y = d.y0 - P; }
+      else if((s -= w) < h){ x = d.x1 + P; y = d.y0 + s; }
+      else if((s -= h) < w){ x = d.x1 - s; y = d.y1 + P; }
+      else { s -= w; x = d.x0 - P; y = d.y1 - s; }
+      plan.push({ key: key + ':g' + i, x, y, a:Math.atan2(y - d.y, x - d.x), ck:key, guard:true });
+    }
+    foePlans.set(key, plan);
+    return plan;
+  }
   ch.blocks.forEach((b, bi) => {
     // Box-Muller: two uniforms make one normal. Rounded and clamped at nought,
     // and that clamp is what empties most blocks - the curve's whole left half
@@ -685,6 +757,7 @@ function citySentries(){
       if(Math.hypot(p.x - T.x, p.y - T.y) > FOE_POP.KEEP) continue;
       const f = spawnFoe(p.x, p.y, p.a);
       f.key = p.key; f.ck = p.ck;
+      if(p.guard){ f.guard = true; f.hitT = 0; }
       foeLive.add(p.key);
     }
   }

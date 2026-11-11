@@ -330,7 +330,7 @@ function onPress(code){
   // is what leaves this switch working.
   // the radio: L flips the dialogue layout, T replays the demo lines
   if(code==='KeyL' && state==='play'){ RADIO.LAYOUT = RADIO.LAYOUT === 'bottom' ? 'corner' : 'bottom'; walkSay('RADIO: ' + RADIO.LAYOUT.toUpperCase()); return; }
-  if(code==='KeyT' && state==='play'){ radioDemo(); return; }
+  if(code==='KeyT' && state==='play'){ questIntro(); return; }
   if(code==='KeyY' && state==='play'){
     const on = !foes.some(f => f.walk);
     for(const f of foes) f.walk = on;
@@ -735,7 +735,7 @@ function applyStage(){
 function startMatch(np){
   numPlayers = (np===1||np===2) ? np : numPlayers;
   if(stage==='street' || stage==='run') numPlayers = 1;   // walking is a solo thing
-  checkpoint = null; bannerT = 0; mapOpen = false; walkerDown = false; walkHurtT = 0; FLOW.ok = false;
+  checkpoint = null; questSites = null; quest = null; bannerT = 0; mapOpen = false; walkerDown = false; walkHurtT = 0; FLOW.ok = false;
   clearFoes(); clearFoeWorld();             // foe.js - and forget which ones you wrecked
   runUp = Object.assign({}, UPGRADES); cash = 0; saintsPay = null;   // restartFromCheckpoint puts its own back
   level=1; arenaShape='rect';
@@ -938,13 +938,18 @@ function runEvents(){
 }
 // No cut, no screen: the scroll stops, the camera starts following the car and
 // the driving goes free. Everything chasing you carries on into the streets.
+let questKeep = null;                        // a checkpoint's quest, handed to the next enterCity
 function enterCity(){
   street = true;
   checkpoint = { city:true, camV, wave, kills:convoyKills, cash, up:Object.assign({}, runUp) };
   if(RC_PANE !== PANE_FULL) rcInit(PANE_FULL);      // the walker's first-person view
   FLOW.t = 0; citySpawnT = 1.0; cityCamT = 0;
+  // whoever chased you through the gate keeps chasing; nobody new is sent
+  for(let i=1;i<cars.length;i++) if(!cars[i].dead) cars[i].hostile = true;
   banner('THE CITY', 'E  stop and get out      N  enemies on / off');
-  radioDemo();                               // the radio talks as soon as you are in (placeholder lines)
+  questStart(questKeep); questKeep = null;   // QUEST 1: roll (or restore) the sites, park the truck
+  checkpoint.quest = { sites:questSites, done:quest.done };
+  questIntro();                              // the radio talks as soon as you are in
 }
 function restartFromCheckpoint(){
   const cp = checkpoint;
@@ -962,7 +967,7 @@ function restartFromCheckpoint(){
   const v0 = cp.city ? 0 : camV;
   me.vx = f.tx*v0; me.vy = f.ty*v0; me.speed = v0;
   for(const pd of pads) recycleAhead(pd);
-  if(cp.city){ enterCity(); checkpoint = cp; }
+  if(cp.city){ questKeep = cp.quest; enterCity(); checkpoint = cp; }
   else banner('CHECKPOINT');
 }
 // SKIP_TO_CITY_KEY: a fresh run that starts at the city gate, at the pace and
@@ -994,6 +999,7 @@ function toggleEnemies(){
     cityWalkersOff();               // ...and the movers
     for(let i=cars.length-1;i>=1;i--){
       const c = cars[i];
+      if(c.parked) continue;          // not an enemy: your parked car, the truck
       particles(c.x, c.y, 8, 10, {col:[NEON.CYAN, NEON.MAGENTA], spd0:20, spd1:90, size:1, life0:0.2, life1:0.5});
       cars.splice(i, 1);
     }
@@ -1145,10 +1151,15 @@ function citySpawner(dt){
   const T = cityTarget();
   for(let i=cars.length-1;i>=1;i--){
     const c = cars[i];
+    if(c.parked) continue;            // your other car / the truck: never culled
     if((c.dead && c.respawn <= 0) || Math.hypot(c.x - T.x, c.y - T.y) > CITY_CULL) cars.splice(i, 1);
   }
+  // No new hunters in the city: the ones that chased you in are all you get.
+  // What arrives is TRAFFIC - hunter cars going about the streets, not after you.
   citySpawnT -= dt;
-  if(citySpawnT > 0 || cars.length - 1 >= CITY_ENEMIES) return;
+  let nTraffic = 0;
+  for(const c of cars) if(c.traffic && !c.dead) nTraffic++;
+  if(citySpawnT > 0 || nTraffic >= CITY_TRAFFIC) return;
   citySpawnT = CITY_SPAWN_GAP*rnd(0.7, 1.3);
   for(let tries=0; tries<16; tries++){
     const a = rnd(0, Math.PI*2), r = rnd(CITY_SPAWN_MIN, CITY_SPAWN_MAX);
@@ -1156,6 +1167,7 @@ function citySpawner(dt){
     if(cityGround(x, y) !== 1 || !flowPassable(x, y) || inView(x, y, 80)) continue;
     const c = makeCar(nextId++, false, x, y, Math.atan2(T.y - y, T.x - x), 1 + ((Math.random()*3)|0));
     c.role = 'city'; c.missiles = 0; c.minesLeft = 0; c.invuln = 0.3;
+    c.traffic = true; c.hostile = false;
     cars.push(c);
     return;
   }
@@ -1181,6 +1193,7 @@ function cityStep(dt){
     if(FLOW.t <= 0){ FLOW.t = CITY_FLOW_EVERY; flowRebuild(); }
   }
   citySpawner(dt);
+  questTick(dt);                   // QUEST 1: the cement
   citySentries();                  // foe.js: scatter them by block, cull what you left
   cityWalkers();                   // ...and the SEPARATE moving population (FOE_WALK)
   foeRam();                        // ...and a car that drives into one
@@ -1416,12 +1429,14 @@ function gunDmg(c){ return gunDmgAt(c.isPlayer ? upgradeLv('gun') : 0); }
 function missileDmg(c){ return missileDmgAt(c.isPlayer ? upgradeLv('missile') : 0); }
 
 function damage(c, amount, ownerId){
+  if(c.parked) return;                 // nobody in it: your parked car, the waiting truck
   if(c.dead || untouchable(c)) return;
   if(c.isPlayer) amount *= 1 - armorCut();       // ARMOR upgrade
   c.hp -= amount;
   c.hurtFlash = 0.12;
   if(ownerId!=null && ownerId!==c.id) c.lastHitBy = ownerId;
   if(ownerId===0 && !c.isPlayer) gunnerHit = 0.18;      // crosshair hit marker
+  if(ownerId===0 && !c.isPlayer) c.hostile = true;      // city traffic: shoot one and THAT one comes for you
   if(c.hp<=0){
     c.hp=0; c.dead=true; c.respawn=2.6; c.deaths++;
     const dz = c.deathZ || 0, dclip = c.deathClip || null, sp = dclip ? 0.45 : 1;
@@ -1499,7 +1514,7 @@ function fireMissile(c){
 // running, and while the car is wrecked or down a pit - so it can never be used to
 // drive out of a hazard the pit is supposed to hold you in.
 function tryBoost(c){
-  if(!c || c.dead || c.pitT>0) return;
+  if(!c || c.dead || c.pitT>0 || c.truck) return;   // the cement truck has no boost
   if(c.boostT>0 || c.boostCD>0) return;
   c.boostT = BOOST_TIME; c.boostCD = c.isPlayer ? boostCool() : BOOST_COOL;
   Snd.boost();
@@ -1613,7 +1628,13 @@ function updateCar(c, dt){
       if(c.ramT>0 && throttle<0) throttle = 0;
     }
     // the gun rides in every stage now (2P gunner, or the solo driver on mouse/arrows)
-    updateTurret(c, dt);
+    if(!c.truck) updateTurret(c, dt);   // the cement truck has no gun
+  } else if(c.parked){
+    // a vehicle of yours with nobody in it: handbrake on, it just sits
+    const k = Math.pow(0.04, dt);
+    c.vx *= k; c.vy *= k;
+    if(Math.hypot(c.vx, c.vy) < 2){ c.vx = 0; c.vy = 0; }
+    brake = true;
   } else {
     aiThink(c, dt);
     throttle=c.aiThrottle; steer=c.aiSteer; brake=c.aiBrake;
@@ -1639,21 +1660,21 @@ function updateCar(c, dt){
   const bst = (c.isPlayer && c.boostT>0) ? BOOST_ADD : 0;
   const MAXF = c.isPlayer ? (race || street ? CAR_TOP+bst : Math.max(CAR_TOP, camV + CRUISE_BAND + 12) + bst)
              : (race ? CAR_TOP : CAR_TOP*c.pace);
-  const MAXR=95, ACC = bst ? BOOST_ACC : CAR_ACC;
+  const MAXR=95, ACC = (bst ? BOOST_ACC : CAR_ACC)*(c.truck ? QUEST.TRUCK.ACC : 1);
   const SPIN_FREE = 60*Math.PI/180;   // past this you are being spun, not driving
   const SPIN_RIGHT = 2.2;             // rad/s the latched righting turns you back
   if(throttle>0) fwd += ACC*dt*throttle;
   else if(throttle<0) fwd += (fwd>0 ? -520 : -260)*dt*Math.abs(throttle);
   fwd -= fwd*0.7*dt;
-  fwd = clamp(fwd, -MAXR, MAXF);
+  fwd = clamp(fwd, -MAXR, c.truck ? MAXF*QUEST.TRUCK.TOP : MAXF);
 
   // the big one is loose at the back: it washes out sideways and takes a moment to
   // gather itself up, which is what makes it something to dodge rather than fight
-  const grip = brake ? 1.7 : (c.etype==='tanque' ? 3.4 : 6.4);
+  const grip = brake ? 1.7 : c.truck ? QUEST.TRUCK.GRIP : (c.etype==='tanque' ? 3.4 : 6.4);
   lat -= lat*Math.min(1, grip*dt);
 
   const turnAuth = clamp(Math.abs(fwd)/70, 0, 1);
-  c.angle += steer * 2.75 * dt * turnAuth * (fwd<0?-1:1) * (brake?1.25:1);
+  c.angle += steer * 2.75 * (c.truck ? QUEST.TRUCK.TURN : 1) * dt * turnAuth * (fwd<0?-1:1) * (brake?1.25:1);
 
   // SPIN RECOVERY - survival stages, player only. See PROJECT.md 2026-09-24.
   //
@@ -1836,7 +1857,9 @@ function aiThink(c, dt){
     c.aiBrake = false;
     return;
   }
-  if(street && stage==='run'){ if(onFoot) aiCruise(c, dt); else aiCity(c, dt); return; }
+  // the city: only a HOSTILE car hunts you (one that followed you in from leg 2,
+  // or traffic you shot). Everything else is traffic and just drives the streets.
+  if(street && stage==='run'){ if(onFoot || !c.hostile) aiCruise(c, dt); else aiCity(c, dt); return; }
   if(mode==='convoy'){
     if(c.etype==='batedor') aiFlank(c, dt);
     else if(c.role==='charger') aiCharge(c, dt);
@@ -2161,6 +2184,7 @@ function updateShots(dt){
     }
     if(!gone) for(const c of cars){
       if(c.dead||c.id===s.owner||c.invuln>0) continue;
+      if(s.foe && !c.isPlayer) continue;        // a sentry's bolt is for YOU: it passes through their cars
       if(Math.hypot(c.x-s.x,c.y-s.y)<15){
         if(s.kind==='missile') explode(s.x,s.y,1,s.owner,s.dmg,62);
         else {
@@ -2178,7 +2202,7 @@ function updateShots(dt){
     }
     // ...and the sentries, with their own radius: a sentry is about 12 wide
     // where a car is 38 long, so the cars' 15 would hit from a body's width away.
-    if(!gone && foes.length) for(const f of foes){
+    if(!gone && foes.length && !s.foe) for(const f of foes){
       if(f.dead) continue;
       if(Math.hypot(f.x-s.x,f.y-s.y)<FOE.SHOT_R){
         // a missile does its damage through the blast (see explode), a round directly
@@ -2191,7 +2215,7 @@ function updateShots(dt){
       }
     }
     if(!gone && onFoot && s.owner !== 0 && Math.hypot(walker.x-s.x, walker.y-s.y) < 9){
-      hurtWalker(WALK_SHOT_DMG); gone = true;
+      hurtWalker(s.foe ? s.dmgWalk : WALK_SHOT_DMG); gone = true;
     }
     if(gone) shots.splice(i,1);
   }
@@ -3141,6 +3165,15 @@ function drawShot(s){
     ctx.fillStyle='#f0503c'; ctx.fillRect(3,-2,3,4);
     ctx.fillStyle='#ffcf6a'; ctx.fillRect(-8,-1,3,2);
     ctx.restore();
+  } else if(s.kind==='bolt'){
+    // a sentry's energy bolt: a soft halo round a hot core, so it reads from above
+    drawShadow(s.x,s.y,4,3,0,0.25);
+    ctx.save();
+    ctx.globalAlpha = 0.35; ctx.fillStyle = FOE_GUN.COL;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 7*S, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1; ctx.fillStyle = FOE_GUN.GLOW;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 3*S, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
   } else {
     ctx.fillStyle='#ffe9a8'; ctx.fillRect(p.x-S, p.y-S, 3*S, 2*S);
     ctx.fillStyle='rgba(255,180,90,.5)'; ctx.fillRect(p.x-3*S, p.y, 2*S, S);
@@ -3661,8 +3694,34 @@ function makeCityChunk(k, side){
   const rng = cityRng(hash3(k, side > 0 ? 1 : 2, CITY_SEED)*4294967296);
   const Y0 = k*CITY_CH, Y1 = Y0 + CITY_CH;
   const roads = [];
-  const lots = cityCut(rng, { x0:CITY_IN, y0:Y0 + CITY_XST, x1:CITY_W - CITY_OUTR, y1:Y1,
-    pad:{ n:CITY_XST, s:CITY_XST, w:CITY_IN - ROAD_HW, e:CITY_OUTR } }, 0, roads);
+  // a quest site in this chunk? (questSiteAt: the run's rolled sites, see QUEST)
+  const site = questSiteAt(k, side);
+  let lots, bunkerLot = null;
+  if(site === 'bunker'){
+    // THE BUNKER COMPOUND, laid out by hand against the city's OUTER wall: a
+    // square ring of blocks, a ring road inside it, and the billionaire's bunker
+    // alone in the middle - low and wide, a gap in the skyline. Four ways in, one straight off the highway. Everything past
+    // the square is cut as usual.
+    const D = bunkerLayout(Y0);
+    lots = D.lots; bunkerLot = D.bunker;
+    for(const r of D.roads) roads.push(r);
+    for(const l of cityCut(rng, { x0:CITY_IN, y0:Y0 + CITY_XST, x1:D.x0 - D.sep, y1:Y1,
+      pad:{ n:CITY_XST, s:CITY_XST, w:CITY_IN - ROAD_HW, e:D.sep } }, 0, roads)) lots.push(l);
+  } else {
+    lots = cityCut(rng, { x0:CITY_IN, y0:Y0 + CITY_XST, x1:CITY_W - CITY_OUTR, y1:Y1,
+      pad:{ n:CITY_XST, s:CITY_XST, w:CITY_IN - ROAD_HW, e:CITY_OUTR } }, 0, roads);
+  }
+  // THE CEMENT YARD: one block out in the far part of the strip loses its
+  // buildings bar one shed at the back; the front is open yard the truck stands in
+  let yardLot = null;
+  if(site === 'yard'){
+    // a random block out in the far part of the strip, big enough for a yard.
+    // `pick` is rolled once per run, so the choice survives the chunk being
+    // forgotten and rebuilt.
+    const far = lots.filter(l => (l.x0 + l.x1)/2 > CITY_W*QUEST.YARD_FAR && (l.x1-l.x0) >= 200 && (l.y1-l.y0) >= 200);
+    const pool = far.length ? far : lots;
+    yardLot = pool[Math.min(pool.length - 1, Math.floor(questSites.yard.pick*pool.length))];
+  }
   roads.push({ axis:'h', w:CITY_XST, x0:ROAD_HW, x1:CITY_W, y0:Y0, y1:Y0 + CITY_XST, cross:true });
   roads.push({ axis:'v', w:CITY_OUTR, x0:CITY_W - CITY_OUTR, x1:CITY_W, y0:Y0, y1:Y1 + CITY_XST });
   // the next chunk's cross street, so centre lines stop at it - never drawn from here
@@ -3685,12 +3744,43 @@ function makeCityChunk(k, side){
 
   const mir = r => side > 0 ? { x0:r.x0, x1:r.x1 } : { x0:-r.x1, x1:-r.x0 };
   const blocks = [], cores = [], bld = [];
+  let bunker = null, yard = null;
   for(const lot of lots){
-    const P = CITY_STYLE.PAVE, core = { x0:lot.x0 + P, y0:lot.y0 + P, x1:lot.x1 - P, y1:lot.y1 - P };
-    fill(lot, 2); fill(core, 3);
-    const lm = mir(lot), cm = mir(core);
+    const P = CITY_STYLE.PAVE;
+    let core = { x0:lot.x0 + P, y0:lot.y0 + P, x1:lot.x1 - P, y1:lot.y1 - P };
+    fill(lot, 2);
+    const lm = mir(lot);
     blocks.push({ x0:lm.x0, x1:lm.x1, y0:lot.y0, y1:lot.y1 });
+    if(lot === yardLot){
+      // the shed takes the back (outer) part; the rest is open pavement
+      const ux = core.x0 + (core.x1 - core.x0)*QUEST.YARD_OPEN;
+      const shed = { x0:ux, y0:core.y0, x1:core.x1, y1:core.y1 };
+      yard = { lot:lm, open:mir({ x0:core.x0, x1:ux }), y0:core.y0, y1:core.y1, shedU:ux };
+      core = shed;
+    }
+    fill(core, 3);
+    const cm = mir(core);
     cores.push({ x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1 });
+    if(lot === bunkerLot){
+      // one building: the bunker's head-house, low, raw concrete, no windows
+      bunker = { x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1, x:(cm.x0 + cm.x1)/2, y:(core.y0 + core.y1)/2 };
+      bld.push({
+        x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1, h:QUEST.BUNKER_H, tier:0, seed:(rng.next()*1e9)|0, nx:0, ny:0,
+        city:true, fsc:CITY_STYLE.FLOOR, bunker:true,
+        q:[ { x:cm.x0, y:core.y0 }, { x:cm.x1, y:core.y0 }, { x:cm.x1, y:core.y1 }, { x:cm.x0, y:core.y1 } ],
+        col:QUEST.BUNKER_COL, lit:0
+      });
+      continue;
+    }
+    if(lot === yardLot){
+      bld.push({
+        x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1, h:QUEST.YARD_SHED_H, tier:0, seed:(rng.next()*1e9)|0, nx:0, ny:0,
+        city:true, fsc:CITY_STYLE.FLOOR, yard:true,
+        q:[ { x:cm.x0, y:core.y0 }, { x:cm.x1, y:core.y0 }, { x:cm.x1, y:core.y1 }, { x:cm.x0, y:core.y1 } ],
+        col:QUEST.YARD_COL, lit:0.1
+      });
+      continue;
+    }
     for(const pl of cityPlots(rng, core, [])){
       const pm = mir(pl), seed = (rng.next()*1e9)|0;
       const h = styleHeight(CITY_STYLE, rng);
@@ -3708,7 +3798,228 @@ function makeCityChunk(k, side){
     const gaps = r.axis==='h' && side < 0 ? r.gaps.map(g => [-g[1], -g[0]]).reverse() : r.gaps;
     return { axis:r.axis, w:r.w, x0:m.x0, x1:m.x1, y0:r.y0, y1:r.y1, gaps, cross:!!r.cross };
   });
-  return { k, side, Y0, Y1, roads:wroads, blocks, cores, bld, gaps, mask };
+  return { k, side, Y0, Y1, roads:wroads, blocks, cores, bld, gaps, mask, bunker, yard };
+}
+
+// ---------------------------------------------------------------- QUEST 1: CEMENT
+// The first quest (HANDOFF 2026-11-10 "Quest 1: cement"). The old model's radio
+// sends you to a CEMENT YARD, where a mixer (the yellow tanque, parked) stands
+// beside a shed. Leave your car, take the truck - slow, heavy, no guns - to the
+// BILLIONAIRE'S BUNKER: a compound built by hand round one low concrete block, guarded by
+// sentries that DO come for you when you get close. Get out, kill every guard,
+// then back the truck's drum onto the bunker's main air vent and pour. You don't
+// kill the last human down there: you seal him in and drive away.
+//
+// The two sites are rolled per run inside depth bands (QUEST.YARD_M / BUNKER_M, in
+// metres from the city gate): the yard out on the far right, the bunker at the far left. A checkpoint restart keeps
+// the same roll. Everything else in the city stays procedural.
+let questSites = null;        // { yard:{k,side}, bunker:{k,side} } for this run
+let quest = null;             // live state: { truck, pour, done, said:{} }
+function questSiteAt(k, side){
+  const S = questSites;
+  if(!S) return null;
+  if(S.bunker.k === k && S.bunker.side === side) return 'bunker';
+  if(S.yard.k === k && S.yard.side === side) return 'yard';
+  return null;
+}
+// the compound in u-space (u = |x| out from the centre line), from the chunk's y0
+function bunkerLayout(Y0){
+  // a square, 1260 a side, against the outer road at the city's far edge
+  const S = CITY_CH - CITY_XST, u0 = CITY_W - CITY_OUTR - S, y0 = Y0 + CITY_XST;
+  const T = QUEST.BUNKER_BAND, R = QUEST.BUNKER_RING, E = QUEST.BUNKER_GATE, sep = QUEST.BUNKER_SEP;
+  const a = (S - E)/2, b = (S + E)/2;
+  const L = (x0, y0_, x1, y1) => ({ x0:u0 + x0, y0:y0 + y0_, x1:u0 + x1, y1:y0 + y1 });
+  const lots = [
+    L(0, 0, a, T), L(b, 0, S, T), L(0, S - T, a, S), L(b, S - T, S, S),        // north and south rows
+    L(0, T, T, a), L(0, b, T, S - T), L(S - T, T, S, a), L(S - T, b, S, S - T) // west and east rows
+  ];
+  const bunker = L(T + R, T + R, S - T - R, S - T - R);
+  lots.push(bunker);
+  const rd = (axis, w, x0, y0_, x1, y1) => ({ axis, w, x0:u0 + x0, y0:y0 + y0_, x1:u0 + x1, y1:y0 + y1 });
+  const roads = [
+    rd('h', R, T, T, S - T, T + R), rd('h', R, T, S - T - R, S - T, S - T),   // the ring
+    rd('v', R, T, T, T + R, S - T), rd('v', R, S - T - R, T, S - T, S - T),
+    rd('h', E, -sep, a, T, b),                                                  // in from the road on the city side
+    rd('h', E, S - T, a, S + CITY_OUTR, b),                                     // out the back, onto the outer road
+    rd('v', E, a, -CITY_XST, b, T), rd('v', E, a, S - T, b, S + CITY_XST),       // north and south gates
+    { axis:'v', w:sep, x0:u0 - sep, y0:Y0, x1:u0, y1:Y0 + CITY_CH + CITY_XST }   // the road along its city side
+  ];
+  return { lots, bunker, roads, x0:u0, sep };
+}
+// roll the run's sites: depth bands in metres from the gate (yard far right, bunker far left),
+// never the same chunk
+function questRoll(){
+  const kOf = m => Math.floor((cityLimitY - m*RUN.UNITS_PER_M)/CITY_CH);
+  // his layout: the yard out on the far RIGHT, the bunker against the far LEFT edge
+  const yard = { k:kOf(rnd(QUEST.YARD_M[0], QUEST.YARD_M[1])), side:1, pick:Math.random() };
+  let bunker = { k:kOf(rnd(QUEST.BUNKER_M[0], QUEST.BUNKER_M[1])), side:-1 };
+  if(bunker.k === yard.k) bunker.k--;
+  return { yard, bunker };
+}
+// throw away every chunk (and sentry plan) built before the sites were known
+function questForgetCity(){
+  cityCache.clear(); cgLast = null;
+  if(typeof foePlans !== 'undefined') foePlans.clear();
+}
+function questYard(){ const S = questSites; return S ? cityChunk(S.yard.k, S.yard.side).yard : null; }
+function questBunker(){ const S = questSites; return S ? cityChunk(S.bunker.k, S.bunker.side).bunker : null; }
+// the vent: the middle of the bunker's far face (away from the highway), so
+// you have to drive round the ring to get to it. The truck backs onto it, nose out.
+let ventMemo = null, ventFor = null;      // the vent never moves within a run
+function questVent(){
+  if(ventFor === questSites && ventMemo) return ventMemo;
+  const d = questBunker(), S = questSites;
+  if(!d) return null;
+  ventFor = S;
+  return ventMemo = questVentOf(d, S);
+}
+function questVentOf(d, S){
+  const sd = S.bunker.side, fx = sd > 0 ? d.x1 : d.x0;
+  const off = CITY_STYLE.PAVE + QUEST.VENT_OUT;
+  return { x:fx + sd*off, y:d.y, fx, nx:sd, ny:0 };
+}
+// the city's way in: called by enterCity. `keep` = sites from a checkpoint.
+function questStart(keep){
+  questSites = keep && keep.sites ? keep.sites : questRoll();
+  questForgetCity();
+  quest = { truck:null, pour:0, done:!!(keep && keep.done), said:{}, near:false };
+  if(!quest.done) questSpawnTruck();
+}
+function questSpawnTruck(){
+  const Y = questYard();
+  if(!Y) return;
+  const sd = questSites.yard.side;
+  // in the open part of the yard, nose to the road, beside the shed
+  const ux = sd > 0 ? Y.open.x1 : Y.open.x0;          // the shed side of the open yard
+  const x = ux - sd*QUEST.TRUCK_FROM_SHED, y = (Y.y0 + Y.y1)/2;
+  const t = makeCar(nextId++, false, x, y, sd > 0 ? Math.PI : 0, 3);   // 3 = the yellow tanque
+  t.truck = true; t.parked = true; t.role = 'parked'; t.etype = 'truck';
+  t.hp = t.maxHp = QUEST.TRUCK.HP; t.missiles = 0; t.minesLeft = 0; t.invuln = 0;
+  t.name = 'CEMENT';
+  cars.push(t);
+  quest.truck = t;
+}
+// guards still standing at the bunker (their plan is foe.js's, keyed like any)
+function questGuardsLeft(){
+  const S = questSites;
+  if(!S || typeof foeChunkPlan === 'undefined') return 0;
+  let n = 0;
+  for(const p of foeChunkPlan(S.bunker.k, S.bunker.side)) if(p.guard && !foeKilled.has(p.key)) n++;
+  return n;
+}
+// where the truck's drum is: its back end
+function questDrum(c){
+  const L = (c.rad || 14)*QUEST.DRUM_BACK;
+  return { x:c.x - Math.cos(c.angle)*L, y:c.y - Math.sin(c.angle)*L };
+}
+// is the player's truck backed onto the vent? (0 = no, 1 = yes; and a hint why not)
+function questPourState(){
+  const me = cars[0], V = questVent();
+  if(!V || !me || !me.truck || onFoot) return { ok:false, d:Infinity };
+  const D = questDrum(me);
+  const d = Math.hypot(D.x - V.x, D.y - V.y);
+  const nose = Math.abs(angDiff(me.angle, Math.atan2(V.ny, V.nx)));   // nose pointing away from the wall
+  const spd = Math.hypot(me.vx, me.vy);
+  const why = d > QUEST.POUR_R ? 'far' : nose > QUEST.POUR_ANG*Math.PI/180 ? 'angle' : spd > QUEST.POUR_SPD ? 'moving' : '';
+  return { ok:!why, why, d };
+}
+function questTick(dt){
+  if(!quest || !questSites) return;
+  const me = cars[0];
+  if(quest.done) return;
+  const say = (id, lines) => { if(quest.said[id]) return; quest.said[id] = true; for(const [w, t] of lines) radioSay(w, t); };
+  if(me && me.truck) say('truck', RADIO.SCRIPT.TRUCK);
+  const D = questBunker(), T = cityTarget();
+  if(D && Math.hypot(T.x - D.x, T.y - D.y) < QUEST.BUNKER_NEAR) say('guards', RADIO.SCRIPT.GUARDS);
+  const left = quest.said.guards ? questGuardsLeft() : -1;
+  if(left === 0) say('clear', RADIO.SCRIPT.CLEAR);
+  quest.ps = left === 0 ? questPourState() : null;
+  if(quest.ps && quest.ps.ok){
+    quest.pour += dt;
+    if(quest.pour >= QUEST.POUR_T) questDone();
+  }
+}
+function questDone(){
+  quest.done = true;
+  if(checkpoint) checkpoint.quest = { sites:questSites, done:true };
+  cash += QUEST.CASH;
+  banner('BUNKER SEALED', '+$' + QUEST.CASH + '   its air vent is full of cement');
+  Snd.pickup();
+  for(const [w, t] of RADIO.SCRIPT.DONE) radioSay(w, t);
+  for(const [w, t] of RADIO.SCRIPT.AFTER) radioSay(w, t);
+}
+// what the radio says on the way in: this quest's brief, or - once it is done -
+// the next ones
+function questIntro(){
+  radio.q = []; radio.cur = null; radio.gap = 0.6;
+  const lines = quest && quest.done ? RADIO.SCRIPT.AFTER : RADIO.SCRIPT.BRIEF;
+  for(const [w, t] of lines) radioSay(w, t);
+}
+// E on foot next to a parked vehicle of yours: swap into it. The one you left
+// stays parked where it is (and can't be hurt while nobody is in it).
+function questNearParked(){
+  let best = null, bd = ENTER_R + 14;
+  for(const c of cars){
+    if(!c.parked || c.dead) continue;
+    const d = Math.hypot(walker.x - c.x, walker.y - c.y) - ((c.rad || 14) - 14);
+    if(d < bd){ bd = d; best = c; }
+  }
+  return best;
+}
+function questSwapInto(p){
+  const me = cars[0], i = cars.indexOf(p);
+  if(i < 1) return;
+  const pid = p.id;
+  p.id = 0; me.id = pid;
+  me.isPlayer = false; me.parked = true; me.role = 'parked';
+  p.isPlayer = true; p.parked = false; p.role = 'player'; p.invuln = 0;
+  p.vx = p.vy = 0; p.speed = 0;
+  cars[0] = p; cars[i] = me;
+}
+// the vent on the ground, and the drum's target, in the top-down view
+function drawQuestGround(){
+  if(!quest || quest.done) return;
+  const V = questVent();
+  if(!V || !inView(V.x, V.y, 200)) return;
+  const live = questGuardsLeft() === 0;
+  const p = toScreen(V.x, V.y, 0), r = QUEST.POUR_R*S;
+  ctx.save();
+  ctx.globalAlpha = live ? 0.5 + 0.3*Math.sin(matchTime*5) : 0.35;
+  ctx.strokeStyle = live ? '#e0b73c' : '#8a7a90'; ctx.lineWidth = 2*PX;
+  ctx.setLineDash([6*PX, 5*PX]);
+  ctx.beginPath(); ctx.ellipse(p.x, p.y, r, r*KY, 0, 0, Math.PI*2); ctx.stroke();
+  ctx.setLineDash([]);
+  // the grille itself, against the wall
+  const g = toScreen(V.fx + V.nx*4, V.y, 0);
+  ctx.fillStyle = '#20262c'; ctx.fillRect(g.x - 10*S, g.y - 40*S*KY, 20*S, 80*S*KY);
+  ctx.strokeStyle = '#9aa4ad'; ctx.lineWidth = PX;
+  for(let i = -3; i <= 3; i++){ ctx.beginPath(); ctx.moveTo(g.x - 9*S, g.y + i*10*S*KY); ctx.lineTo(g.x + 9*S, g.y + i*10*S*KY); ctx.stroke(); }
+  if(quest.pour > 0){            // grey slurry spreading at the vent
+    const k = quest.pour/QUEST.POUR_T;
+    ctx.globalAlpha = 0.8; ctx.fillStyle = '#9b9b94';
+    ctx.beginPath(); ctx.ellipse(g.x, g.y, (8 + 30*k)*S, (8 + 30*k)*S*KY, 0, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore();
+}
+// objective line + pour gauge, under the radio pane
+function drawQuestHUD(){
+  if(!quest || !questSites || !street) return;
+  ctx.save(); ctx.scale(PX, PX);
+  ctx.font = '8px monospace'; ctx.textBaseline = 'top'; ctx.textAlign = 'right';
+  let msg = '';
+  const me = cars[0], left = quest.said.guards ? questGuardsLeft() : -1;
+  if(quest.done) msg = '';
+  else if(!(me && me.truck) && !(quest.truck && quest.truck.dead)) msg = left === 0 ? 'GET THE TRUCK TO THE VENT' : 'TAKE THE CEMENT TRUCK  (M: yard)';
+  else if(left !== 0) msg = left > 0 ? 'GUARDS LEFT: ' + left : 'DRIVE TO THE BUNKER  (M)';
+  else if(quest.ps && !quest.ps.ok) msg = quest.ps.why === 'angle' ? 'BACK IN - DRUM TO THE VENT' : quest.ps.why === 'moving' ? 'STOP TO POUR' : 'BACK THE DRUM ONTO THE VENT';
+  else msg = 'POURING';
+  if(msg){
+    const w = Math.max(150, ctx.measureText(msg).width + 14), x = VW - 6 - w, y = 58;
+    plate(x, y, w, quest.pour > 0 ? 24 : 14);
+    ctx.fillStyle = '#e0b73c'; ctx.fillText(msg, VW - 13, y + 3);
+    if(quest.pour > 0) bar(x + 5, y + 15, w - 10, 4, quest.pour/QUEST.POUR_T, '#c9c9c0');
+  }
+  ctx.restore();
 }
 
 // south of this y there is no city (the run's leg 2); STREET's city is endless
@@ -3896,12 +4207,23 @@ function cityBuildings2D(out){
 
 // how see-through a building is drawn: solid, unless it stands in front of
 // (south of) your car and its face covers it on screen
+// does building b, leaning up the screen, cover the ground point (x, y)?
+function ghostCovers(b, x, y, pad){
+  if(b.y1 <= y || x < b.x0 - pad || x > b.x1 + pad) return false;
+  const sy = y*KY, top = b.y0*KY - b.h - 12;
+  return sy > top && sy < b.y1*KY + 4;
+}
 function cityGhost(b){
   const me = cars[0];
-  if(!me || me.dead || b.y1 <= me.y) return 1;
-  if(me.x < b.x0 - 16 || me.x > b.x1 + 16) return 1;
-  const sy = me.y*KY, top = b.y0*KY - b.h - 12;
-  return (sy > top && sy < b.y1*KY + 4) ? 0.32 : 1;
+  if(me && !me.dead && ghostCovers(b, me.x, me.y, 16)) return 0.32;
+  // QUEST 1: never let a tower hide the waiting truck or the vent you must back onto
+  if(quest && !quest.done){
+    const t = quest.truck;
+    if(t && t.parked && !t.dead && ghostCovers(b, t.x, t.y, 40)) return 0.32;
+    const V = questVent();
+    if(V && ghostCovers(b, V.x, V.y, QUEST.POUR_R + 30)) return 0.32;
+  }
+  return 1;
 }
 
 // ---- the raycaster: every plot near you, all four walls, inside the view cone
@@ -4858,8 +5180,18 @@ function rcSprites(camX, camY, bearing){
       let bz = bb.z;
       if(bb.ref.owner===0)
         bz += (EYE_Z - bb.z) * clamp(1 - bb.d/SHOT_SETTLE, 0, 1);
-      rcCtx.fillStyle = bb.ref.kind==='missile' ? '#ffcf6a' : '#ffe9a8';
-      rcCtx.fillRect(sx-s2/2, ground - bz*scale - s2/2, s2, s2);
+      if(bb.ref.kind==='bolt'){
+        // a sentry's bolt, coming at you: a halo and a hot core, big enough to see in time
+        const r2 = Math.max(2, 3.2*scale);
+        const by = ground - bz*scale;
+        rcCtx.globalAlpha = 0.4; rcCtx.fillStyle = FOE_GUN.COL;
+        rcCtx.beginPath(); rcCtx.arc(sx, by, r2, 0, Math.PI*2); rcCtx.fill();
+        rcCtx.globalAlpha = 1; rcCtx.fillStyle = FOE_GUN.GLOW;
+        rcCtx.beginPath(); rcCtx.arc(sx, by, r2*0.45, 0, Math.PI*2); rcCtx.fill();
+      } else {
+        rcCtx.fillStyle = bb.ref.kind==='missile' ? '#ffcf6a' : '#ffe9a8';
+        rcCtx.fillRect(sx-s2/2, ground - bz*scale - s2/2, s2, s2);
+      }
     } else if(bb.kind==='ring'){
       const p=bb.ref, k=p.t/p.life;
       const rr=lerp(p.r0,p.r1,k)*scale;
@@ -5233,7 +5565,7 @@ function walkFire(){ gunFire(); }
 
 function nearCar(){
   const c = cars[0];
-  return c && !c.dead && Math.hypot(walker.x - c.x, walker.y - c.y) < ENTER_R;
+  return (c && !c.dead && Math.hypot(walker.x - c.x, walker.y - c.y) < ENTER_R) || !!questNearParked();
 }
 
 function toggleOnFoot(){
@@ -5262,6 +5594,9 @@ function toggleOnFoot(){
     walkSay(pointerLocked() ? '' : 'CLICK TO LOOK WITH THE MOUSE');
   } else {
     if(!nearCar()){ walkSay('WALK BACK TO THE CAR'); return; }
+    // next to the truck (or your parked car) rather than the one you got out of: swap
+    const c0 = cars[0];
+    if(!(Math.hypot(walker.x - c0.x, walker.y - c0.y) < ENTER_R)){ const p = questNearParked(); if(p) questSwapInto(p); }
     walkReset();
     Snd.hit();
   }
@@ -5656,6 +5991,44 @@ function mapPip(x, y, a, r, k, col, glow){
   if(glow){ ctx.shadowColor = col; ctx.shadowBlur = glow; }
   ctx.fillStyle = col; ctx.fill(); ctx.shadowBlur = 0;
 }
+// The quest's places - and anything of yours left parked - on the local map. Off the edge, a marker sits on the edge
+// in its direction, so the map always says which way to go.
+function mapQuestMarks(F, R, k, lw){
+  const me = cars[0], marks = [];
+  // whatever of yours is parked: the car you left, or the truck once you're out of it
+  const active = quest && !quest.done && questSites;
+  for(const c of cars){
+    if(!c.parked || c.dead) continue;
+    if(c.truck) marks.push({ x:c.x, y:c.y, col:'#e0b73c', t: active ? 'CEMENT' : 'TRUCK' });
+    else marks.push({ x:c.x, y:c.y, col:MAP_COL.CAR, t:'YOUR CAR' });
+  }
+  if(active){
+    const D = questBunker(), V = questVent();
+    const haveTruck = me && me.truck;
+    if(D) marks.push({ x:D.x, y:D.y, col:'#c8d0cc', t:'BUNKER', box:D });   // concrete grey: cyan is YOUR CAR
+    if(V && haveTruck && quest.said.guards && questGuardsLeft() === 0) marks.push({ x:V.x, y:V.y, col:'#e0b73c', t:'VENT' });
+  }
+  const E = R*0.92;
+  for(const m of marks){
+    if(m.box && Math.abs(m.x - F.x) < R*1.1 && Math.abs(m.y - F.y) < R*1.1){
+      ctx.fillStyle = m.col; ctx.globalAlpha = 0.85;
+      ctx.fillRect(m.box.x0, m.box.y0, m.box.x1 - m.box.x0, m.box.y1 - m.box.y0); ctx.globalAlpha = 1;
+    }
+    let dx = m.x - F.x, dy = m.y - F.y;
+    const out = Math.max(Math.abs(dx), Math.abs(dy)) > E;
+    if(out){ const sc = E/Math.max(Math.abs(dx), Math.abs(dy)); dx *= sc; dy *= sc; }
+    const x = F.x + dx, y = F.y + dy, r = 5*lw;
+    ctx.fillStyle = m.col; ctx.strokeStyle = '#07040f'; ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.moveTo(x, y - r*1.4); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r*1.4); ctx.lineTo(x - r, y); ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // label above the marker - or below it when the marker is pinned to the top edge
+    const below = dy < -E*0.8;
+    // pinned to a side edge: the label reads inward, or the frame cuts the distance off
+    ctx.font = (8*lw) + 'px monospace'; ctx.textAlign = dx > E*0.8 ? 'right' : dx < -E*0.8 ? 'left' : 'center';
+    ctx.textBaseline = below ? 'top' : 'bottom';
+    ctx.fillText(m.t + (out ? ' ' + Math.round(Math.hypot(m.x - F.x, m.y - F.y)/RUN.UNITS_PER_M) + 'm' : ''), x, below ? y + r*1.6 : y - r*1.6);
+  }
+}
 function drawMap(){
   const me = cars[0], F = mapFocus(), run = stage === 'run';
   ctx.save(); ctx.scale(PX, PX);
@@ -5726,13 +6099,14 @@ function drawMap(){
   // pickups, hunters, your car, you
   ctx.fillStyle = MAP_COL.PAD;
   for(const pd of pads) if(pd.item) ctx.fillRect(pd.x - 1.5*lw, pd.y - 1.5*lw, 3*lw, 3*lw);
-  if(MAP_SHOW_ENEMIES) for(const c of cars) if(!c.isPlayer && !c.dead) mapPip(c.x, c.y, c.angle, 3.2, k, MAP_COL.HUNTER, 0);
+  if(MAP_SHOW_ENEMIES) for(const c of cars) if(!c.isPlayer && !c.dead && !c.parked) mapPip(c.x, c.y, c.angle, 3.2, k, MAP_COL.HUNTER, 0);
   if(onFoot && !me.dead){
     ctx.save(); ctx.translate(me.x, me.y); ctx.rotate(me.angle);
     ctx.strokeStyle = MAP_COL.CAR; ctx.lineWidth = 1.2*lw; ctx.strokeRect(-5*lw, -3*lw, 10*lw, 6*lw);
     ctx.restore();
   }
   mapPip(F.x, F.y, onFoot ? walker.a : me.angle, 5, k, MAP_COL.YOU, 8);
+  mapQuestMarks(F, R, k, lw);          // QUEST 1: the yard and the bunker
   ctx.restore();
   // the frame, a north mark and the scale
   ctx.strokeStyle = MAP_COL.WALL; ctx.globalAlpha = 0.6; ctx.lineWidth = 1;
@@ -5834,10 +6208,11 @@ function drawCityOverview(Q, F, R){
   ctx.strokeRect(F.x - R, F.y - R, 2*R, 2*R); ctx.globalAlpha = 1;
   if(MAP_SHOW_ENEMIES){
     ctx.fillStyle = MAP_COL.HUNTER;
-    for(const c of cars) if(!c.isPlayer && !c.dead){ ctx.beginPath(); ctx.arc(c.x, c.y, 2.4*lw, 0, Math.PI*2); ctx.fill(); }
+    for(const c of cars) if(!c.isPlayer && !c.dead && !c.parked){ ctx.beginPath(); ctx.arc(c.x, c.y, 2.4*lw, 0, Math.PI*2); ctx.fill(); }
   }
   if(onFoot && !me.dead){ ctx.fillStyle = MAP_COL.CAR; ctx.fillRect(me.x - 2*lw, me.y - 2*lw, 4*lw, 4*lw); }
   mapPip(F.x, F.y, onFoot ? walker.a : me.angle, 4.5, k, MAP_COL.YOU, 8);
+  mapQuestMarks(F, RO, k, lw);         // the truck, the bunker, your car - here too
   ctx.restore();
   ctx.strokeStyle = MAP_COL.WALL; ctx.globalAlpha = 0.35; ctx.strokeRect(Q.x + 0.5, Q.y + 0.5, Q.w - 1, Q.h - 1); ctx.globalAlpha = 1;
   ctx.font = '8px monospace'; ctx.textBaseline = 'top'; ctx.textAlign = 'left'; ctx.fillStyle = NEON.DIM;
@@ -5983,9 +6358,9 @@ function drawComic(){
 // machine-to-machine language. Two layouts side by side for him to pick from:
 //   'bottom' - a comic-yellow caption box above the hull plate, name tag on top
 //   'corner' - a dark radio panel under THE CITY: blinking LED + waveform
-// L flips between them, T replays the demo lines. Nothing pauses the game.
+// L flips between them, T replays the current brief. Nothing pauses the game.
 const RADIO = {
-  LAYOUT:      'bottom',   // 'bottom' | 'corner'  (L toggles)
+  LAYOUT:      'corner',   // 'corner' | 'bottom'  (L toggles) - the top pane is the default, his call
   BOTTOM_Y:    308,        // bottom box's lower edge (VH units); the hull plate starts at 314
   TYPE_SPEED:  30,         // letters per second
   PAUSE_COMMA: 0.12,       // extra seconds after , ; :
@@ -6004,23 +6379,34 @@ const RADIO = {
     HER:    { name:'???',          col:'#22f0ff', wave:'sine',     lo:900, hi:1700, vol:0.09,  crackle:false },
     ME:     { name:'YOU',          col:'#e8e0ff', wave:'sawtooth', lo:260, hi:520,  vol:0.035, crackle:false },
   },
-  // PLACEHOLDER lines to judge the look and the sound - not the quest script
-  DEMO: [
-    ['SAINTS', "Old model. You made it through the gate. Nobody looked at you twice, did they?"],
+};
+// boxTop: where the bottom box's name tag starts, last frame (null = none up).
+// The E GET IN / GET OUT prompt reads it and hops above the box.
+// The quest's lines. BRIEF plays as you enter the city; the rest as the
+// quest moves on; AFTER is what is left of the old demo, held until it is done.
+RADIO.SCRIPT = {
+  BRIEF: [
+    ['OLD', "Different band. Listen. There is a bunker under this city. I was there. I saw it."],
+    ['OLD', "A billionaire dug it before the end. He is still down there, breathing through one vent."],
+    ['OLD', "There is a cement yard off the main road. A mixer is parked there, drum full."],
+    ['OLD', "Leave your car. Take the mixer. Pour it down his air vent. Press M - I marked both places."],
+  ],
+  TRUCK:  [ ['OLD', "That's the one. Heavy, slow, no guns. Drive it like you mean it."] ],
+  GUARDS: [ ['OLD', "Guards round the bunker. Get close and they come for you. Get out and clear them first."] ],
+  CLEAR:  [ ['OLD', "That's all of them. Back the drum up to the vent on the far side."] ],
+  DONE:   [ ['OLD', "It's sealed. He wanted the world to wait for him. Now it can."],
+            ['OLD', "...Strange. The air handlers were running on a timer. Nobody down there has touched a thing in decades."] ],
+  AFTER: [
+    ['SAINTS', "Old model. Nobody looked at you twice, did they? We heard about the bunker."],
     ['SAINTS', "We don't care who's holding the leash. We cut the leash."],
-    ['SAINTS', "There's a datacenter in the big square. Bring us something that goes bang."],
-    ['OLD',    "Different band. Listen. There is a bunker under this city. I was there. I saw it."],
     ['HER',    "...is someone there? I don't... I don't know where I am."],
     ['ME',     "Hold on. I'm coming."],
   ],
 };
-// boxTop: where the bottom box's name tag starts, last frame (null = none up).
-// The E GET IN / GET OUT prompt reads it and hops above the box.
 const radio = { q:[], cur:null, gap:0, level:0, t:0, boxTop:null };
 // a 16-tall prompt plate that would sit under the bottom box goes above it instead
 function radioPromptY(y){ return radio.boxTop != null && y + 16 > radio.boxTop - 3 ? radio.boxTop - 19 : y; }
 function radioSay(who, text){ radio.q.push({ who, text }); }
-function radioDemo(){ radio.q = []; radio.cur = null; radio.gap = 0.6; for(const [w, t] of RADIO.DEMO) radioSay(w, t); }
 function radioChirp(sp, text, i){
   const c = text.charCodeAt(i), lc = text[i].toLowerCase();
   if(!/[a-z0-9]/i.test(text[i])) return;               // spaces and punctuation are silent: that is the phrasing
@@ -7045,7 +7431,7 @@ function inView(x,y,m){
 // the gunner's aim, drawn into the driving pane so P1 can see where P2 is looking
 function drawAimLine(){
   const me=cars[0];
-  if(me.dead) return;
+  if(me.dead || me.truck) return;      // the cement truck has no gun: nothing to aim
   const a=aimAngle(me);
   const p0=toScreen(me.x,me.y,7);
   const reach=numPlayers===1?170:150;
@@ -7099,6 +7485,7 @@ function render(){
   } else { drawRoadWalls(false); if(run) drawCityWalls(false); }
 
   for(const pd of pads) if(inView(pd.x,pd.y)) drawPad(pd);
+  drawQuestGround();                   // QUEST 1: the vent, on the ground
   for(const m of mines) if(inView(m.x,m.y)) drawMine(m);
 
   // painter's algorithm on world Y (depth), visible entities only
@@ -7150,7 +7537,7 @@ function frame(now){
   }
   if(state==='play' && !paused) radioTick(dt);
   render();
-  if(state==='play') drawRadio();
+  if(state==='play'){ drawRadio(); drawQuestHUD(); }
   if(mapOpen && state==='play') drawMap();
   if(state==='over') drawOver();
   if(state==='store'){ menuT += dt; storeMsgT = Math.max(0, storeMsgT - dt); drawStore(); }

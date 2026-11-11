@@ -290,6 +290,22 @@ const FOE_RIG = {
 //   * a provoked sentry FOLLOWS you, and NEVER shoots (asked and settled: the
 //     brief's "they just follow you for now" is the rule, in the car and out of it)
 //   * it gives up when you get far enough away, and then ignores you again
+// The sentries' gun (his rules, 2026-11-10): only a sentry that is after you
+// fires - one you provoked, or a bunker guard - at you on foot AND at your car.
+// Visible energy bolts, slow enough to sidestep, and every shot is telegraphed:
+// it stops, a glow builds at its gun hand for WINDUP, then it fires.
+// Range = the cars' guns (430 u/s for 1 s). Slow and weak for now, on purpose.
+const FOE_GUN = {
+  RANGE:   430,          // units - the same reach as a car's gun
+  SPD:     180,          // units/s: you walk 46 and run 92, so a sidestep clears it
+  WINDUP:  0.6,          // seconds of glow before the shot: the tell
+  REST:    [2.6, 4.0],   // seconds between shots, rolled each time
+  DMG_WALK: 3,           // on foot (WALK_HP 40)
+  DMG_CAR:  5,           // on a car or the truck
+  MUZZLE_Z: 11,          // the gun hand's height
+  COL:     '#ff3b8b',    // hot pink: nothing else in the game is this colour
+  GLOW:    '#ffc2e0',
+};
 const FOE_AI = {
   CHASE_SPD: 52,    // units/s once provoked. He WALKS at 46 and RUNS at 92, so a
                     // sentry out-paces a stroll and loses a sprint - which is the
@@ -666,6 +682,48 @@ const CITY_BACK = 2400;             // the highway is closed this far back behin
 const CITY_CAM_EASE = 2.4;          // seconds the camera takes to hand over from the scroll to following you
 // enemy cars in the city: kept around you, not an endless wave
 const CITY_ENEMIES      = 6;        // how many hunt you at once
+const CITY_TRAFFIC      = 3;        // hunter cars driving the city as traffic (they ignore you unless shot)
+
+// -----------------------------------------------------------------------------
+// 6b. QUEST 1 - THE CEMENT (index.html "QUEST 1: CEMENT")
+// -----------------------------------------------------------------------------
+// Sites are rolled per run inside these depth bands, in METRES from the city gate
+// (RUN.UNITS_PER_M = 10 units a metre). The yard always sits shallower than the
+// bunker, so the quest is one push deeper into the city, never a backtrack.
+// The target is the BILLIONAIRE'S BUNKER (the datacenter is a later quest).
+const QUEST = {
+  YARD_M:   [200, 400],   // the cement yard
+  BUNKER_M: [600, 900],   // the bunker compound
+  YARD_FAR:  0.6,         // the yard is a random block whose middle is past this share of the city's width (far right)
+  YARD_OPEN: 0.62,        // share of the yard block that is open yard (the rest is the shed)
+  YARD_SHED_H: 90,        // the shed is low - the yard reads as a gap in the skyline
+  YARD_COL: '#6b6a5c',    // concrete grey-green
+  TRUCK_FROM_SHED: 60,    // the truck parks this far off the shed wall
+  // the compound (world units; it fills a 1260 square at the highway end of its chunk)
+  BUNKER_BAND:  230,          // depth of the ring of blocks round the square
+  BUNKER_RING:  150,          // the ring road inside them
+  BUNKER_GATE:  170,          // width of the four ways in
+  BUNKER_SEP:   150,          // the road behind the square
+  BUNKER_H:   46,         // the bunker: a low concrete block - a GAP among the towers
+  BUNKER_COL: '#55605a',  // raw concrete, not one of the city's colours
+  BUNKER_NEAR: 900,       // inside this the guards are announced (radio)
+  // its guards: sentries that come for you when you get close, and hit when they reach you
+  GUARDS:        14,
+  GUARD_AGGRO:   320,     // they notice you inside this
+  GUARD_GIVE_UP: 1600,    // and only give up past this (a city sentry: FOE_AI.GIVE_UP 900)
+  GUARD_HIT_T:   0.9,     // seconds between blows
+  GUARD_DMG_WALK: 5,      // a blow on foot (WALK_HP is 40)
+  GUARD_DMG_CAR:  14,     // a blow on a car or the truck
+  // the cement truck: the yellow tanque, slow and heavy, no guns, no boost
+  TRUCK: { HP:700, TOP:0.62, ACC:0.5, TURN:0.62, GRIP:3.4 },
+  DRUM_BACK: 1.1,         // the drum's mouth: this many car radii behind the truck's centre
+  VENT_OUT:  18,          // the pour point sits this far off the bunker's pavement
+  POUR_R:    46,          // the drum must be this close to it...
+  POUR_ANG:  30,          // ...nose within this many degrees of straight out from the wall...
+  POUR_SPD:  10,          // ...and the truck (nearly) stopped
+  POUR_T:    6,           // seconds of pouring to fill the vent
+  CASH:      400,         // what it pays
+};
 const CITY_SPAWN_GAP    = 2.2;      // seconds between arrivals while under that number
 const CITY_SPAWN_MIN    = 900;      // they turn up this far away...
 const CITY_SPAWN_MAX    = 1500;     // ...and no further (always off screen)

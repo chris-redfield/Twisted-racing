@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-10 | [Quest 1 built: the cement and the billionaire's bunker](#2026-11-10--quest-1-built-the-cement-and-the-billionaires-bunker) | **built in index.html**, selftests 30/171/60 + an end-to-end quest bot + screenshots; **not played**; also: city hunters reworked |
 | 2026-11-10 | [Radio lab: dialogue on screen, two layouts + chirps](#2026-11-10--radio-lab-dialogue-on-screen-two-layouts--chirps) | **now IN index.html** (bottom box lowered onto the hull plate - his call); selftests 30/171/60 pass; sites decided RANDOM IN DEPTH BANDS |
 | 2026-11-10 | [The pistol shoots where the crosshair is](#2026-11-10--the-pistol-shoots-where-the-crosshair-is) | built, 171 headless checks + screenshots; **his bug report**; aim now has a VERTICAL - read the 210-unit note |
 | 2026-11-10 | [The kerb hides what stands behind it](#2026-11-10--the-kerb-hides-what-stands-behind-it) | built, 171 headless checks + screenshots; **his bug report**; a CLIP, not a depth test - and read why it is ONE rectangle |
@@ -58,6 +59,91 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-10 — Quest 1 built: the cement and the billionaire's bunker
+
+His spec, his calls. Committed state before it: `f12609d`. **Not played yet** - everything below is
+checked by a headless bot and screenshots only.
+
+**Canon change (his): the cement goes into the BILLIONAIRE'S BUNKER.** The datacenter is a
+*future* quest. (An hour earlier he'd said "datacenter" for this site - he corrected it.)
+
+**1. City hunters (index.html `citySpawner`, `aiThink`, `damage`, `enterCity`).** Nobody new
+hunts you in the city. The hunters alive when you cross the gate are tagged `hostile` and keep
+coming. The spawner now only tops up **`CITY_TRAFFIC` = 3** traffic cars (`c.traffic`), which
+drive `aiCruise` and ignore you. **Shoot one and that one turns hostile** (`damage()` with owner
+0). `CITY_ENEMIES` is now unused.
+
+**2. Sites (config `QUEST`, index `QUEST 1: CEMENT` section).** Rolled per run in `questRoll`:
+yard 200-400 m deep, bunker 600-900 m, random side each, never the same chunk. A checkpoint keeps
+the roll (`checkpoint.quest`, handed through `questKeep`). `makeCityChunk` asks `questSiteAt(k, side)`:
+- **yard**: the biggest block touching the highway; its back `1 - YARD_OPEN` is a low concrete
+  shed, the rest open pavement. The truck parks there.
+- **bunker**: `bunkerLayout` builds a 1260 square by hand at the chunk's highway end - eight
+  blocks in a ring, a 150 ring road, four gates (the west one opens the highway barrier), and the
+  bunker alone in the middle: **46 tall, raw concrete, no windows** - a gap among the towers. The
+  rest of the chunk is BSP-cut as usual. Rolling sites clears `cityCache` and `foePlans`.
+
+**3. The truck.** `makeCar(..., 3)` (the yellow tanque) with `truck/parked`, `etype 'truck'` (so it
+is NOT a bomb), 700 HP, `QUEST.TRUCK` = top 0.62x, accel 0.5x, turn 0.62x, tanque grip. No gun
+(`updateTurret` skipped), no boost. **Vehicle swap:** on foot, E next to any `parked` car swaps it
+into `cars[0]` (ids swapped so the driver is always id 0); the car you left becomes `parked`.
+Parked vehicles take no damage, are never culled, and survive N.
+
+**4. Guards (foe.js).** `foeChunkPlan` gives the bunker chunk **14 guards** round the bunker's
+pavement instead of normal sentries. Aggro inside 320, give up past 1600, a blow every 0.9 s
+(5 on foot of WALK_HP 40, 14 on a car/truck). **Ramming does not hurt them** - you have to get
+out and fight. With 5 on the truck: 700 -> 532 in 3 s.
+
+**5. The pour.** Once every guard is dead: drum (`DRUM_BACK` car radii behind the centre) within
+`POUR_R` 46 of the vent, nose within 30 deg of straight out from the wall, speed < 10 -> 6 s fill
+(pauses, doesn't reset). The vent is mid-way along the bunker's FAR face, so you drive the ring
+road. Done: banner BUNKER SEALED, +$400, radio DONE then AFTER.
+
+**Radio:** `RADIO.SCRIPT` - BRIEF (old model) on city entry; TRUCK/GUARDS/CLEAR/DONE as it goes;
+AFTER (Saints, her, you) only once done. `RADIO.DEMO`/`radioDemo` removed. `T` replays the
+current brief. **Default layout is now the top `corner` pane (his call).**
+
+**UI:** objective line + pour gauge under the top-right weapons panel (`drawQuestHUD`); dashed pour
+ring and grille on the ground (`drawQuestGround`); map markers CEMENT / BUNKER / VENT, pinned to
+the edge with distance in metres when off-map (`mapQuestMarks`). `cityGhost` now also ghosts any
+tower that would hide the parked truck or the vent (the yard's first screenshot was invisible
+behind a 90 m tower).
+
+**Follow-up (his):** no red aim line/crosshair while driving the truck (`drawAimLine` returns on `me.truck`).
+
+**He played it: "first quest worked well, I love it".** Changes after that play:
+- **Sites moved (his call):** the yard is now a random block on the **far RIGHT** (side +1, block
+  middle past `QUEST.YARD_FAR` 0.6 of CITY_W, picked by `questSites.yard.pick` rolled per run);
+  the bunker compound sits against the **far LEFT** outer wall (side -1, `bunkerLayout` puts the
+  1260 square at `CITY_W - CITY_OUTR - S`; BSP fills the rest toward the highway). Its gates now
+  open onto the road on its city side and onto the outer road; none opens the highway barrier.
+  A route search over `flowPassable` reached the truck and the vent from the highway in 5/5 runs.
+- **Bug he hit: lost his red car after the quest.** It was there, but the map drew a parked car
+  as a red hunter pip. Parked cars now get their own marker - **YOUR CAR** (cyan) / CEMENT or
+  TRUCK - pinned to the map edge with metres when off it. Bunker marker went concrete grey so it
+  isn't confused with your car.
+- **He couldn't see the truck on the "minimap"** = the right panel, THE CITY ZOOMED OUT
+  (`drawCityOverview`). It drew the compound's blocks but no quest marks, and the truck as a red
+  hunter dot. Now it calls `mapQuestMarks(F, RO, k, lw)` too and skips parked cars as hunters.
+- **Sentries shoot (step 1 of 2, his rules).** `FOE_GUN` (config.js) + `foeGun()` (foe.js, end of
+  `foeThink`). Only a sentry that is AFTER you fires (provoked, or a bunker guard); calm ones never
+  do. At you on foot AND at your car. Range = the cars' gun (430). Every shot is telegraphed: it
+  plants, pink sparks gather at its gun hand for `WINDUP` 0.6 s, then one bolt at where you are
+  (no lead), a zap and a little kick. Bolts: `shots` entries `kind 'bolt', foe:true, owner -2`,
+  180 u/s (walk 46 / run 92 - running sideways clears one: tested), pass through enemy cars and
+  sentries, stop on buildings. Damage 3 on foot / 5 on a car, rest 2.6-4 s. Drawn as a pink halo
+  + hot core: `drawShot` (top-down) and the `'shot'` billboard branch (first person + ASCII).
+  Measured: one sentry vs a parked car 10 dmg in 8 s; 14 guards vs you standing still on foot
+  59 dmg in 10 s (punches + bolts; WALK_HP 40). **Step 2, not built:** a real aim pose needs the
+  arm split off the voxel model (the rig only moves legs today) - only if the glow tell isn't
+  enough. Shots `.shots/gun-charge.png`, `gun-bolt.png`, `gun-bolt-ascii.png`, `gun-bolt-top.png`.
+
+**Open / first-play questions:** distances (bands are knobs); guard count, damage and truck HP;
+whether the pour target is findable without the ring; the top-down camera in downtown hides a
+lot behind tall buildings in general. `scrapheap-radio.html` is now a stale lab.
+
+---
 
 ## 2026-11-10 — Radio lab: dialogue on screen, two layouts + chirps
 
