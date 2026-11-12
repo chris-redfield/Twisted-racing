@@ -263,6 +263,45 @@ Nothing is committed to yet — pick from here or bring something new.
 
 Newest first. Keep entries short: what changed, why, and anything the next session needs to know.
 
+### 2026-11-12 — the Saints' body shop: the hero gets his own upgrade tracks
+Full entry in `HANDOFF.md`. Short version:
+
+- **The AFTER radio teases ONE quest now** - the DATACENTER. Her lines are out (the rescue is a
+  later quest and a voice calling from nowhere read as a second open job); `SPEAKERS.HER` and
+  `.ME` stay defined for when it is built.
+- **A second garage, in the city, for the HERO** (`QUEST.SAINTS_*`): rolled 450-700 m deep, the
+  side opposite the yard, built in the cement yard's shape - forecourt plus a low lit shed. Appears
+  only once the bunker is sealed, and opens **on foot only**: getting out of the car is the
+  "in person" the Saints asked for.
+- **Five tracks, levels 0-5** (`WALK_UPGRADES`, config 3b-bis): HULL 50->100, SPRINT 6->14 s,
+  PISTOL 18->27, FIRE RATE 0.30->0.20 s, REPAIR RIG 4->10 hull/s. His numbers. Never the car -
+  `walkUp` is its own bag, and there is deliberately no car-speed track (the legs' throttle is a
+  regulator inside `CRUISE_BAND`, so it would gain nothing there).
+- **Running is now limited** - a tank that refills when you stop - and **repair is hold `V`**,
+  standing still, broken by any hit.
+- **Two deliberate behaviour changes:** his hull no longer refills when he steps out of the car (it
+  was a free full heal next to the parked truck at the bunker), and the rig is a purchase, so at
+  level 0 nothing heals him on foot at all. Both are his call; the second is pinned in a test so it
+  is not "fixed" later as a bug.
+- **Sentries pay $10** (cars 20/25/35) - only ones you wrecked yourself.
+- **Losing window focus now pauses a live run.** His report was a paused game that kept going; a
+  paused game provably does not move, but the forced scroll needs no input, so hands off the
+  keyboard the garage opens at **70.0 s** whenever the car cannot die (dev mode) or nothing is
+  shooting. The `blur` handler only dropped held keys before.
+- Tests 224/30/60. **Not played.** Watch the pistol (x2.25 maxed) and sprint at level 0 (552 units
+  of running against a city 8000 wide).
+- Open: the datacenter quest itself is not built - this is the tease plus the shop it sends you to.
+- Note: **"Where we are" at the top of this file is stale** - it still lists the three lab .html
+  files deleted in `c66a3bb`, and describes the old `scrapheap-*` builds rather than `index.html`.
+
+### 2026-11-11 — three bugs from his play, and the car got bigger on foot
+Full entry in `HANDOFF.md`. The cement truck was culled by the **leg** culler on the single frame
+the gate fires (no `parked` guard, unlike the city culler) - and every test enters the city via
+`skipToCity()`, which skips that frame entirely, so 165 checks never saw it. Pads were always
+placed deeper in road-s, so turning round after the quest stranded all four. `drawQuestHUD` kept
+asking for a guard count after the quest ended. And `CAR_FOOT_MAG` 1.15 makes a car read 15 per
+cent bigger on foot, growing about its contact patch so it neither sinks nor floats.
+
 ### 2026-11-10 — city enemies: movers, camera shake, sprite resolution, and the demo's story
 Four things, all in `HANDOFF.md` in full. Short version:
 

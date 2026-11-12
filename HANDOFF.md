@@ -7,6 +7,8 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-12 | [The Saints' body shop: the hero gets his own upgrades](#2026-11-12--the-saints-body-shop-the-hero-gets-his-own-upgrades) | built, selftests 224/30/60; **his numbers**; **not played**; two behaviour changes flagged inside |
+| 2026-11-11 | [Three bugs from his play, and the car got 15 per cent bigger](#2026-11-11--three-bugs-from-his-play-and-the-car-got-15-per-cent-bigger) | built, committed `f3be143` + `75cdf79`; **his reports**; read the harness trap |
 | 2026-11-10 | [Bolts leave the torso; pistol hits chip the sentry](#2026-11-10--bolts-leave-the-torso-pistol-hits-chip-the-sentry) | built, selftests 30/165/60 + screenshots; **his asks**; not played |
 | 2026-11-10 | [The kerb is REMOVED from the first-person view](#2026-11-10--the-kerb-is-removed-from-the-first-person-view) | built, selftest_foe 165 + screenshots; **his call** after the geometric clip still looked wrong; next idea: a volumetric kerb |
 | 2026-11-10 | [The kerb clip, done by geometry: sentries stopped losing their legs](#2026-11-10--the-kerb-clip-done-by-geometry-sentries-stopped-losing-their-legs) | built, selftest_foe 176 + screenshots; **his bug report**; supersedes the clip half of "The kerb hides what stands behind it" |
@@ -62,6 +64,152 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-12 — The Saints' body shop: the hero gets his own upgrades
+
+His asks, his numbers. **Not played.** Everything below is headless checks only.
+
+**1. The AFTER radio teases ONE quest (his call).** Sealing the bunker used to play the Saints
+*and* her *and* "Hold on. I'm coming." - two open jobs at once. Now it is the **DATACENTER** only:
+the Saints name it, say they want it dead, ask him to come **in person**, and point at the map.
+HER and ME lines are deleted; **their `RADIO.SPEAKERS` entries stay defined** - that is what the
+rescue quest will speak with.
+
+**2. The site (`QUEST.SAINTS_*`, config).** Rolled per run in its own band, **450-700 m** - past
+the yard, short of the bunker, his call that it must NOT be near the gate - on the side opposite
+the yard, never a chunk another site took. Its lot is **the cement yard's shape**: open forecourt,
+low shed at the back (`SAINTS_SHED_H` 110, `SAINTS_COL` blue-grey, `lit: 0.5` - the one lit
+building in the city, so it reads as somebody being home). `questSaints()` hands back the lot plus
+an `x, y` **counter** in the middle of the forecourt.
+
+**It only exists after the bunker is sealed**, and it answers **ON FOOT ONLY** inside
+`SAINTS_R` 120 - stepping out of the car IS the meeting, which is how "in person" got enforced
+rather than merely said. `saintsTick()` arms again only once he leaves the forecourt (with 1.35x
+hysteresis), so closing the screen does not reopen it next frame. Map marker **SAINTS**, magenta,
+once `quest.done`.
+
+**3. Five tracks, levels 0-5 (`WALK_UPGRADES`, config section 3b-bis).** His numbers:
+
+| | lv 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| HULL | 50 | 60 | 70 | 80 | 90 | 100 |
+| SPRINT | 6.0s | 7.6s | 9.2s | 10.8s | 12.4s | 14.0s |
+| PISTOL | 18 | 20 | 22 | 23 | 25 | 27 |
+| FIRE RATE | 0.30s | 0.28s | 0.26s | 0.24s | 0.22s | 0.20s |
+| REPAIR RIG | - | 4/s | 5.5/s | 7/s | 8.5/s | 10/s |
+
+- **Never the car.** `walkUp` is its own bag beside `runUp`; nothing in the legs reads it.
+- **`...At(lv)` is the single source of truth** (`walkerHpAt`, `pistolDmgAt`, `walkRepairAt`...),
+  the pattern the car's `gunDmgAt`/`boostCoolAt` already used. The shop prints the `At()` of this
+  level and the next, so **the number on the row cannot drift from the damage dealt** - it had
+  drifted once already, when the shop recomputed the formula itself and the pistol gained rounding.
+- **No car-speed track, and do not add one.** On the legs the throttle is a regulator inside
+  `RUN.CRUISE_BAND` around the scroll pace, so a faster car gains nothing there (section 2 learned
+  this with `BOOST_ADD`); `CAR_TOP` only changes the city. The sprint TANK is the speed track.
+- **The sprint track ships a RESTRICTION:** running was free and now comes out of `w.stam`.
+  `WALK_STAM_MIN` stops an empty tank being stutter-tapped. Refills while not running, double
+  while standing still, and full again when he gets in the car.
+- **Repair is hold `V`** (`WALK_REPAIR_KEY` - `R` is the resolution toggle), pad `L1`, standing
+  still only; any hit zeroes `w.rep`. Without the rig, holding it says `NO REPAIR RIG - SEE THE
+  SAINTS` rather than doing nothing silently.
+
+**4. The store hosts both row sets.** `STORE_ROWS_CAR` / `STORE_ROWS_FOOT` with `storeMode`;
+`openStore('foot')`. Heading reads `THE BODY SHOP · IN PERSON`, and its CONTINUE says *you can come
+back any time* instead of the checkpoint's *you cannot come back*. `tools/selftest_boost.js` read
+`STORE_ROWS` directly and had to move to `storeRows()`.
+
+**5. Sentries pay (his ask).** `SAINTS.BOUNTY.sentry` **10**, against 20/25/35 for cars - less on
+purpose, they are easier. Hooked in `foeDie` where `ownerId === 0` already was, so only what YOU
+wrecked pays; one mown down by a hunter pays nobody. An upgrade is 10 sentries or 4 cars.
+
+**6. TWO BEHAVIOUR CHANGES, both deliberate, both his call after being told:**
+- **Getting out of the car no longer refills his hull.** It used to (`walker.hp = WALK_HP` on every
+  exit), which made stepping out a free full heal - and at the bunker the truck is parked ten metres
+  away, so 14 guards could simply be out-waited. Hull now carries for the whole run and across a
+  checkpoint restart (`cp.whp`).
+- **The rig is a purchase, so level 0 cannot heal at all.** I argued for a free slow base rate; he
+  overrode it. **Consequence, pinned in a test so it is not "fixed" later as a bug:** before buying
+  level 1, NOTHING heals him on foot (the green squares are the car's), so a damaged hero stays
+  damaged until he dies or restarts. Bounded, not a soft-lock. If it annoys him in play, the fix is
+  a paid walker-repair row at the counter, ~10 lines.
+
+**7. His pause bug, and what it actually was.** Report: *"I pause the game in the first leg, but the
+time keeps passing and the scrap saints garage menu appears, even though i never completed the first
+leg."*
+- **A paused game does not advance** - measured: 20 s of frames paused on leg 1 left `camS` 75->75,
+  `matchTime` 0.50->0.50, no checkpoint. `acc += dt` is inside the `!paused` branch, so no time even
+  banks up.
+- **But the forced scroll needs no input.** Hands off the keyboard: as shipped the car is wrecked
+  around `camS` 1600, but with **dev mode on (`I`)** or **enemies off (`N`)** the garage opens at
+  **70.0 s** - exactly the documented leg length. That is his symptom word for word, and it is why
+  nobody ever noticed the run drives itself.
+- **Fixed the real hole: losing window focus did not pause.** The only `blur` handler dropped held
+  keys. Now `pauseForBlur()` pauses a live run (and a hidden tab via `visibilitychange`), drops the
+  keys, cuts the engine, **never auto-resumes**, and leaves the menus alone.
+- **Still unanswered by him:** whether dev mode was on or enemies off. If his car was mortal, this
+  explanation does not hold and something else carried that run. Also worth knowing: ESC with the
+  map open **closes the map**, which resumes the game, because the map itself pauses it.
+
+**Tests:** `selftest_foe` **224** (was 175), `selftest_boost` 30, `selftest_pad` 60. Two assertions
+of mine were flaky and were tightened: a pad is "stocked **or** counting down" (driving over one
+leaves `item` null for `timer` seconds), and the get-in/get-out round trip now asserts `onFoot`
+actually flipped - getting IN needs him beside the car (`WALK BACK TO THE CAR`), so the first
+version no-opped both toggles and proved nothing.
+
+**Open / first-play questions:** the pistol is **x2.25** maxed (60 -> 135 dmg/s) and is the most
+likely thing to need trimming; sprint at level 0 is **552 units** of running against a city strip
+8000 wide, so a commute is mostly walking; and the datacenter quest itself is **not built** - this
+is the tease plus the shop it sends you to.
+
+---
+
+## 2026-11-11 — Three bugs from his play, and the car got 15 per cent bigger
+
+All four committed (`f3be143`, `75cdf79`).
+
+**1. The cement truck vanished the instant you entered the city** (`index.html:874`). The frame the
+gate fires runs `runEvents()` -> `enterCity()` -> `questSpawnTruck()`, which parks the truck at the
+yard 2600-3300 units ahead - and then the **leg** culler in `updateSpawner` still runs in that same
+frame. It throws away anything past the frame edge and, unlike the city culler, had no
+`if(c.parked) continue;`. So the truck was spliced out of `cars` at once: not in the yard, not on
+either map, while the HUD still said TAKE THE CEMENT TRUCK. One line fixes it.
+
+**THE HARNESS TRAP THAT HID IT, worth more than the fix:** every selftest and bot enters the city
+with `skipToCity()`, which calls `enterCity()` from OUTSIDE the frame loop. Nothing tested the one
+frame a real run actually takes: `placeCam()` -> `runEvents()` -> `updateSpawner(dt)`. 165 checks
+and a whole playthrough passed over it. `selftest_foe` now has a "the gate" block that enters by
+hand. (He had played quest 1 successfully before - with the skip key.)
+
+**2. No power-ups on the road after the quest** - caused by **turning round**, not by finishing.
+`recycleAhead` placed pads at `camS + halfExtent + rnd(80,360)`: ahead in road-s, which in the city
+always means DEEPER, whichever way you point. `padBehind` only recycled a pad that fell behind in
+that same direction. So driving back out, all four pads were deeper than you and none ever counted
+as behind - measured, nearest pad **1072 -> 1828 -> 2630 -> 3482 -> 4358** units, monotonic, gone
+for the rest of the run. Fixed with `padFwd`, the direction you are actually travelling, updated
+once a frame from the change in `camS` and used by both functions; pinned to +1 on the legs. After:
+**29 -> 126 -> 439 -> 304 -> 54**.
+
+**3. `drawQuestHUD` asked for the guard count after the quest was over** - `left` was computed
+before the `quest.done` check, and `questGuardsLeft()` goes through `foeChunkPlan`, which BUILDS
+the chunk on a miss. Early-out added. **Not the FPS gag he reported**, though: measured at 0.01
+ms/frame, worst case one 0.78 ms rebuild, and that needs `cityCache` over its 48-entry threshold.
+
+**His FPS gag is still unexplained and did not recur.** Ruled out with measurements: no
+post-completion JS cost (3.48 vs 2.91 ms/frame at the vent, quest live vs done), the chirps stop
+and disconnect every node, and `cityGhost` gets *cheaper* once done. Not measurable headless: canvas
+raster and real WebAudio. If it returns, the two things that would pin it are whether ASCII was on
+and whether it recovered or stayed slow.
+
+**4. The car reads 15 per cent bigger on foot** (`CAR_FOOT_MAG` 1.15, config). `onFoot ? 1 :
+carMag(perp)` was the bug in miniature: `CAR_MAG_MAX` 2.2 is the GUNNER's distance exaggeration and
+was never applied to the walker, so on foot a car was drawn at plain perspective scale. Measured
++15.0 per cent at 60/140/300/700 units out, and **the contact patch did not move at any distance**
+(118.1, 95.8, 86.8, 82.4) - it grows about the wheels, so it neither sinks nor floats. It is a DRAW
+size only: `walkCollide` still pushes you out of the real `CAR_HL 19 x CAR_HW 10` box, so the two
+views disagree by 15 per cent on purpose. The ASCII pane follows for free, since it rasterises the
+same canvas.
+
+---
 
 ## 2026-11-10 — Bolts leave the torso; pistol hits chip the sentry
 
