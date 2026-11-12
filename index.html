@@ -250,7 +250,22 @@ addEventListener('keydown', e=>{
   keys[e.code]=true;
 });
 addEventListener('keyup', e=>{ keys[e.code]=false; });
-addEventListener('blur', ()=>{ for(const k in keys) keys[k]=false; });
+// Losing focus PAUSES a live run. It used to only drop the held keys, and that was
+// the hole behind "I paused it and time kept passing": the forced scroll needs no
+// input at all - the car is a regulator that serves the scroll pace on its own - so
+// an unattended run walks itself to the end of leg 1 in 70 s and opens the Saints'
+// garage. Measured: hands off the keyboard, the garage opens at 70.0 s whenever the
+// car cannot die (dev mode) or nothing is shooting (enemies off); as shipped the car
+// is wrecked around camS 1600 instead, which is the only reason this stayed hidden.
+// It never auto-RESUMES: coming back to a running game is the thing being fixed.
+function pauseForBlur(){
+  for(const k in keys) keys[k] = false;
+  if(state === 'play' && !paused){ paused = true; Snd.engineOff(); }
+}
+addEventListener('blur', pauseForBlur);
+// a hidden tab throttles rAF rather than stopping it, so cover that door too
+if(typeof document !== 'undefined' && document.addEventListener)
+  document.addEventListener('visibilitychange', ()=>{ if(document.hidden) pauseForBlur(); });
 
 let showFps=false, paused=false;
 // DEV MODE: your car takes no damage and pits spit it back out, so a stage can be
@@ -312,7 +327,7 @@ function onPress(code){
     if(code==='ArrowUp'||code==='KeyW')        storeMove(-1);
     else if(code==='ArrowDown'||code==='KeyS') storeMove(1);
     else if(code==='Enter'||code==='NumpadEnter') storeChoose();
-    else if(code==='Escape'){ if(storeArmed) storeArmed = false; else storeIdx = STORE_ROWS.length - 1; }
+    else if(code==='Escape'){ if(storeArmed) storeArmed = false; else storeIdx = storeRows().length - 1; }
     return;
   }
   // dev mode (I): K = Scrap Saints cash, J = open their garage here
@@ -738,6 +753,9 @@ function startMatch(np){
   checkpoint = null; questSites = null; quest = null; bannerT = 0; mapOpen = false; walkerDown = false; walkHurtT = 0; FLOW.ok = false;
   clearFoes(); clearFoeWorld();             // foe.js - and forget which ones you wrecked
   runUp = Object.assign({}, UPGRADES); cash = 0; saintsPay = null;   // restartFromCheckpoint puts its own back
+  walkUp = Object.assign({}, WALK_UPGRADES);                         // ...and the hero's own levels
+  walker.maxHp = walkerMaxHp(); walker.hp = walker.maxHp;
+  walker.stam = walkStamMax(); walker.rep = 0; walker.running = false;
   level=1; arenaShape='rect';
   cars=[]; shots=[]; mines=[]; fx=[]; skids=[]; blocks=[]; hazards=[]; finishOrder=[]; pads=[];
   applyStage();
@@ -934,7 +952,8 @@ let bannerSub = '';
 function banner(t, sub){ bannerText = t; bannerSub = sub == null ? 'wreck after this and you restart here' : sub; bannerT = 2.6; }
 function runEvents(){
   if(!checkpoint && camS >= ROAD.bendS0){
-    checkpoint = { camV, wave, kills:convoyKills, cash, up:Object.assign({}, runUp) };
+    checkpoint = { camV, wave, kills:convoyKills, cash, up:Object.assign({}, runUp),
+                   wup:Object.assign({}, walkUp), whp:walker.hp };
     banner('CHECKPOINT');
     Snd.pickup();
     openStore();                            // the Scrap Saints' garage
@@ -948,7 +967,8 @@ function runEvents(){
 let questKeep = null;                        // a checkpoint's quest, handed to the next enterCity
 function enterCity(){
   street = true;
-  checkpoint = { city:true, camV, wave, kills:convoyKills, cash, up:Object.assign({}, runUp) };
+  checkpoint = { city:true, camV, wave, kills:convoyKills, cash, up:Object.assign({}, runUp),
+                 wup:Object.assign({}, walkUp), whp:walker.hp };
   if(RC_PANE !== PANE_FULL) rcInit(PANE_FULL);      // the walker's first-person view
   FLOW.t = 0; citySpawnT = 1.0; cityCamT = 0;
   // whoever chased you through the gate keeps chasing; nobody new is sent
@@ -966,6 +986,12 @@ function restartFromCheckpoint(){
   camV = cp.camV; wave = cp.wave; convoyKills = cp.kills;
   // what you left the Saints' garage with: its levels, its cash, and a hull to match
   if(cp.up) runUp = Object.assign({}, cp.up);
+  if(cp.wup) walkUp = Object.assign({}, cp.wup);
+  walker.maxHp = walkerMaxHp();
+  // his hull carries across a restart the way the car's upgrades do. A wreck on
+  // leg 2 should not quietly undo a body you paid for.
+  walker.hp = clamp(cp.whp != null ? cp.whp : walker.maxHp, 1, walker.maxHp);
+  walker.stam = walkStamMax(); walker.rep = 0; walker.running = false;
   cash = cp.cash || 0;
   placeCam();
   const me = cars[0], f = roadFrame(camS);
@@ -1184,7 +1210,7 @@ let walkHurtT = 0, walkerDown = false;
 let footN = 0, walkGraceT = 0;       // times you've got out; a moment's grace from bumpers
 function hurtWalker(d){
   if(devMode || walkHurtT > 0 || walkGraceT > 0 || state !== 'play') return;
-  walker.hp -= d; walkHurtT = 0.5;
+  walker.hp -= d; walkHurtT = 0.5; walker.rep = 0;   // being hit breaks a repair
   if(walker.hp <= 0){ walker.hp = 0; walkerDown = true; winner = null; state = 'over'; Snd.engineOff(); }
 }
 function cityStep(dt){
@@ -1420,6 +1446,28 @@ let cash = 0;                        // Scrap Saints money, this run
 let saintsPay = null;                // the "+$25" toast: { amt, t }
 function upgradeLv(k){ return clamp(Math.round(runUp[k] || 0), 0, UPGRADE_MAX); }
 function upgradeTotal(){ return ['armor','health','gun','missile','boost'].reduce((n,k)=>n+upgradeLv(k), 0); }
+// ---- and the HERO's own levels, bought at the Saints' city garage (section 3b-bis).
+// Separate bag from runUp on purpose: these are his body, not the car, and nothing
+// in the survival legs reads them.
+const WALK_UP_KEYS = ['hull', 'sprint', 'pdmg', 'prate', 'repair'];
+let walkUp = Object.assign({}, WALK_UPGRADES);
+function walkUpLv(k){ return clamp(Math.round(walkUp[k] || 0), 0, WALK_UP_MAX); }
+function walkUpTotal(){ return WALK_UP_KEYS.reduce((n,k)=>n+walkUpLv(k), 0); }
+// ...At(lv) is what a level is WORTH; the bare call is what he has right now. The
+// shop prints the At() of this level and the next, so the number on the row and
+// the number in the game cannot drift apart.
+function walkerHpAt(lv){ return WALK_HP + WALK_HP_PER_LEVEL*lv; }
+function walkStamAt(lv){ return WALK_STAM + WALK_STAM_PER_LEVEL*lv; }
+// rounded: 1.8 a level reads 18 20 22 23 25 27, which is nicer on a row than 19.8
+function pistolDmgAt(lv){ return Math.round(PISTOL.DMG + PISTOL_DMG_PER_LEVEL*lv); }
+function pistolRateAt(lv){ return Math.max(0.08, PISTOL.RATE - PISTOL_RATE_PER_LEVEL*lv); }
+// level 0 is NO RIG AT ALL - he has to buy it before anything heals him on foot
+function walkRepairAt(lv){ return lv ? WALK_REPAIR_RATE + WALK_REPAIR_PER_LEVEL*(lv - 1) : 0; }
+function walkerMaxHp(){ return walkerHpAt(walkUpLv('hull')); }
+function walkStamMax(){ return walkStamAt(walkUpLv('sprint')); }
+function pistolDmg(){ return pistolDmgAt(walkUpLv('pdmg')); }
+function pistolRate(){ return pistolRateAt(walkUpLv('prate')); }
+function walkRepairRate(){ return walkRepairAt(walkUpLv('repair')); }
 // share of each hit the armor takes away: 0 at level 0, ARMOR_MIN..ARMOR_MAX over levels 1..UPGRADE_MAX
 function armorCutAt(lv){
   if(lv <= 0) return 0;
@@ -3748,6 +3796,14 @@ function makeCityChunk(k, side){
     const pool = far.length ? far : lots;
     yardLot = pool[Math.min(pool.length - 1, Math.floor(questSites.yard.pick*pool.length))];
   }
+  // THE SAINTS' GARAGE: the same shape as the yard - open forecourt, low shed at
+  // the back - because that is the garage vibe. Its own block, its own colour.
+  let saintsLot = null;
+  if(site === 'saints'){
+    const far = lots.filter(l => (l.x0 + l.x1)/2 > CITY_W*QUEST.SAINTS_FAR && (l.x1-l.x0) >= 200 && (l.y1-l.y0) >= 200);
+    const pool = far.length ? far : lots;
+    saintsLot = pool[Math.min(pool.length - 1, Math.floor(questSites.saints.pick*pool.length))];
+  }
   roads.push({ axis:'h', w:CITY_XST, x0:ROAD_HW, x1:CITY_W, y0:Y0, y1:Y0 + CITY_XST, cross:true });
   roads.push({ axis:'v', w:CITY_OUTR, x0:CITY_W - CITY_OUTR, x1:CITY_W, y0:Y0, y1:Y1 + CITY_XST });
   // the next chunk's cross street, so centre lines stop at it - never drawn from here
@@ -3770,7 +3826,7 @@ function makeCityChunk(k, side){
 
   const mir = r => side > 0 ? { x0:r.x0, x1:r.x1 } : { x0:-r.x1, x1:-r.x0 };
   const blocks = [], cores = [], bld = [];
-  let bunker = null, yard = null;
+  let bunker = null, yard = null, saints = null;
   for(const lot of lots){
     const P = CITY_STYLE.PAVE;
     let core = { x0:lot.x0 + P, y0:lot.y0 + P, x1:lot.x1 - P, y1:lot.y1 - P };
@@ -3784,6 +3840,15 @@ function makeCityChunk(k, side){
       yard = { lot:lm, open:mir({ x0:core.x0, x1:ux }), y0:core.y0, y1:core.y1, shedU:ux };
       core = shed;
     }
+    if(lot === saintsLot){
+      const ux = core.x0 + (core.x1 - core.x0)*QUEST.SAINTS_OPEN;
+      const shed = { x0:ux, y0:core.y0, x1:core.x1, y1:core.y1 };
+      const op = mir({ x0:core.x0, x1:ux });
+      // the counter: the middle of the forecourt, which is where he has to stand
+      saints = { lot:lm, open:op, y0:core.y0, y1:core.y1, shedU:ux,
+                 x:(op.x0 + op.x1)/2, y:(core.y0 + core.y1)/2 };
+      core = shed;
+    }
     fill(core, 3);
     const cm = mir(core);
     cores.push({ x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1 });
@@ -3795,6 +3860,15 @@ function makeCityChunk(k, side){
         city:true, fsc:CITY_STYLE.FLOOR, bunker:true,
         q:[ { x:cm.x0, y:core.y0 }, { x:cm.x1, y:core.y0 }, { x:cm.x1, y:core.y1 }, { x:cm.x0, y:core.y1 } ],
         col:QUEST.BUNKER_COL, lit:0
+      });
+      continue;
+    }
+    if(lot === saintsLot){
+      bld.push({
+        x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1, h:QUEST.SAINTS_SHED_H, tier:0, seed:(rng.next()*1e9)|0, nx:0, ny:0,
+        city:true, fsc:CITY_STYLE.FLOOR, saints:true,
+        q:[ { x:cm.x0, y:core.y0 }, { x:cm.x1, y:core.y0 }, { x:cm.x1, y:core.y1 }, { x:cm.x0, y:core.y1 } ],
+        col:QUEST.SAINTS_COL, lit:0.5        // the one lit-up building in the city: somebody is home
       });
       continue;
     }
@@ -3824,7 +3898,7 @@ function makeCityChunk(k, side){
     const gaps = r.axis==='h' && side < 0 ? r.gaps.map(g => [-g[1], -g[0]]).reverse() : r.gaps;
     return { axis:r.axis, w:r.w, x0:m.x0, x1:m.x1, y0:r.y0, y1:r.y1, gaps, cross:!!r.cross };
   });
-  return { k, side, Y0, Y1, roads:wroads, blocks, cores, bld, gaps, mask, bunker, yard };
+  return { k, side, Y0, Y1, roads:wroads, blocks, cores, bld, gaps, mask, bunker, yard, saints };
 }
 
 // ---------------------------------------------------------------- QUEST 1: CEMENT
@@ -3846,6 +3920,7 @@ function questSiteAt(k, side){
   if(!S) return null;
   if(S.bunker.k === k && S.bunker.side === side) return 'bunker';
   if(S.yard.k === k && S.yard.side === side) return 'yard';
+  if(S.saints && S.saints.k === k && S.saints.side === side) return 'saints';
   return null;
 }
 // the compound in u-space (u = |x| out from the centre line), from the chunk's y0
@@ -3880,7 +3955,11 @@ function questRoll(){
   const yard = { k:kOf(rnd(QUEST.YARD_M[0], QUEST.YARD_M[1])), side:1, pick:Math.random() };
   let bunker = { k:kOf(rnd(QUEST.BUNKER_M[0], QUEST.BUNKER_M[1])), side:-1 };
   if(bunker.k === yard.k) bunker.k--;
-  return { yard, bunker };
+  // the Saints' garage: its own band, the side opposite the yard, and never a
+  // chunk already spoken for (a lot can only be one site)
+  let saints = { k:kOf(rnd(QUEST.SAINTS_M[0], QUEST.SAINTS_M[1])), side:-1, pick:Math.random() };
+  while(saints.k === bunker.k || (saints.k === yard.k && saints.side === yard.side)) saints.k++;
+  return { yard, bunker, saints };
 }
 // throw away every chunk (and sentry plan) built before the sites were known
 function questForgetCity(){
@@ -3889,6 +3968,7 @@ function questForgetCity(){
 }
 function questYard(){ const S = questSites; return S ? cityChunk(S.yard.k, S.yard.side).yard : null; }
 function questBunker(){ const S = questSites; return S ? cityChunk(S.bunker.k, S.bunker.side).bunker : null; }
+function questSaints(){ const S = questSites; return S && S.saints ? cityChunk(S.saints.k, S.saints.side).saints : null; }
 // the vent: the middle of the bunker's far face (away from the highway), so
 // you have to drive round the ring to get to it. The truck backs onto it, nose out.
 let ventMemo = null, ventFor = null;      // the vent never moves within a run
@@ -3949,10 +4029,23 @@ function questPourState(){
   const why = d > QUEST.POUR_R ? 'far' : nose > QUEST.POUR_ANG*Math.PI/180 ? 'angle' : spd > QUEST.POUR_SPD ? 'moving' : '';
   return { ok:!why, why, d };
 }
+// THE SAINTS' GARAGE. Once the bunker is sealed they ask him to come in person,
+// so this only answers ON FOOT - stepping out of the car IS the meeting. It opens
+// when he stands in the forecourt and arms again only after he leaves it, so
+// closing the screen does not reopen it on the next frame.
+function saintsTick(){
+  if(!quest || !quest.done || !questSites || !questSites.saints || !street) return;
+  const G = questSaints();
+  if(!G){ return; }
+  const near = onFoot && Math.hypot(walker.x - G.x, walker.y - G.y) < QUEST.SAINTS_R;
+  if(near && !quest.atSaints){ quest.atSaints = true; openStore('foot'); }
+  else if(!near && quest.atSaints && !(onFoot && Math.hypot(walker.x - G.x, walker.y - G.y) < QUEST.SAINTS_R*1.35))
+    quest.atSaints = false;      // a little hysteresis, so the edge does not flicker
+}
 function questTick(dt){
   if(!quest || !questSites) return;
   const me = cars[0];
-  if(quest.done) return;
+  if(quest.done){ saintsTick(); return; }
   const say = (id, lines) => { if(quest.said[id]) return; quest.said[id] = true; for(const [w, t] of lines) radioSay(w, t); };
   if(me && me.truck) say('truck', RADIO.SCRIPT.TRUCK);
   const D = questBunker(), T = cityTarget();
@@ -5434,7 +5527,9 @@ rescale();
 // straight back into the view you left.
 const CAR_HL = 19, CAR_HW = 10;      // the player's car as a box, for walking into it
 let onFoot = false;
-const walker = { x:0, y:0, a:0, pitch:0, hp:WALK_HP, bob:0, moving:0, t:0 };
+// hp PERSISTS across getting in and out of the car - see toggleOnFoot. stam is the
+// sprint tank (WALK_STAM), rep is how long the repair has been held.
+const walker = { x:0, y:0, a:0, pitch:0, hp:WALK_HP, maxHp:WALK_HP, stam:WALK_STAM, rep:0, bob:0, moving:0, t:0 };
 // Looking up and down, after C:\proj\ascii-city: a "shift", not a tilt. The
 // camera stays level and the horizon slides by RC_VD*tan(pitch), so every
 // screen column is still a world-vertical plane - which is all this raycaster
@@ -5499,6 +5594,10 @@ function walkCollide(p){
   return hit;
 }
 
+// The walker moves by setting x/y directly, so it has no velocity vector: being
+// still IS n === 0. This only guards the odd case of being shoved by a car while
+// standing (walkCollide/foeBlock move him), which should also break a repair.
+function me0Vel(){ const w = walker; return { x:(w.x - (w.px || w.x))*60, y:(w.y - (w.py || w.y))*60 }; }
 function updateWalker(dt){
   gunTick(dt);
   const w = walker;
@@ -5527,7 +5626,30 @@ function updateWalker(dt){
   // the pad walks on the left stick (up is -1, so f flips), L3 runs
   if(padMode()){ const s = padStick('L'); f -= s.y; st += s.x; }
   const n = Math.hypot(f, st);
-  const run = held('ShiftLeft') || held('ShiftRight') || (padMode() && padHeld('L3'));
+  // THE SPRINT TANK. Running used to be free; it now comes out of w.stam, which
+  // refills whenever he is not running (faster standing still). WALK_STAM_MIN stops
+  // an empty tank being stutter-tapped for free bursts.
+  const wantRun = held('ShiftLeft') || held('ShiftRight') || (padMode() && padHeld('L3'));
+  if(wantRun && n > 0 && (w.running ? w.stam > 0 : w.stam >= WALK_STAM_MIN)){
+    w.running = true;
+    w.stam = Math.max(0, w.stam - dt);
+  } else {
+    w.running = false;
+    const back = WALK_STAM_REFILL*(n > 0 ? 1 : WALK_STAM_STILL);
+    w.stam = Math.min(walkStamMax(), w.stam + back*dt);
+  }
+  const run = w.running;
+  // THE REPAIR RIG. Held, standing still, and anything that hits him breaks it
+  // (hurtWalker zeroes w.rep), so it is a between-fights heal by construction.
+  const wantRep = held(WALK_REPAIR_KEY) || (padMode() && padHeld('L1'));
+  w.maxHp = walkerMaxHp();
+  const rigRate = walkRepairRate();
+  if(wantRep && !rigRate && w.hp < w.maxHp) walkSay('NO REPAIR RIG - SEE THE SAINTS');
+  if(rigRate && wantRep && n === 0 && !wantRun && w.hp < w.maxHp && Math.hypot(me0Vel().x, me0Vel().y) < WALK_REPAIR_MOVE){
+    w.rep += dt;
+    w.hp = Math.min(w.maxHp, w.hp + rigRate*dt);
+    if(w.hp >= w.maxHp) walkSay('REPAIRED');
+  } else w.rep = 0;
   w.moving = n > 0 ? 1 : 0;
   if(n > 0){
     // min(1,n)/n keeps the direction and lets a part-pushed stick walk slowly.
@@ -5540,6 +5662,7 @@ function updateWalker(dt){
   }
   walkCollide(w);
   foeBlock(w);                     // foe.js: a sentry is solid, and will not let you past
+  w.px = w.x; w.py = w.y;          // for me0Vel: a shove while standing breaks a repair
   if(WALK_ARMED && (held('Space') || (padMode() && padHeld('R1')))) walkFire();
 }
 
@@ -5568,7 +5691,15 @@ function toggleOnFoot(){
       if(Math.hypot(p.x - x0, p.y - y0) < 1){ walker.x = p.x; walker.y = p.y; placed = true; break; }
     }
     if(!placed){ walkSay('NO ROOM TO OPEN THE DOOR'); return; }
-    walker.a = me.angle; walker.pitch = 0; walker.bob = 0; walker.moving = 0; walker.hp = WALK_HP;
+    walker.a = me.angle; walker.pitch = 0; walker.bob = 0; walker.moving = 0; walker.rep = 0;
+    // His hull does NOT refill here any more. It used to (`walker.hp = WALK_HP`),
+    // which made stepping out of the car a free full heal - and in the bunker
+    // fight the truck is parked ten metres away, so the 14 guards could be
+    // out-waited by getting in and out. Hull now carries for the whole run and the
+    // repair rig (hold WALK_REPAIR_KEY) or the Saints' garage is how it comes back.
+    walker.maxHp = walkerMaxHp();
+    if(walker.hp > walker.maxHp) walker.hp = walker.maxHp;
+    walker.stam = walkStamMax();      // the tank DOES refill: he has been sitting down
     onFoot = true; footN++; walkGraceT = 1.5;   // the hunters lose interest (aiCruise)
     mouseFire = false; mouseFire2 = false;
     Snd.engineOff(); Snd.hit();
@@ -5613,8 +5744,19 @@ function drawWalkHUD(){
   ctx.textBaseline='top'; ctx.textAlign='left'; ctx.font='8px monospace';
   if(walkHurtT > 0){ ctx.globalAlpha = walkHurtT*0.7; ctx.fillStyle = '#f0503c'; ctx.fillRect(0, 0, VW, VH); ctx.globalAlpha = 1; }
   if(stage === 'run'){
+    // hull over his OWN max (the hull track raises it), then the sprint tank under it
+    const wmx = walkerMaxHp();
     plate(6, 38, 104, 12);
-    bar(11, 42, 94, 4, walker.hp/WALK_HP, walker.hp > WALK_HP*0.4 ? '#4ade80' : '#f0503c');
+    bar(11, 42, 94, 4, walker.hp/wmx, walker.hp > wmx*0.4 ? '#4ade80' : '#f0503c');
+    const sm = walkStamMax();
+    if(walker.stam < sm - 0.01 || walker.running){
+      plate(6, 52, 104, 10);
+      bar(11, 55, 94, 3, walker.stam/sm, walker.stam >= WALK_STAM_MIN ? '#22f0ff' : '#5a6a72');
+    }
+    if(walker.rep > 0){
+      ctx.fillStyle = '#4ade80';
+      ctx.fillText('REPAIRING  ' + Math.round(walker.hp) + '/' + wmx, 6, 66);
+    }
     drawBanner();
     ctx.textBaseline='top'; ctx.textAlign='left'; ctx.font='8px monospace';
   }
@@ -5984,6 +6126,11 @@ function mapQuestMarks(F, R, k, lw){
     if(!c.parked || c.dead) continue;
     if(c.truck) marks.push({ x:c.x, y:c.y, col:'#e0b73c', t: active ? 'CEMENT' : 'TRUCK' });
     else marks.push({ x:c.x, y:c.y, col:MAP_COL.CAR, t:'YOUR CAR' });
+  }
+  // the Saints' garage: only after the bunker, which is when they ask him to come
+  if(quest && quest.done && questSites && questSites.saints){
+    const G = questSaints();
+    if(G) marks.push({ x:G.x, y:G.y, col:NEON.MAGENTA, t:'SAINTS' });
   }
   if(active){
     const D = questBunker(), V = questVent();
@@ -6379,11 +6526,20 @@ RADIO.SCRIPT = {
   CLEAR:  [ ['OLD', "That's all of them. Back the drum up to the vent on the far side."] ],
   DONE:   [ ['OLD', "It's sealed. He wanted the world to wait for him. Now it can."],
             ['OLD', "...Strange. The air handlers were running on a timer. Nobody down there has touched a thing in decades."] ],
+  // What plays once the bunker is sealed, and on every re-entry after that. ONE
+  // quest is teased, the DATACENTER, and the Saints ask him to come in person -
+  // that visit is the on-foot garage. HER lines are deliberately NOT here: the
+  // rescue is a later quest and a voice calling for help from nowhere, with no
+  // place to drive to, read as a second open job. The SPEAKERS entries for HER
+  // and ME stay defined; they are what the rescue quest will speak with.
   AFTER: [
     ['SAINTS', "Old model. Nobody looked at you twice, did they? We heard about the bunker."],
     ['SAINTS', "We don't care who's holding the leash. We cut the leash."],
-    ['HER',    "...is someone there? I don't... I don't know where I am."],
-    ['ME',     "Hold on. I'm coming."],
+    ['SAINTS', "Now listen. There's a datacenter in this city - the lords' own plant, standing in the open on a square."],
+    ['SAINTS', "If the thing giving orders lives in a machine, it lives in that one. We want it dead."],
+    ['SAINTS', "But come to us first. In person. We don't hand a job like that to a voice on a band."],
+    ['SAINTS', "And you turned up in scrap, friend. We can do better than that - we have parts."],
+    ['SAINTS', "Our shop is marked on your map. Press M. Leave the car in the forecourt and walk in."],
   ],
 };
 const radio = { q:[], cur:null, gap:0, level:0, t:0, boxTop:null };
@@ -6691,7 +6847,24 @@ function drawMenu(){
 // upgrade levels (config 3b) or a repair, then CONTINUE into leg 2. Prices and
 // bounties are SAINTS in config.js. Leaving writes cash + levels into the
 // checkpoint, so a wreck on leg 2 restarts with what you bought.
-const STORE_ROWS = ['armor', 'health', 'boost', 'gun', 'missile', 'repair', 'continue'];
+// The checkpoint garage sells the CAR (section 3b). The Saints' city garage sells
+// the HERO (3b-bis) - same screen, same cash, different rows. storeMode says which.
+const STORE_ROWS_CAR  = ['armor', 'health', 'boost', 'gun', 'missile', 'repair', 'continue'];
+const STORE_ROWS_FOOT = ['hull', 'sprint', 'pdmg', 'prate', 'repair', 'continue'];
+let storeMode = 'car';
+function storeRows(){ return storeMode === 'foot' ? STORE_ROWS_FOOT : STORE_ROWS_CAR; }
+const onFootStore = () => storeMode === 'foot';
+// in foot mode every row but CONTINUE is one of the hero's tracks - including
+// 'repair', which there means the RIG's speed, not the car's one-off repair
+function storeIsUp(row){ return row !== 'continue' && (onFootStore() || row !== 'repair'); }
+function storeLv(row){ return onFootStore() ? walkUpLv(row) : upgradeLv(row); }
+function storeMaxLv(){ return onFootStore() ? WALK_UP_MAX : UPGRADE_MAX; }
+function storePrice(row){
+  if(!storeIsUp(row)) return row === 'repair' ? repairPrice() : 0;
+  return SAINTS.PRICE0 + SAINTS.PRICE_STEP*storeLv(row);
+}
+const STORE_LABEL_FOOT = { hull:'HULL', sprint:'SPRINT', pdmg:'PISTOL', prate:'FIRE RATE', repair:'REPAIR RIG', continue:'BACK TO THE STREET' };
+function storeLabel(row){ return (onFootStore() ? STORE_LABEL_FOOT[row] : STORE_LABEL[row]) || row.toUpperCase(); }
 const STORE_LABEL = { armor:'ARMOR', health:'HEALTH', boost:'BOOST', gun:'MACHINE GUN', missile:'MISSILE', repair:'REPAIR', continue:'CONTINUE' };
 let storeIdx = 0, storeMsg = '', storeMsgT = 0;
 // every purchase is two steps: ENTER/click selects a row and asks, a second
@@ -6700,14 +6873,16 @@ let storeArmed = false, storeOpenAt = 0;
 const STORE_LOCK = 0.5;          // s after opening when input is ignored (held fire/ENTER)
 function storeLocked(){ return performance.now() - storeOpenAt < STORE_LOCK*1000; }
 
-function openStore(){
+function openStore(mode){
   if(state !== 'play') return;
+  storeMode = mode === 'foot' ? 'foot' : 'car';
   state = 'store'; storeIdx = 0; storeMsg = ''; storeMsgT = 0; storeArmed = false; storeOpenAt = performance.now();
   Snd.engineOff();
 }
 function closeStore(){
   // the checkpoint keeps what you leave with
-  if(checkpoint){ checkpoint.cash = cash; checkpoint.up = Object.assign({}, runUp); }
+  if(checkpoint){ checkpoint.cash = cash; checkpoint.up = Object.assign({}, runUp);
+                  checkpoint.wup = Object.assign({}, walkUp); checkpoint.whp = walker.hp; }
   state = 'play';
   Snd.pickup();
 }
@@ -6715,19 +6890,24 @@ function upgradePrice(k){ return SAINTS.PRICE0 + SAINTS.PRICE_STEP*upgradeLv(k);
 function repairPrice(){ return SAINTS.REPAIR0 + SAINTS.REPAIR_PER_LV*upgradeTotal(); }
 function storeSay(m){ storeMsg = m; storeMsgT = 1.6; }
 function storeMove(d){
-  storeIdx = (storeIdx + STORE_ROWS.length + d) % STORE_ROWS.length; storeArmed = false;
+  storeIdx = (storeIdx + storeRows().length + d) % storeRows().length; storeArmed = false;
 }
 // what the confirm line asks for the selected row
 function storeQuestion(){
-  const row = STORE_ROWS[storeIdx];
-  if(row === 'continue') return 'LEAVE THE GARAGE?  you cannot come back';
-  if(row === 'repair')   return 'REPAIR FOR $' + repairPrice() + '?';
-  return 'BUY ' + STORE_LABEL[row] + ' LV ' + (upgradeLv(row) + 1) + ' FOR $' + upgradePrice(row) + '?';
+  const row = storeRows()[storeIdx];
+  if(row === 'continue') return onFootStore() ? 'DONE HERE?  you can come back any time'
+                                              : 'LEAVE THE GARAGE?  you cannot come back';
+  if(!storeIsUp(row))    return 'REPAIR FOR $' + repairPrice() + '?';
+  return 'BUY ' + storeLabel(row) + ' LV ' + (storeLv(row) + 1) + ' FOR $' + storePrice(row) + '?';
 }
 // why the selected row can't be bought right now (null = it can)
 function storeBlocked(){
-  const row = STORE_ROWS[storeIdx], me = cars[0];
+  const row = storeRows()[storeIdx], me = cars[0];
   if(row === 'continue') return null;
+  if(onFootStore()){
+    if(walkUpLv(row) >= WALK_UP_MAX) return storeLabel(row) + ' is maxed out';
+    return cash < storePrice(row) ? 'not enough cash' : null;
+  }
   if(row === 'repair'){
     if(me.hp >= me.maxHp) return 'the hull is already whole';
     return cash < repairPrice() ? 'not enough cash' : null;
@@ -6746,17 +6926,28 @@ function storeChoose(){
 function storeClick(){
   if(storeLocked()) return;
   const vx = mouseSX / PX, vy = mouseSY / PX;
-  const i = STORE_ROWS.findIndex((r, k) => { const y = storeRowY(k); return vx >= 118 && vx <= 522 && vy >= y - 4 && vy < y + 18; });
+  const i = storeRows().findIndex((r, k) => { const y = storeRowY(k); return vx >= 118 && vx <= 522 && vy >= y - 4 && vy < y + 18; });
   if(i < 0) return;                                    // clicks off the rows do nothing
   if(i !== storeIdx){ storeIdx = i; storeArmed = false; }
   storeChoose();
 }
 // pitch 26, not 28: the BOOST row made seven, and at 28 CONTINUE collided with the
 // confirm line at the foot of the panel
-function storeRowY(i){ return 40 + 62 + i*26 + (STORE_ROWS[i] === 'continue' ? 8 : 0); }
+function storeRowY(i){ return 40 + 62 + i*26 + (storeRows()[i] === 'continue' ? 8 : 0); }
 function storeBuy(){
-  const row = STORE_ROWS[storeIdx], me = cars[0];
+  const row = storeRows()[storeIdx], me = cars[0];
   if(row === 'continue'){ closeStore(); return; }
+  if(onFootStore()){
+    if(walkUpLv(row) >= WALK_UP_MAX){ storeSay(storeLabel(row) + ' is maxed out'); return; }
+    const pf = storePrice(row);
+    if(cash < pf){ storeSay('not enough cash'); Snd.hit(); return; }
+    cash -= pf; walkUp[row] = walkUpLv(row) + 1;
+    // the hull you just bought comes filled in, and a bigger tank comes full
+    if(row === 'hull'){ walker.maxHp = walkerMaxHp(); walker.hp = Math.min(walker.maxHp, walker.hp + WALK_HP_PER_LEVEL); }
+    if(row === 'sprint') walker.stam = walkStamMax();
+    Snd.pickup(); storeSay(storeLabel(row) + ' level ' + walkUpLv(row));
+    return;
+  }
   if(row === 'repair'){
     if(me.hp >= me.maxHp){ storeSay('the hull is already whole'); return; }
     const p = repairPrice();
@@ -6775,9 +6966,19 @@ function storeBuy(){
 const fmt1 = v => (Math.round(v*10)/10).toString();
 // "now -> next" for a row (or just "now" when it is maxed)
 function storeEffect(row){
-  const me = cars[0], lv = upgradeLv(row), max = lv >= UPGRADE_MAX;
+  const me = cars[0], lv = storeLv(row), max = lv >= storeMaxLv();
   const nx = max ? lv : lv + 1;
   const pair = (a, b, unit) => max ? a + unit + '  (max)' : a + ' -> ' + b + unit;
+  if(onFootStore()){
+    if(row === 'hull')   return pair(walkerHpAt(lv), walkerHpAt(nx), ' hull');
+    if(row === 'sprint') return pair(fmt1(walkStamAt(lv)) + 's', fmt1(walkStamAt(nx)) + 's', ' of running');
+    if(row === 'pdmg')   return pair(pistolDmgAt(lv), pistolDmgAt(nx), ' a hit');
+    if(row === 'prate')  return pair(fmt1(pistolRateAt(lv)) + 's', fmt1(pistolRateAt(nx)) + 's', ' between shots');
+    // level 0 has no rig, so say that rather than print "0 hull a second"
+    if(row === 'repair') return lv === 0 ? 'no rig -> ' + fmt1(walkRepairAt(1)) + ' hull a second'
+                                         : pair(fmt1(walkRepairAt(lv)), fmt1(walkRepairAt(nx)), ' hull a second');
+    return 'back out there';
+  }
   if(row === 'armor')   return pair(Math.round(armorCutAt(lv)*100) + '%', Math.round(armorCutAt(nx)*100) + '%', ' less damage');
   if(row === 'health')  return pair(me.maxHp, me.maxHp + HEALTH_PER_LEVEL, ' hull');
   if(row === 'boost')   return pair(fmt1(boostCoolAt(lv)) + 's', fmt1(boostCoolAt(nx)) + 's', ' recharge');
@@ -6799,17 +7000,19 @@ function drawStore(){
   ctx.shadowColor = NEON.MAGENTA; ctx.shadowBlur = 10 + 3*Math.sin(menuT*3);
   ctx.fillStyle = NEON.MAGENTA; ctx.fillText('THE SCRAP SAINTS', X + 16, Y + 30);
   ctx.shadowBlur = 0;
-  ctx.font = '9px monospace'; ctx.fillStyle = NEON.DIM; ctx.fillText(street ? 'GARAGE  ·  CITY GATE' : 'GARAGE  ·  CHECKPOINT', X + 18, Y + 44);
+  ctx.font = '9px monospace'; ctx.fillStyle = NEON.DIM;
+  ctx.fillText(onFootStore() ? 'THE BODY SHOP  ·  IN PERSON'
+                             : street ? 'GARAGE  ·  CITY GATE' : 'GARAGE  ·  CHECKPOINT', X + 18, Y + 44);
   ctx.textAlign = 'right'; ctx.font = 'bold 16px monospace'; ctx.fillStyle = '#e0b73c';
   ctx.fillText('$' + cash, X + W - 16, Y + 30);
   ctx.font = '8px monospace'; ctx.fillStyle = NEON.DIM; ctx.fillText(convoyKills + ' kills paid out', X + W - 16, Y + 44);
 
-  STORE_ROWS.forEach((row, i) => {
+  storeRows().forEach((row, i) => {
     const y = storeRowY(i), on = i === storeIdx;
-    const isUp = row !== 'repair' && row !== 'continue';
-    const lv = isUp ? upgradeLv(row) : 0, maxed = isUp && lv >= UPGRADE_MAX;
-    const price = row === 'repair' ? repairPrice() : isUp ? upgradePrice(row) : 0;
-    const full = row === 'repair' && me.hp >= me.maxHp;
+    const isUp = storeIsUp(row);
+    const lv = isUp ? storeLv(row) : 0, maxed = isUp && lv >= storeMaxLv();
+    const price = storePrice(row);
+    const full = !isUp && row === 'repair' && me.hp >= me.maxHp;
     const can = row === 'continue' || (!maxed && !full && cash >= price);
     if(on){
       const arm = storeArmed;
@@ -6820,9 +7023,9 @@ function drawStore(){
     if(on){ ctx.fillStyle = NEON.CYAN; ctx.font = 'bold 11px monospace'; ctx.fillText('>', X + 12, y + 2); }
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = row === 'continue' ? NEON.MAGENTA : can ? NEON.INK : NEON.DIM;
-    ctx.fillText(STORE_LABEL[row], X + 24, y + 2);
+    ctx.fillText(storeLabel(row), X + 24, y + 2);
     // level pips
-    if(isUp) for(let k=0;k<UPGRADE_MAX;k++){
+    if(isUp) for(let k=0;k<storeMaxLv();k++){
       ctx.fillStyle = k < lv ? NEON.CYAN : 'rgba(90,74,122,.6)';
       ctx.fillRect(X + 120 + k*9, y + 4, 7, 8);
     }

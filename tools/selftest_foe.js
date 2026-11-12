@@ -791,9 +791,167 @@ roll(300, 14);                                   // turn round, drive back out
 const outNear = padNear();
 ok('driving back out, pads follow you instead of stranding deep in the city',
    outNear < 900, 'nearest ' + Math.round(outNear));
-ok('and they still hold items', E('pads.filter(p => p.item).length') === E('pads.length'));
+// a pad you just drove over holds null for timer seconds before it recycles, so
+// "every pad is either stocked or counting down" is the stable form of this
+ok('and every pad is either stocked or counting down to it',
+   E('pads.every(p => !!p.item || p.timer > 0)') === true);
 ok('on the legs "ahead" is still forward (padFwd 1)',
    E('(function(){ street = false; padAimUpdate(); const d = padFwd; street = true; return d; })()') === 1);
+
+// ---------------------------------------------------------------------------
+// THE HERO'S OWN UPGRADES (section 3b-bis) - the Saints' body shop. Everything
+// here is the walker; the car's tracks in runUp must not move.
+head("the hero's upgrade tracks");
+E('stage = "run"'); E('startMatch(1)'); frame(1); E('skipToCity()'); frame(10);
+ok('a run starts him at WALK_HP with no levels',
+   E('walkUpTotal()') === 0 && E('walkerMaxHp()') === E('WALK_HP'));
+E('walkUp.hull = 3');
+ok('the hull track raises his max', E('walkerMaxHp()') === E('WALK_HP + WALK_HP_PER_LEVEL*3'));
+E('walkUp.pdmg = 2; walkUp.prate = 2;');
+ok('pistol damage follows pdmg', E('pistolDmg()') === E('pistolDmgAt(2)'));
+ok('and the gap between shots follows prate',
+   Math.abs(E('pistolRate()') - E('pistolRateAt(2)')) < 1e-9);
+ok('level 0 has NO rig - it is a thing he buys', E('walkRepairRate()') === 0);
+E('walkUp.repair = 1');
+ok('level 1 fits it', E('walkRepairRate()') === E('WALK_REPAIR_RATE'));
+E('walkUp.repair = 5');
+ok('and it caps at 10 hull a second', E('walkRepairRate()') === 10);
+E('walkUp.repair = 4');
+ok('the car keeps its own levels out of it', E('upgradeTotal()') === 0);
+// the numbers he set: start and cap of every track
+ok('hull runs 50 -> 100', E('walkerHpAt(0)') === 50 && E('walkerHpAt(WALK_UP_MAX)') === 100);
+ok('pistol runs 18 -> 27 a hit', E('pistolDmgAt(0)') === 18 && E('pistolDmgAt(WALK_UP_MAX)') === 27);
+ok('pistol damage never steps backwards',
+   E('(function(){ for(let i=1;i<=WALK_UP_MAX;i++) if(pistolDmgAt(i) < pistolDmgAt(i-1)) return false; return true; })()') === true);
+ok('the rig runs 0 -> 10 hull a second', E('walkRepairAt(0)') === 0 && E('walkRepairAt(WALK_UP_MAX)') === 10);
+// and a damaged hero with no rig has no way to heal on foot - his call, so it is
+// pinned here rather than left to be rediscovered as a bug
+ok('with no rig, holding the key heals nothing',
+   E(`(function(){ const keep = walkUp.repair; walkUp.repair = 0;
+        walker.hp = 10; keys[WALK_REPAIR_KEY] = true;
+        for(let i=0;i<30;i++) updateWalker(1/60);
+        keys[WALK_REPAIR_KEY] = false; const hp = walker.hp; walkUp.repair = keep;
+        return hp === 10; })()`) === true);
+
+head('the sprint tank');
+E('walkUp.sprint = 0'); E('toggleOnFoot()'); frame(4);
+E('(function(){ walker.stam = walkStamMax(); keys["ShiftLeft"] = true; keys["KeyW"] = true; })()');
+const stam0 = E('walker.stam');
+frame(60);                                              // a second of running
+const stam1 = E('walker.stam');
+ok('running drains it', stam1 < stam0 - 0.5, stam0.toFixed(2) + ' -> ' + stam1.toFixed(2));
+ok('and he is actually running', E('walker.running') === true);
+E('keys["ShiftLeft"] = false');
+frame(60);
+ok('walking refills it', E('walker.stam') > stam1);
+E('(function(){ walker.stam = 0; keys["ShiftLeft"] = true; })()');
+frame(2);
+ok('an empty tank cannot be stutter-tapped (WALK_STAM_MIN)', E('walker.running') === false);
+E('keys["ShiftLeft"] = false; keys["KeyW"] = false;');
+E('walkUp.sprint = 5');
+ok('the sprint track buys a bigger tank', E('walkStamMax()') > E('WALK_STAM'));
+
+head('the repair rig');
+E('(function(){ walker.hp = 10; walker.rep = 0; keys[WALK_REPAIR_KEY] = true; })()');
+frame(60);
+const hpRep = E('walker.hp');
+ok('held, standing still, he patches himself', hpRep > 10, '10 -> ' + hpRep.toFixed(1));
+ok('and the HUD knows it is running', E('walker.rep') > 0);
+E('hurtWalker(1)');
+ok('a hit breaks the repair', E('walker.rep') === 0);
+E('(function(){ keys[WALK_REPAIR_KEY] = false; keys["KeyW"] = true; })()');
+E('(function(){ walker.hp = 10; })()'); frame(30);
+ok('it does not run while he is walking', E('walker.hp') === 10);
+E('keys["KeyW"] = false');
+
+head('his hull is no longer refilled by the car door');
+// getting IN needs him beside the car ("WALK BACK TO THE CAR"), so put him there
+// first - otherwise both toggles no-op and this whole block proves nothing
+E(`(function(){ const me = cars[0]; me.speed = 0; me.vx = 0; me.vy = 0;
+     walker.x = me.x + CAR_HW + WALK_R + 4; walker.y = me.y;
+     walker.hp = 12; walker.stam = 1; })()`);
+E('toggleOnFoot()'); frame(2);
+ok('he actually got into the car', E('onFoot') === false, E('walkMsg'));
+E('toggleOnFoot()'); frame(2);
+ok('...and out again', E('onFoot') === true, E('walkMsg'));
+ok('getting in and out keeps the damage (it used to be a free full heal)',
+   E('walker.hp') <= 12.001, 'hp ' + E('walker.hp'));
+ok('but the sprint tank does come back full (he has been sitting down)',
+   Math.abs(E('walker.stam') - E('walkStamMax()')) < 0.001,
+   E('walker.stam') + ' of ' + E('walkStamMax()'));
+
+head('the Saints pay for a sentry, less than for a car');
+const cash0 = E('cash');
+E(`globalThis.__f = { x:cars[0].x + 40, y:cars[0].y, z:0, hp:1, key:'test:s0', a:0 }`);
+E('foeDie(globalThis.__f, 0)');
+const paid = E('cash') - cash0;
+ok('a sentry you wrecked pays', paid === E('SAINTS.BOUNTY.sentry'), 'paid ' + paid);
+ok('and it pays less than the cheapest car',
+   E('SAINTS.BOUNTY.sentry') < Math.min(E('SAINTS.BOUNTY.batedor'), E('SAINTS.BOUNTY.soldado'), E('SAINTS.BOUNTY.tanque')));
+const cash1 = E('cash');
+E(`globalThis.__f2 = { x:cars[0].x + 40, y:cars[0].y, z:0, hp:1, key:'test:s1', a:0 }`);
+E('foeDie(globalThis.__f2, -2)');
+ok('a sentry somebody ELSE wrecked pays nobody', E('cash') === cash1);
+
+head("the Saints' garage, deeper in the city");
+ok('the run rolled a site for it', E('!!(questSites && questSites.saints)') === true);
+ok('in its own depth band', E(`(function(){
+     const m = (cityLimitY - questSites.saints.k*CITY_CH)/RUN.UNITS_PER_M;
+     return m >= QUEST.SAINTS_M[0] - CITY_CH/RUN.UNITS_PER_M && m <= QUEST.SAINTS_M[1] + CITY_CH/RUN.UNITS_PER_M;
+   })()`) === true);
+ok('never the chunk the bunker or the yard took',
+   E('questSites.saints.k') !== E('questSites.bunker.k') &&
+   !(E('questSites.saints.k') === E('questSites.yard.k') && E('questSites.saints.side') === E('questSites.yard.side')));
+ok('the lot has a forecourt and a counter to stand on',
+   E('!!(questSaints() && questSaints().open && questSaints().x !== undefined)') === true);
+ok('its shed is a real building, in the Saints\' colour',
+   E(`cityChunk(questSites.saints.k, questSites.saints.side).bld.some(b => b.saints && b.col === QUEST.SAINTS_COL)`) === true);
+
+head('standing in the forecourt opens the body shop - but only after the bunker');
+E(`(function(){ quest.done = false; quest.atSaints = false; state = "play";
+     const G = questSaints(); walker.x = G.x; walker.y = G.y; onFoot = true; })()`);
+E('saintsTick()');
+ok('before the bunker is sealed, nothing happens there', E('state') === 'play');
+E('quest.done = true'); E('saintsTick()');
+ok('once it is sealed, standing there opens the garage', E('state') === 'store');
+ok('...on the HERO\'s rows, not the car\'s', E('storeMode') === 'foot');
+ok('which are his five tracks plus the way out',
+   E('storeRows().join(",")') === 'hull,sprint,pdmg,prate,repair,continue');
+ok('every row prices and reads without throwing',
+   E(`storeRows().every(r => typeof storeEffect(r) === 'string' && typeof storePrice(r) === 'number')`) === true);
+E('closeStore()');
+ok('leaving puts you back on the street', E('state') === 'play');
+E('(function(){ const G = questSaints(); walker.x = G.x + QUEST.SAINTS_R*3; walker.y = G.y; })()');
+E('saintsTick()');
+ok('walking away re-arms it instead of reopening on the spot', E('quest.atSaints') === false && E('state') === 'play');
+ok('and the map marks it once the quest is done',
+   E(`(function(){ const got = [], f = ctx.fillText;
+        ctx.fillText = s => got.push(String(s));
+        mapOpen = true; drawMap(); mapOpen = false; ctx.fillText = f;
+        return got.some(s => /SAINTS/.test(s)); })()`) === true);
+E('onFoot = false');
+
+// ---------------------------------------------------------------------------
+// Losing focus must PAUSE a live run. The forced scroll needs no input, so an
+// unattended leg 1 finishes itself in 70 s and opens the Saints' garage.
+head('losing window focus pauses the run');
+E('stage = "run"'); E('startMatch(1)'); frame(2);
+ok('a fresh run is not paused', E('paused') === false && E('state') === 'play');
+E('keys["KeyW"] = true');
+E('pauseForBlur()');
+ok('blur pauses it', E('paused') === true);
+ok('and drops the held keys', E('!!keys["KeyW"]') === false);
+const sB = E('camS');
+frame(300);
+ok('so the scroll stops dead while you are away', Math.abs(E('camS') - sB) < 1e-9,
+   sB.toFixed(1) + ' -> ' + E('camS').toFixed(1));
+ok('and the checkpoint cannot fire by itself', E('!!checkpoint') === false && E('state') === 'play');
+E('paused = false'); frame(2);
+ok('it never auto-resumes: you do that', E('paused') === false);
+E('pauseForBlur()');
+E('state = "title"'); E('paused = false'); E('pauseForBlur()');
+ok('and it leaves the menus alone', E('paused') === false);
+E('state = "play"');
 
 console.log(`\n${total - fails}/${total} passed`);
 process.exit(fails ? 1 : 0);

@@ -381,7 +381,17 @@ function foeDie(f, ownerId){
     spd0:50, spd1:190, size:2, life0:0.3, life1:0.9});
   particles(f.x, f.y, bz - 4,  8, {col:['#4a3f50', '#6b5c72'],
     spd0:10, spd1:60, size:3, life0:0.5, life1:1.2, grav:20});
-  if(ownerId === 0) gunnerKill = 1.1;   // the driving pane's kill flash
+  if(ownerId === 0){
+    gunnerKill = 1.1;                   // the driving pane's kill flash
+    // state property is state property: the Saints pay for a sentry as well, at a
+    // fraction of a car's bounty (SAINTS.BOUNTY.sentry). Only what YOU wrecked -
+    // a sentry mown down by a hunter car pays nobody.
+    const pay = (typeof SAINTS !== 'undefined' && SAINTS.BOUNTY.sentry) || 0;
+    if(pay){
+      cash += pay;
+      saintsPay = { amt: pay + (saintsPay && saintsPay.t > 0 ? saintsPay.amt : 0), t:1.8 };
+    }
+  }
 }
 
 // ---------------------------------------------------------------- collision

@@ -90,7 +90,7 @@ alive();
 if (E('state') !== 'play') { E('skipToCity()'); frame(5); alive(); }
 E('openStore()');
 ok('the garage opens', E('state') === 'store', E('state'));
-const rows = E('STORE_ROWS.slice()');
+const rows = E('storeRows().slice()');   // two row sets now: car and the hero's (storeMode)
 ok('BOOST is a row', rows.indexOf('boost') >= 0, rows.join(','));
 ok('it sits with the car rows, before the guns',
    rows.indexOf('boost') === rows.indexOf('health') + 1 && rows.indexOf('boost') < rows.indexOf('gun'),

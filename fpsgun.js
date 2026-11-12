@@ -98,7 +98,7 @@ function gunTick(dt){
 // target.
 function gunFire(){
   if(gunCool > 0) return;
-  gunCool = PISTOL.RATE; gunKick = PISTOL.KICK; gunFlash = PISTOL.FLASH; gunShots++; casingPending = true;
+  gunCool = pistolRate(); gunKick = PISTOL.KICK; gunFlash = PISTOL.FLASH; gunShots++; casingPending = true;
   if(typeof Snd !== 'undefined') Snd.shot();
   const w = walker, fx = Math.cos(w.a), fy = Math.sin(w.a);
   // The eye the view draws from, WITHOUT the head bob (drawWalkView adds up to
@@ -136,9 +136,9 @@ function gunFire(){
   }
   if(best || bestFoe){
     // five of these kills a sentry, which is the number FOE.HP is set from
-    if(best) damage(best, PISTOL.DMG, 0);
+    if(best) damage(best, pistolDmg(), 0);
     else {
-      foeDamage(bestFoe, PISTOL.DMG, 0);
+      foeDamage(bestFoe, pistolDmg(), 0);
       // FOE_CHIP: chips fly off where the round went in - on the side facing you,
       // at the height the aim line crossed him
       if(typeof FOE_CHIP !== 'undefined' && typeof particles === 'function'){

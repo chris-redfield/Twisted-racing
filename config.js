@@ -136,6 +136,55 @@ const BOOST_COOL_PER_LEVEL  = 1.0;  // seconds off BOOST_COOL a level (10 -> 4 a
 let   UPGRADES = { armor:0, health:0, gun:0, missile:0, boost:0 };   // levels every run STARTS with (testing)
 
 // -----------------------------------------------------------------------------
+// 3b-bis. ON-FOOT UPGRADES - the HERO himself, never the car
+// -----------------------------------------------------------------------------
+// The Scrap Saints fit these at their city garage, for the same cash as the car's.
+// Everything here is the WALKER: section 3b is the car and the two never mix.
+// Levels 0..WALK_UP_MAX.
+//
+//   hull    + WALK_HP_PER_LEVEL on WALK_HP (50 -> 100 at level 5, his call). A
+//           guard's blow is QUEST.GUARD_DMG_WALK 5 and a bolt is FOE_GUN.DMG_WALK
+//           3, so a level is two more blows. For scale: measured at the bunker, 14
+//           guards put 59 damage into a player standing still for 10 s - fatal at
+//           level 0, and survivable from level 1.
+//   sprint  + WALK_STAM_PER_LEVEL seconds of running. NOTE this track ships a
+//           RESTRICTION: running used to be free and now comes out of a tank.
+//           WALK_STAM is set so it never bites while crossing town (6 s at
+//           RUN_SPD 92 is 550 units) and only decides a chase.
+//   pdmg    + PISTOL_DMG_PER_LEVEL a pistol hit (18 -> 27 at level 5, his call:
+//           33 was too much next to the car's gun)
+//   prate   - PISTOL_RATE_PER_LEVEL off the gap between shots (0.30 -> 0.20,
+//           so 60 -> 90 damage a second before the pdmg track is counted)
+//   repair  held, standing still, and he patches himself. Level 0 CANNOT: the rig
+//           is a thing he buys (his call), so until he does, NOTHING heals him on
+//           foot - the green squares are the car's. Level 1 is WALK_REPAIR_RATE a
+//           second and it caps at 10 by level 5. It breaks the moment anything
+//           hits him, so it is never a mid-fight heal. No parts or kit on
+//           purpose: an inventory for one item is more bookkeeping than the
+//           mechanic is worth.
+//
+// Car speed is NOT on this list and should not be. On the legs the throttle is a
+// regulator inside RUN.CRUISE_BAND around the scroll pace, so a faster car gains
+// nothing there (section 2 learned this with BOOST_ADD); CAR_TOP only changes the
+// city. An on-foot speed upgrade has no such regulator behind it, which is why
+// the sprint TANK is the speed track here.
+const WALK_UP_MAX = 5;
+const WALK_HP_PER_LEVEL = 10;        // 50 -> 100
+const WALK_STAM = 6.0;               // seconds of sprint at level 0
+const WALK_STAM_PER_LEVEL = 1.6;     // ...and per level (6 -> 14 at 5)
+const WALK_STAM_REFILL = 0.8;        // tank-seconds refilled per second while walking
+const WALK_STAM_STILL = 2.0;         // x that while standing still: stopping is the way to recover
+const WALK_STAM_MIN = 0.8;           // a sprint cannot START below this, so an empty tank
+                                     // cannot be stutter-tapped for free bursts
+const PISTOL_DMG_PER_LEVEL = 1.8;    // 18 -> 27 (pistolDmgAt rounds: 18 20 22 23 25 27)
+const PISTOL_RATE_PER_LEVEL = 0.02;  // 0.30 -> 0.20 s between shots
+const WALK_REPAIR_RATE = 4;          // hull a second at level 1 (level 0 CANNOT repair)...
+const WALK_REPAIR_PER_LEVEL = 1.5;   // ...plus this a level after the first (4 -> 10 at level 5)
+const WALK_REPAIR_MOVE = 8;          // units/s: move faster than this and the repair breaks
+const WALK_REPAIR_KEY = 'KeyV';      // held. R is the resolution toggle, so V it is
+let   WALK_UPGRADES = { hull:0, sprint:0, pdmg:0, prate:0, repair:0 };   // levels a run STARTS with (testing)
+
+// -----------------------------------------------------------------------------
 // 3c. THE SCRAP SAINTS - cash per kill, and their garage at the checkpoint
 // -----------------------------------------------------------------------------
 // A rogue robot outfit that pays you for destroying state robot property. Every
@@ -147,7 +196,10 @@ let   UPGRADES = { armor:0, health:0, gun:0, missile:0, boost:0 };   // levels e
 // Leg 1 shows ~6-13 enemies (10 on average, measured), ~$25 a kill, so ~4 kills
 // buy one upgrade, ~8 buy two, ~12 three.
 const SAINTS = {
-  BOUNTY: { batedor:20, soldado:25, tanque:35 },   // cash per kill, by enemy type
+  BOUNTY: { batedor:20, soldado:25, tanque:35, sentry:10 },   // cash per kill, by enemy type
+  // A sentry pays LESS than any car on purpose: it is on foot, it has 40 hull
+  // against your pistol's 18 a hit, and it does not chase you at speed. State
+  // property is state property, so it pays - just not like wrecking a Collector.
   PRICE0:        100,  // an upgrade's first level...
   PRICE_STEP:     50,  // ...and every next level of the same track costs this much more (100, 150, 200...)
   REPAIR0:        40,  // a full repair...
@@ -316,7 +368,7 @@ const FOE_GUN = {
   SPD:     180,          // units/s: you walk 46 and run 92, so a sidestep clears it
   WINDUP:  0.6,          // seconds of glow before the shot: the tell
   REST:    [2.6, 4.0],   // seconds between shots, rolled each time
-  DMG_WALK: 3,           // on foot (WALK_HP 40)
+  DMG_WALK: 3,           // on foot (WALK_HP 50)
   DMG_CAR:  5,           // on a car or the truck
   MUZZLE_Z: 16,          // where the bolt leaves: the torso (FOE.H is 22). 11 read as the hip
   COL:     '#ff3b8b',    // hot pink: nothing else in the game is this colour
@@ -728,7 +780,7 @@ const QUEST = {
   GUARD_AGGRO:   320,     // they notice you inside this
   GUARD_GIVE_UP: 1600,    // and only give up past this (a city sentry: FOE_AI.GIVE_UP 900)
   GUARD_HIT_T:   0.9,     // seconds between blows
-  GUARD_DMG_WALK: 5,      // a blow on foot (WALK_HP is 40)
+  GUARD_DMG_WALK: 5,      // a blow on foot (WALK_HP is 50, and the hull track doubles it)
   GUARD_DMG_CAR:  14,     // a blow on a car or the truck
   // the cement truck: the yellow tanque, slow and heavy, no guns, no boost
   TRUCK: { HP:700, TOP:0.62, ACC:0.5, TURN:0.62, GRIP:3.4 },
@@ -739,6 +791,18 @@ const QUEST = {
   POUR_SPD:  10,          // ...and the truck (nearly) stopped
   POUR_T:    6,           // seconds of pouring to fill the vent
   CASH:      400,         // what it pays
+  // THE SAINTS' GARAGE. Once the bunker is sealed they ask him to come in person
+  // (RADIO.SCRIPT.AFTER), and this is where. Deliberately NOT near the gate: by
+  // the time it opens he has already driven the city for a whole quest, so a shop
+  // on the doorstep would read as a tutorial stop. It sits in its own depth band,
+  // on the opposite side to the yard, and its lot is the YARD's shape - an open
+  // forecourt with a low shed at the back - because that is the garage vibe.
+  SAINTS_M:    [450, 700],   // metres from the gate: past the yard, short of the bunker
+  SAINTS_FAR:   0.45,        // a block whose middle is past this share of the city's width
+  SAINTS_OPEN:  0.58,        // share of the lot that is open forecourt
+  SAINTS_SHED_H: 110,        // a little taller than the cement shed
+  SAINTS_COL: '#4a5a6b',     // Saints blue-grey: not the yard's concrete, not a tower
+  SAINTS_R:    120,          // stand this close, ON FOOT, and the garage opens
 };
 const CITY_SPAWN_GAP    = 2.2;      // seconds between arrivals while under that number
 const CITY_SPAWN_MIN    = 900;      // they turn up this far away...
@@ -771,7 +835,7 @@ const WALK_SENS = 0.0032;            // radians per unit of locked-mouse movemen
 const WALK_LIM = 760;                // how far either side of the road you can wander
 const EXIT_SPEED = 25;               // the car has to be (nearly) stopped to get out
 const ENTER_R = 34;                  // how close to the car E puts you back in
-const WALK_HP = 40;                  // a person is not a car
+const WALK_HP = 50;                  // a person is not a car (the hull track takes him to 100)
 const WALK_SHOT_DMG = 6;             // an enemy round that finds you on foot
 const WALK_RUNOVER  = 0.12;          // damage per unit/s of a car that hits you on foot
 const WALK_RUNOVER_MIN = 70;         // ...but only above this speed: slower and it just shoves you
