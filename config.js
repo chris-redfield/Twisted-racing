@@ -149,8 +149,10 @@ let   UPGRADES = { armor:0, health:0, gun:0, missile:0, boost:0 };   // levels e
 //           level 0, and survivable from level 1.
 //   sprint  + WALK_STAM_PER_LEVEL seconds of running. NOTE this track ships a
 //           RESTRICTION: running used to be free and now comes out of a tank.
-//           WALK_STAM is set so it never bites while crossing town (6 s at
-//           RUN_SPD 92 is 550 units) and only decides a chase.
+//           WALK_STAM is deliberately short (3 s at RUN_SPD 92 is only 276
+//           units, so it will NOT carry him across town at level 0): a sprint
+//           is a burst you spend on one chase, and the track is what buys the
+//           range back (13 s at level 5 is ~1200 units).
 //   pdmg    + PISTOL_DMG_PER_LEVEL a pistol hit (18 -> 27 at level 5, his call:
 //           33 was too much next to the car's gun)
 //   prate   - PISTOL_RATE_PER_LEVEL off the gap between shots (0.30 -> 0.20,
@@ -170,8 +172,8 @@ let   UPGRADES = { armor:0, health:0, gun:0, missile:0, boost:0 };   // levels e
 // the sprint TANK is the speed track here.
 const WALK_UP_MAX = 5;
 const WALK_HP_PER_LEVEL = 10;        // 50 -> 100
-const WALK_STAM = 6.0;               // seconds of sprint at level 0
-const WALK_STAM_PER_LEVEL = 1.6;     // ...and per level (6 -> 14 at 5)
+const WALK_STAM = 3.0;               // seconds of sprint at level 0
+const WALK_STAM_PER_LEVEL = 2.0;     // ...and per level (3 -> 13 at 5)
 const WALK_STAM_REFILL = 0.8;        // tank-seconds refilled per second while walking
 const WALK_STAM_STILL = 2.0;         // x that while standing still: stopping is the way to recover
 const WALK_STAM_MIN = 0.8;           // a sprint cannot START below this, so an empty tank
