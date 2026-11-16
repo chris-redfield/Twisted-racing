@@ -797,14 +797,25 @@ const QUEST = {
   // (RADIO.SCRIPT.AFTER), and this is where. Deliberately NOT near the gate: by
   // the time it opens he has already driven the city for a whole quest, so a shop
   // on the doorstep would read as a tutorial stop. It sits in its own depth band,
-  // on the opposite side to the yard, and its lot is the YARD's shape - an open
-  // forecourt with a low shed at the back - because that is the garage vibe.
+  // on the opposite side to the yard, and it is a SMALL single-floor shop set back
+  // behind its own forecourt, with a door in the front. The shop itself is in the
+  // basement: you go in the front, down the stairs, and the counter is down there.
+  // The store screen IS that basement for now - the stairs are implied, not walked.
   SAINTS_M:    [450, 700],   // metres from the gate: past the yard, short of the bunker
   SAINTS_FAR:   0.45,        // a block whose middle is past this share of the city's width
-  SAINTS_OPEN:  0.58,        // share of the lot that is open forecourt
-  SAINTS_SHED_H: 110,        // a little taller than the cement shed
+  SAINTS_OPEN:  0.58,        // the front of the lot is forecourt out to this share of it;
+                             // the shop stands behind that line, against the back edge
+  SAINTS_W:     84,          // the shop's footprint: this deep into the lot (u)...
+  SAINTS_D:    132,          // ...and this wide along the street. One unit, not a shed
+                             // across the whole block - the forecourt wraps round it.
+  SAINTS_SHED_H: 34,         // ONE storey and a parapet. The window rows come from
+                             // floor((h - 6*fsc)/(FLOOR_H*fsc)); DOWNTOWN's fsc is 1.6,
+                             // so 34 floors to exactly 1. Anything >= 48 would read as two.
   SAINTS_COL: '#4a5a6b',     // Saints blue-grey: not the yard's concrete, not a tower
-  SAINTS_R:    120,          // stand this close, ON FOOT, and the garage opens
+  SAINTS_DOOR_W: 30,         // the door, centred on the front face: this wide...
+  SAINTS_DOOR_H: 24,         // ...and this tall, which is most of a 34-unit wall
+  SAINTS_DOOR_COL: '#c9a227',// the Saints' brass: the door frame and the light up the stairs
+  SAINTS_R:     56,          // stand this close to the DOOR, on foot, and E goes in
 };
 const CITY_SPAWN_GAP    = 2.2;      // seconds between arrivals while under that number
 const CITY_SPAWN_MIN    = 900;      // they turn up this far away...

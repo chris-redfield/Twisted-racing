@@ -295,7 +295,11 @@ function onPress(code){
   if(code==='Space' && state==='play' && !onFoot) tryBoost(cars[0]);
   // Q drops a mine behind the car (mines come from pickups; the run starts with MINES_START)
   if(code===MINE_KEY && state==='play' && !onFoot && !paused && cars[0] && !cars[0].dead) dropMine(cars[0]);
-  if(code==='KeyE' && state==='play' && street && !paused) toggleOnFoot();
+  // E is the one "use this" key: the Saints' door when he is at it, the car
+  // otherwise. nearCar() wins the tie so parking on the forecourt cannot strand him.
+  if(code==='KeyE' && state==='play' && street && !paused){
+    if(!(onFoot && !nearCar() && saintsEnter())) toggleOnFoot();
+  }
   if(code===ENEMY_TOGGLE_KEY && state==='play' && !paused) toggleEnemies();
   // how far the walker sees (STREET, on foot): 9 nearer, 0 further
   if((code==='Digit9' || code==='Digit0') && state==='play' && onFoot){
@@ -3481,6 +3485,30 @@ function drawBuildings2D(list, front){
     drawBuilding2D(b, front ? 0.42 : 1);
   }
 }
+// A door in a wall face: brass frame, black opening, and a slab of the Saints'
+// light pooling at the bottom of it - the glow coming up the stairs from the
+// basement shop. `sa`/`sc` are the face's two ground corners, already on screen.
+// NOTE this does not run for the Saints' shop as it stands. The axonometric
+// camera only draws faces whose normal points screen-DOWN (the fy <= 0.05 cull
+// above), and the shop's door is on an x face, looking across the forecourt at
+// the highway - side on from up there. Driving past you see a low lit block and
+// the map's SAINTS marker; the door itself is an on-foot thing and reads in the
+// first-person pane (rcBuildingColumn). This is here so a door on a y face - a
+// lot cut the other way, or the next shop - draws without more work.
+function drawDoor2D(D, sa, sc, lift){
+  const at = t => ({ x:sa.x + (sc.x - sa.x)*t, y:sa.y + (sc.y - sa.y)*t });
+  const slab = (t0, t1, z0, z1, col) => {
+    const a = at(t0), c = at(t1), za = lift(z0), zb = lift(z1);
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y - za); ctx.lineTo(c.x, c.y - za);
+    ctx.lineTo(c.x, c.y - zb); ctx.lineTo(a.x, a.y - zb); ctx.closePath(); ctx.fill();
+  };
+  const m = (D.t1 - D.t0)*0.16;                       // the frame's share of the width
+  slab(D.t0, D.t1, 0, D.h, QUEST.SAINTS_DOOR_COL);     // frame
+  slab(D.t0 + m, D.t1 - m, 0, D.h*0.9, '#0b0a10');     // the dark way in
+  slab(D.t0 + m, D.t1 - m, 0, D.h*0.22, QUEST.SAINTS_DOOR_COL);   // light up the stairs
+}
 function drawBuilding2D(b, alpha){
   const lift = z => z*S;                               // same height scale as extrude()
   const q = b.q;
@@ -3520,6 +3548,8 @@ function drawBuilding2D(b, alpha){
         ctx.lineTo(x1, y1 - zB); ctx.lineTo(x0, y0 - zB); ctx.closePath(); ctx.fill();
       }
     }
+    // the Saints' door, over the windows: this face has a way in, not a window row
+    if(b.door && b.door.seg === i) drawDoor2D(b.door, sa, sc, lift);
   }
   ctx.fillStyle = shade(b.col, 1.18);
   ctx.beginPath();
@@ -3841,12 +3871,23 @@ function makeCityChunk(k, side){
       core = shed;
     }
     if(lot === saintsLot){
+      // A SMALL single-floor shop, NOT a shed across the back of the lot: a fixed
+      // SAINTS_W x SAINTS_D footprint pinned to the middle of the back edge, so the
+      // forecourt wraps round it and the front face is always walkable.
       const ux = core.x0 + (core.x1 - core.x0)*QUEST.SAINTS_OPEN;
-      const shed = { x0:ux, y0:core.y0, x1:core.x1, y1:core.y1 };
-      const op = mir({ x0:core.x0, x1:ux });
-      // the counter: the middle of the forecourt, which is where he has to stand
-      saints = { lot:lm, open:op, y0:core.y0, y1:core.y1, shedU:ux,
-                 x:(op.x0 + op.x1)/2, y:(core.y0 + core.y1)/2 };
+      const w = Math.min(QUEST.SAINTS_W, core.x1 - ux);          // never deeper than the lot
+      const d = Math.min(QUEST.SAINTS_D, core.y1 - core.y0);     // nor wider than it
+      const cy = (core.y0 + core.y1)/2;
+      const shed = { x0:core.x1 - w, y0:cy - d/2, x1:core.x1, y1:cy + d/2 };
+      const op = mir({ x0:core.x0, x1:shed.x0 });
+      // THE DOOR, centred on the front face - the one looking back across the
+      // forecourt at the highway. In u that face is at shed.x0 and its outward
+      // normal is -1; mirroring a side < 0 chunk flips both. `x`/`y` is not the
+      // door itself but where he STANDS to use it, just clear of the wall.
+      const fx = side > 0 ? shed.x0 : -shed.x0, nx = -side;
+      saints = { lot:lm, open:op, y0:core.y0, y1:core.y1, shedU:shed.x0,
+                 door:{ x:fx, y:cy, nx, w:QUEST.SAINTS_DOOR_W, h:QUEST.SAINTS_DOOR_H },
+                 x:fx + nx*(WALK_R + 10), y:cy };
       core = shed;
     }
     fill(core, 3);
@@ -3864,9 +3905,17 @@ function makeCityChunk(k, side){
       continue;
     }
     if(lot === saintsLot){
+      // Both renderers walk q's edges as segment i = q[i] -> q[i+1], so name the
+      // front face by index: q is [ (x0,y0), (x1,y0), (x1,y1), (x0,y1) ], which puts
+      // the x0 face on edge 3 and the x1 face on edge 1. Mirroring swaps which of
+      // those two looks back at the highway. t0/t1 are the door's span along it,
+      // as a fraction, so neither renderer has to know the edge's direction.
+      const L = core.y1 - core.y0, hw = Math.min(0.45, QUEST.SAINTS_DOOR_W/(2*L));
+      saints.door.seg = side > 0 ? 3 : 1;
+      saints.door.t0 = 0.5 - hw; saints.door.t1 = 0.5 + hw;
       bld.push({
         x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1, h:QUEST.SAINTS_SHED_H, tier:0, seed:(rng.next()*1e9)|0, nx:0, ny:0,
-        city:true, fsc:CITY_STYLE.FLOOR, saints:true,
+        city:true, fsc:CITY_STYLE.FLOOR, saints:true, door:saints.door,
         q:[ { x:cm.x0, y:core.y0 }, { x:cm.x1, y:core.y0 }, { x:cm.x1, y:core.y1 }, { x:cm.x0, y:core.y1 } ],
         col:QUEST.SAINTS_COL, lit:0.5        // the one lit-up building in the city: somebody is home
       });
@@ -4029,18 +4078,26 @@ function questPourState(){
   const why = d > QUEST.POUR_R ? 'far' : nose > QUEST.POUR_ANG*Math.PI/180 ? 'angle' : spd > QUEST.POUR_SPD ? 'moving' : '';
   return { ok:!why, why, d };
 }
-// THE SAINTS' GARAGE. Once the bunker is sealed they ask him to come in person,
-// so this only answers ON FOOT - stepping out of the car IS the meeting. It opens
-// when he stands in the forecourt and arms again only after he leaves it, so
-// closing the screen does not reopen it on the next frame.
+// THE SAINTS' SHOP. Once the bunker is sealed they ask him to come in person, so
+// this only answers ON FOOT - stepping out of the car IS the meeting. Standing in
+// the forecourt no longer opens anything by itself: it ARMS the door, and E goes
+// in. That is why there is no hysteresis here any more - a keypress cannot
+// re-fire on the frame after the screen closes the way a proximity test did.
 function saintsTick(){
-  if(!quest || !quest.done || !questSites || !questSites.saints || !street) return;
+  if(!quest) return;
+  quest.atSaints = false;
+  if(!quest.done || !questSites || !questSites.saints || !street || !onFoot) return;
   const G = questSaints();
-  if(!G){ return; }
-  const near = onFoot && Math.hypot(walker.x - G.x, walker.y - G.y) < QUEST.SAINTS_R;
-  if(near && !quest.atSaints){ quest.atSaints = true; openStore('foot'); }
-  else if(!near && quest.atSaints && !(onFoot && Math.hypot(walker.x - G.x, walker.y - G.y) < QUEST.SAINTS_R*1.35))
-    quest.atSaints = false;      // a little hysteresis, so the edge does not flicker
+  if(!G) return;
+  quest.atSaints = Math.hypot(walker.x - G.x, walker.y - G.y) < QUEST.SAINTS_R;
+}
+// E at the door: in through the front, down the stairs, and the counter is in the
+// basement. The store screen IS that basement for now - when the inside gets
+// drawn, this is the one place that has to change. Returns whether E was used.
+function saintsEnter(){
+  if(!quest || !quest.atSaints || state !== 'play') return false;
+  openStore('foot');     // the store screen's own subtitle says where he is
+  return true;
 }
 function questTick(dt){
   if(!quest || !questSites) return;
@@ -4967,6 +5024,22 @@ function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog, slant){
   const plinth = Math.max(1, Math.round(5*scale));
   if(y1-plinth > y0) rcSpan(x, y1-plinth, y1, r.col, f*0.6);
 
+  // THE SAINTS' DOOR. Checked before the window grid and before the silhouette
+  // early-out below, so the way in still reads from across the forecourt.
+  const dr = r.bldg && r.bldg.door;
+  if(dr && seg === dr.seg){
+    const t = along / (r.len[seg] || 1);
+    if(t >= dr.t0 && t <= dr.t1){
+      const fr = (dr.t1 - dr.t0)*0.16;                // frame, in the same t units
+      const inner = t > dr.t0 + fr && t < dr.t1 - fr;
+      const top = z => { const y = (RC_HORIZON + (EYE_Z - z)*scale)|0; return y < y0 ? y0 : y; };
+      if(!inner){ rcSpan(x, top(dr.h), y1, QUEST.SAINTS_DOOR_COL, f); return; }
+      const yd = top(dr.h*0.9), yg = top(dr.h*0.22);
+      if(yg > yd) rcSpan(x, yd, yg, '#0b0a10', f);     // the dark way in...
+      if(y1 > yg) rcSpan(x, yg, y1, QUEST.SAINTS_DOOR_COL, f);   // ...over the stair light
+      return;
+    }
+  }
   const fk = (r.bldg && r.bldg.fsc) || 1, FH = FLOOR_H*fk, WS = WIN_STEP*fk, WA = WIN_A*fk, WB = WIN_B*fk;
   const pitch = scale*FH;                            // storey height in pixels
   if(pitch < 0.35) return;                           // storeys packed 3 to a pixel: silhouette
@@ -5790,12 +5863,13 @@ function drawWalkHUD(){
   // prompts
   let msg = '';
   if(nearCar()) msg = 'E  GET IN';
+  else if(quest && quest.atSaints) msg = 'E  GO IN';
   else if(walkMsgT > 0 && walkMsg) msg = walkMsg;
   if(msg){
     const tw = msg.length*5 + 16;
     const ty = radioPromptY(VH - 52);
     plate(VW/2 - tw/2, ty, tw, 16);
-    centerText(msg, msg==='E  GET IN' ? '#4ade80' : '#e8d5b0', ty + 4, 8);
+    centerText(msg, msg === 'E  GET IN' || msg === 'E  GO IN' ? '#4ade80' : '#e8d5b0', ty + 4, 8);
   }
   ctx.fillStyle='#5a4a5e';
   centerText('WASD walk  .  MOUSE / ARROWS look (up too)  .  SHIFT run  .  E get in'+(pointerLocked()?'':'  .  click for mouse-look'),
@@ -7001,7 +7075,7 @@ function drawStore(){
   ctx.fillStyle = NEON.MAGENTA; ctx.fillText('THE SCRAP SAINTS', X + 16, Y + 30);
   ctx.shadowBlur = 0;
   ctx.font = '9px monospace'; ctx.fillStyle = NEON.DIM;
-  ctx.fillText(onFootStore() ? 'THE BODY SHOP  ·  IN PERSON'
+  ctx.fillText(onFootStore() ? 'THE BODY SHOP  ·  DOWN THE STAIRS'
                              : street ? 'GARAGE  ·  CITY GATE' : 'GARAGE  ·  CHECKPOINT', X + 18, Y + 44);
   ctx.textAlign = 'right'; ctx.font = 'bold 16px monospace'; ctx.fillStyle = '#e0b73c';
   ctx.fillText('$' + cash, X + W - 16, Y + 30);
@@ -7023,14 +7097,20 @@ function drawStore(){
     if(on){ ctx.fillStyle = NEON.CYAN; ctx.font = 'bold 11px monospace'; ctx.fillText('>', X + 12, y + 2); }
     ctx.font = 'bold 11px monospace';
     ctx.fillStyle = row === 'continue' ? NEON.MAGENTA : can ? NEON.INK : NEON.DIM;
-    ctx.fillText(storeLabel(row), X + 24, y + 2);
+    const label = storeLabel(row);
+    ctx.fillText(label, X + 24, y + 2);
+    // where the label actually ENDS, measured in its own font. The effect column
+    // is a fixed 120/180, which the long labels overrun - 'BACK TO THE STREET' ran
+    // straight through 'back out there'. Measure instead of guessing: the column
+    // only moves for a row whose label reaches it, so every other row is unchanged.
+    const labelEnd = 24 + ctx.measureText(label).width + 10;
     // level pips
     if(isUp) for(let k=0;k<storeMaxLv();k++){
       ctx.fillStyle = k < lv ? NEON.CYAN : 'rgba(90,74,122,.6)';
       ctx.fillRect(X + 120 + k*9, y + 4, 7, 8);
     }
     ctx.font = '9px monospace'; ctx.fillStyle = can || row === 'continue' ? '#c8bedc' : NEON.DIM;
-    ctx.fillText(storeEffect(row), X + (isUp ? 180 : 120), y + 3);
+    ctx.fillText(storeEffect(row), X + Math.max(isUp ? 180 : 120, labelEnd), y + 3);
     if(row !== 'continue'){
       ctx.textAlign = 'right'; ctx.font = 'bold 11px monospace';
       ctx.fillStyle = maxed ? NEON.DIM : full ? NEON.DIM : cash >= price ? '#e0b73c' : '#a0525a';

@@ -902,18 +902,43 @@ ok('in its own depth band', E(`(function(){
 ok('never the chunk the bunker or the yard took',
    E('questSites.saints.k') !== E('questSites.bunker.k') &&
    !(E('questSites.saints.k') === E('questSites.yard.k') && E('questSites.saints.side') === E('questSites.yard.side')));
-ok('the lot has a forecourt and a counter to stand on',
+ok('the lot has a forecourt and a spot to stand on',
    E('!!(questSaints() && questSaints().open && questSaints().x !== undefined)') === true);
-ok('its shed is a real building, in the Saints\' colour',
+ok('its shop is a real building, in the Saints\' colour',
    E(`cityChunk(questSites.saints.k, questSites.saints.side).bld.some(b => b.saints && b.col === QUEST.SAINTS_COL)`) === true);
+ok('and it is SMALL: one storey of windows, not a tower',
+   E(`(function(){ const b = cityChunk(questSites.saints.k, questSites.saints.side).bld.find(x => x.saints);
+        return Math.floor((b.h - 6*b.fsc)/(FLOOR_H*b.fsc)); })()`) === 1);
+ok('its footprint is the fixed small one, not the whole back of the lot',
+   E(`(function(){ const b = cityChunk(questSites.saints.k, questSites.saints.side).bld.find(x => x.saints);
+        return (b.x1-b.x0) <= QUEST.SAINTS_W + 1 && (b.y1-b.y0) <= QUEST.SAINTS_D + 1; })()`) === true);
 
-head('standing in the forecourt opens the body shop - but only after the bunker');
+head('the front door, and the stairs down to the shop');
+ok('the shop carries a door on one of its four faces',
+   E(`(function(){ const d = questSaints().door;
+        return !!d && [0,1,2,3].includes(d.seg) && d.t0 < d.t1 && d.h > 0; })()`) === true);
+ok('the door faces back at the highway, not out at the city wall',
+   E(`(function(){ const d = questSaints().door; return d.nx === -questSites.saints.side; })()`) === true);
+ok('the building draws it on the same face the site reports',
+   E(`(function(){ const b = cityChunk(questSites.saints.k, questSites.saints.side).bld.find(x => x.saints);
+        return b.door === questSaints().door; })()`) === true);
+ok('the spot you stand on is OUTSIDE the wall, clear of it',
+   E(`(function(){ const G = questSaints(), d = G.door;
+        return (G.x - d.x)*d.nx >= WALK_R; })()`) === true);
+// the door is the whole point: standing there must NOT open anything by itself
 E(`(function(){ quest.done = false; quest.atSaints = false; state = "play";
      const G = questSaints(); walker.x = G.x; walker.y = G.y; onFoot = true; })()`);
 E('saintsTick()');
-ok('before the bunker is sealed, nothing happens there', E('state') === 'play');
+ok('before the bunker is sealed, the door does not even arm', E('quest.atSaints') === false);
+ok('and nothing opens', E('state') === 'play');
 E('quest.done = true'); E('saintsTick()');
-ok('once it is sealed, standing there opens the garage', E('state') === 'store');
+ok('once it is sealed, standing at the door arms it', E('quest.atSaints') === true);
+ok('but standing there alone still opens nothing', E('state') === 'play');
+ok('the HUD offers the way in', E(`(function(){ const got = [], f = ctx.fillText;
+     ctx.fillText = s => got.push(String(s)); drawWalkHUD(); ctx.fillText = f;
+     return got.some(s => /GO IN/.test(s)); })()`) === true);
+E('saintsEnter()');
+ok('E at the door is what takes him down the stairs', E('state') === 'store');
 ok('...on the HERO\'s rows, not the car\'s', E('storeMode') === 'foot');
 ok('which are his five tracks plus the way out',
    E('storeRows().join(",")') === 'hull,sprint,pdmg,prate,repair,continue');
@@ -923,7 +948,8 @@ E('closeStore()');
 ok('leaving puts you back on the street', E('state') === 'play');
 E('(function(){ const G = questSaints(); walker.x = G.x + QUEST.SAINTS_R*3; walker.y = G.y; })()');
 E('saintsTick()');
-ok('walking away re-arms it instead of reopening on the spot', E('quest.atSaints') === false && E('state') === 'play');
+ok('walking away disarms the door', E('quest.atSaints') === false && E('state') === 'play');
+ok('and E out there is the car key again, not the door', E('saintsEnter()') === false);
 ok('and the map marks it once the quest is done',
    E(`(function(){ const got = [], f = ctx.fillText;
         ctx.fillText = s => got.push(String(s));
