@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-17 | [Quest 2 — THE DATACENTER: the worm, three floors, and the heat](#2026-11-17--quest-2--the-datacenter-the-worm-three-floors-and-the-heat) | plan, **his design, decided this session**; overturns the "square fight" canon; maze code identified + its one fatal flaw |
 | 2026-11-12 | [The Saints' body shop: the hero gets his own upgrades](#2026-11-12--the-saints-body-shop-the-hero-gets-his-own-upgrades) | built, selftests 224/30/60; **his numbers**; **not played**; two behaviour changes flagged inside |
 | 2026-11-11 | [Three bugs from his play, and the car got 15 per cent bigger](#2026-11-11--three-bugs-from-his-play-and-the-car-got-15-per-cent-bigger) | built, committed `f3be143` + `75cdf79`; **his reports**; read the harness trap |
 | 2026-11-10 | [Bolts leave the torso; pistol hits chip the sentry](#2026-11-10--bolts-leave-the-torso-pistol-hits-chip-the-sentry) | built, selftests 30/165/60 + screenshots; **his asks**; not played |
@@ -64,6 +65,320 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-17 — Quest 2 — THE DATACENTER: the worm, three floors, and the heat
+
+**Plan, not built.** His design, decided over one session. This **supersedes the Quest 2 sketch**
+further down this file ("a fight in a huge city square"), and the differences are deliberate -
+read "What this overturns" before building anything from the old entry.
+
+### The shape
+
+1. **The Saints' shop** (built, 2026-11-12) hands over **the worm**.
+2. **The square** - the datacenter stands on it, as the shipped radio already promises. You go in.
+3. **Three floors down**, on foot, first person. Labyrinth.
+4. **The central unit, floor 3.** Root access to the whole plant. You plant the worm there.
+5. **The worm takes everything** and reverses the cooling. The building starts to cook.
+6. **You climb out** through the heat, by service stairs or by the elevator.
+
+### 1. What the Saints give you: ONE thing, and it is hardware
+
+**The worm.** Not a bomb, not software - a **physical module** the Saints salvaged, that he has to
+fit by hand. Two reasons, both load-bearing:
+
+- The canon rule *"He is a mechanic... use that instead of inventing specialists"* (this file,
+  "Quest design"). A hacker payload makes him somebody else. Fitting a salvaged part into a machine
+  that does not want it is the most on-brand sentence in the game.
+- **The engine can only render places and verbs.** The pour proved the shape: go to a place, hold
+  still, hold a key for N seconds, world reacts. Software is a terminal and a progress bar;
+  hardware is an open panel and a part going in - same timer, but one of them exists in a
+  raycaster. Malware that arrives as a part is still malware; it just has a silhouette.
+
+It is **one item**, bought at the shop that already exists. The three-part assembly (fuel /
+oxidiser / detonator) from the old sketch is **dropped** - the Saints are a body shop, they stock
+parts, and one payload is a fraction of the build.
+
+### 2. The plant IS the boss fight
+
+Three floors of labyrinth teach exactly one verb: *move, avoid, do not get cornered.* The core room
+takes it away. Planting is **the pour's verb** - hold position, hold the key, N seconds, cannot
+move - and every guard on the floor converges on you.
+
+That is the set-piece, it is the one thing a maze can never ask of you, and it reuses a mechanic
+that already ships and is already tested. **No boss enemy has to be built for this quest.**
+
+### 3. The heat is the timer, and there is no clock
+
+The worm reverses the HVAC to **50 °C** (that is 122 °F, not 100 - the figure matters if it ever
+reaches a HUD or a radio line; real hardware throttles about 35-40 °C and starts dying past 45-50).
+
+Why this is the whole design and not set dressing:
+
+- **He is a robot.** Datacenters are cooled because machines cannot take heat. The weapon that
+  kills the building is lethal to *him* by the identical mechanism. The servers dying and his hull
+  dying are one system.
+- **Heat rises, and he is climbing.** The core is at the bottom and the exit is at the top, so the
+  way out runs *into* the heat. Pressure increases as he approaches safety, for free, out of
+  physics. Descent is a gradient down into cold; escape is a gradient up into fire.
+- **No countdown number anywhere.** The timer is a temperature.
+
+Mechanics:
+
+| | |
+|---|---|
+| Above a threshold | heat **eats hull** - it does not instant-fail. The HULL track is escape insurance, and skipping it is felt. |
+| The repair rig | **does not work in the heat.** It already needs him still and unhit; standing still in a cooking building should be death. Kills the heal-through exploit with no special case. |
+| Cold aisles | **CUT - his call.** Saved for a later datacenter. |
+
+**Consequence of cutting the cold aisles, flagged on purpose:** the ramp is now one-way with no
+recovery, and since standing still is what refills the sprint tank (`WALK_STAM_STILL`, 2x) and
+standing still is now lethal, the climb is **mostly walking, sprint saved for emergencies.** At a
+3 s base tank that is genuinely tense and probably right - but it is the number most likely to need
+tuning, and the design has no release valve left to soften it with. **Build the heat curve as one
+adjustable constant from day one.**
+
+### 4. The escape
+
+- **More robots.** Spawns keep coming; the answer is move, never clear.
+- **The turrets go berserk and shoot EVERYONE** - him and the guards both. (Better than turning
+  them on the guards only, which would make them a reward for planting: a prize you watch. A
+  hazard that is also shredding your pursuers is chaos you can read and exploit - turret rooms
+  become weapons instead of obstacles.)
+- **Stairs or elevator, and it is a real choice.** Service stairs: slow, honest, guards in the
+  stairwell, every degree of the heat. Elevator: fast, but **worm-controlled** - he gets in a box
+  and hands his life to the thing he just released. It stops between floors. It talks to him. It
+  starts again. The answer is "yes, actually", which is worse than a trap.
+
+### 5. The worm is a character, and it lands the canon fact
+
+Once it has root it has **the PA**, which is a voice channel costing nothing: `RADIO`, `SPEAKERS`
+and the chirp bands all ship. On the way out it is *helpful* - doors open ahead of him - and the
+help gets steadily more unsettling. It opens one he did not ask for. It opens a section that was
+sealed for a reason. It knows where he is. **Last line, from outside, with the building cooking
+behind him: it is still talking.**
+
+That lands the quest's canon fact - *"the datacenter dies and something keeps giving orders
+anyway"* - with **no betrayal from the Saints at all.** They were honest. The worm outgrew the job.
+Far lighter than making the player's only allies liars in quest 2, and it leaves the Saints usable.
+
+### 6. Inside, the ignore-rule BREAKS
+
+The whole game teaches that nobody looks at him twice: he is an old model and the guards *"only
+fear high-tech androids packed with powerful energy attacks"* (the in-world reason for `aiCruise`).
+**The datacenter is where that stops being true** - not because he has become a threat, but because
+inside a secure plant an old model on the server floor is an anomaly whatever its threat rating.
+
+That is the in-fiction reason this one site is guarded in a way the city never is, it costs
+nothing, and it gives the player an early taste of being *seen* before the rescue quest makes that
+its entire design.
+
+### What this overturns
+
+- **"Not a stealth bomb run" / "a fight in a huge city square" - GONE.** This is an infiltration.
+- **The square android - DROPPED (his call).** For the record, since it was asked and nobody could
+  remember it: it was never a character. It is an inference somebody made from one worldbuilding
+  line (the guards fear high-tech androids), reasoning that the thing the guards fear should stand
+  in the square. No name, no design, nothing built. The quest has its boss now - the plant - and an
+  energy-attack android would be a whole new enemy class competing with the climax instead of
+  capping it. **The line survives; see section 6, where it is worth more.**
+- **Three-part bomb assembly - DROPPED.** One module.
+
+### The maze code: where it is and the one thing wrong with it
+
+`/home/cmoryah/proj/maze-explorer3/` - and `src/campaignMaze.js` (895 lines) is already the
+BSP-plus-labyrinth hybrid he described wanting: `BSPNode3D` splits the floor into regions,
+`generateMiniMaze` fills each leaf with a recursive-backtracker maze, `createCorridorBetween` joins
+them. Right structure, already written.
+
+**THE FLAW - fix this first.** `createCorridors` walks the BSP tree and calls `connectRegions`
+**once per node**, joining two subtrees at their nearest pair of leaves. Each leaf interior is a
+*perfect* maze. The whole floor is therefore a **spanning tree: exactly one path between any two
+cells, zero cycles.**
+
+Tolerable for the descent (exploring a perfect maze is merely slow). **Fatal for the escape:**
+
+- You can never loop around a pursuer - every encounter is a corridor standoff you must win.
+- Every wrong turn is a *full backtrack*, while the building cooks and the spawns pile up.
+- Backtracking cost grows faster than area, and floor 3 is the biggest.
+
+**A chase needs cycles.** Fix: **braid** the maze - after generation, knock out a wall on a
+fraction of the dead ends (~30-50 %) - plus give some BSP joins a *second* corridor. Decides
+whether the escape is tense or infuriating.
+
+### Decoupling the two knobs (his call)
+
+maze-explorer3 ties size and room count to one level number:
+`baseSize = 15 * 1.25^(level-1)`, `numSplits = level - 1`. So level 1 is 15x15 with **zero** BSP
+splits - a pure maze, no rooms. That runs **backwards** from the fiction: floor 1 is the offices,
+the floor that most wants rooms; floor 3 is the big maze, which wants the fewest. **Size and splits
+become separate per-floor numbers in `config.js`.**
+
+Floor 3 stays the biggest - his call - but only somewhat, not hugely.
+
+### Our raycaster, not theirs (his call)
+
+Do **not** port `maze-explorer3/src/raycaster.js`. Twisted-racing's is better and already carries
+the fog, the LOD, ASCII mode, billboards and the gun. The port is: take the maze **grid**, convert
+wall runs into ring records shaped like `buildingRings` output (`{pts, h, col, len, fs}`), feed the
+existing renderer. **Merge collinear walls into long segments** rather than one ring per cell, or
+the raycaster gets handed thousands of tiny rings. `teleportCells` is already in that file and is
+the obvious hook for the stairs between floors.
+
+Note the interior is **first-person only**: the axonometric camera culls every face whose normal is
+not screen-down (proved the same day by the Saints' door, which never draws up there). That is a
+mode switch the game has not made before, and it is probably good - a raycaster is a corridor
+renderer and this is what it is best at.
+
+### Build order
+
+1. ~~Maze generator into the project, braided, per-floor knobs, deterministic, with tests.~~
+   **DONE** - `maze.js`, `DC` in config 3d, `tools/selftest_maze.js` (43), `tools/mazeprint.js`.
+2. ~~Grid -> rings; stand in it with our raycaster.~~ **DONE** - `dcRings` merges collinear runs
+   (57-62 % fewer segments than one stub per cell), `dcPushOut` is the collision, `dcBackground`
+   gives it a ceiling and a floor. Built once per floor, not per frame.
+3. ~~The chain: the worm, the site, the two doors, the way in.~~ **DONE** - see below.
+4. ~~Stairs between floors.~~ **DONE** (his play report). The three floors' shapes still open.
+5. ~~The core room and the plant (the pour's verb, re-skinned).~~ **DONE** - hold E at the unit.
+6. Heat: one curve, hull drain, repair disabled.
+7. The escape: spawns, berserk turrets, the worm's voice.
+
+### Built 2026-11-17 (steps 1-3), headless + screenshots only, NOT PLAYED
+
+- **The worm is handed over by LEAVING the shop** (`closeStore` -> `dcGive`), bought or not,
+  because the package is why they wanted him in person and is not merchandise. `RADIO.SCRIPT.WORM`.
+- **The site** (`QUEST.DATA_*`): deepest of the four at 900-1200 m, so quest 2 is a push further
+  in than the shop that briefed it. Takes the **biggest** lot on its block (sorted, top 3) - a slab
+  and a square need room. Measured ~223 x 280 x 165 against the Saints' 84 x 132 x 34.
+- **Two doors** on one building (`b.doors` is now an array; the Saints' single door moved onto it).
+  MAIN, red, on the plaza face: **never opens** - that is what the tip is for. SERVICE, green,
+  round a different face: opens, and only while he carries the worm.
+- **Inside is a MODE, not a place in the city.** A floor is ~1800 units across and no lot is that
+  big, so the city stops being drawn and the floor takes over. The car waits outside.
+- **Way out for now is E on the cell he came in by** - placeholder until step 4 puts stairs in.
+
+**Not built yet:** `QUEST.DATA_GUARDS` (7) is config only - nobody stands on the plaza. No core
+room, no heat, nothing alive inside.
+
+### His first play, and the three things it broke
+
+He walked it and reported: *"I don't like the maze, it is bad to see, I couldn't find the exit to
+the other levels. Maybe we could have a minimap?"* All three were fair, and two were my fault:
+
+1. **There were no stairs.** They were listed under "not built", but nothing in the game said so,
+   so he spent the session hunting for a door that did not exist. **Now built** - each floor has a
+   stairwell DOWN on its far corner cell and UP on the cell he arrived by, so crossing the whole
+   floor is what a floor costs. Floor 3's far cell is the UNIT instead; there is nothing below it.
+2. **Every wall was one flat colour and the floor was unreadable.** The city's wall shader was
+   doing none of the work a grid maze needs. Three fixes, all in the `r.dc` branch of `rcWalls`:
+   **per-face shading** (`DC.FACE_NS` 1.0 vs `FACE_EW` 0.70 - the big one: it is what makes a
+   corner a corner rather than a colour change), **panel joints spaced in WORLD units**
+   (`DC.PANEL` - the city bands by ring INDEX, and a merged corridor run is ONE segment, so a
+   whole corridor used to get two bands and no lateral parallax at all), and a **service light**
+   along the top of every wall (`DC.STRIP_*`), so there is always one straight line to read the
+   geometry against. Plus `DC.REGION_COLS`: a BSP wing tints its own walls, which is the thing
+   maze-explorer3 did and this port had dropped.
+3. **A minimap** (`dcMinimap`, `DC.MAP_SIZE` 100) in the top right, showing only what he has
+   walked past (`dcSee` marks the cell and its ring). Cells draw INSET by a pixel with the open
+   seams filled back in, so the leftover gap IS the wall - drawing walls as 1px lines needs 4px
+   cells to read and the PLANT floor is 27 across, which would only ever get 3.
+
+### The maze lab (his ask, 2026-11-18)
+
+*"I need to play the game until this part and then I access the maze to test. Can you create me a
+test harness so I can directly go to the maze and see it with my eyes?"* - fair: reaching the
+floors meant driving a whole quest.
+
+**`SKIP_TO_MAZE_KEY` = U**, from the title screen or anywhere in a run. Also **`index.html#maze`**,
+`#maze2`, `#maze3` in the URL, so a floor can be bookmarked and reloaded into (verified in Chrome
+for all three, and no hash still boots to the title).
+
+| key | inside the plant |
+|---|---|
+| **U** | outside: go in, floor 1. Inside: **re-roll this floor** (new layout, same knobs) |
+| **1 / 2 / 3** | jump to OFFICES / SERVERS / PLANT |
+| **M** | reveal the WHOLE floor map (outside, M is still the city map) |
+| **E** | the stairwells, exactly as in the game |
+
+**It takes the real road, not a mock.** A real run, the city rolled, quest 1 marked done, the worm
+handed over, then the service door opened from the inside. So whatever the lab shows you is what
+the game does - if the lab works and the quest does not, the bug is in the quest.
+
+Three things the harness caught the moment it was driven through `onPress` rather than by calling
+the functions:
+
+- **M never reached the lab.** `onPress` consumes `MAP_KEY` on its second line, long before any
+  of this. Inside the plant the CITY map has nothing to show, so M now belongs to the floor map
+  there and falls through to `toggleMap()` everywhere else.
+- **The car was parked 60 units from the service door** and `ENTER_R` is 34, so stepping out of
+  the maze stranded you. Now `ENTER_R*0.7`.
+- **`dcEnter` did not clamp its floor index** - and this one is NOT a lab bug. `dcFloorCfg`
+  clamps which floor it BUILDS, so an out-of-range index built the right floor and then recorded
+  the wrong number on it, and `dcAt()` reads that number to decide whether the far cell is stairs
+  or the unit. Clamped in `dcEnter` now.
+
+### His second play (2026-11-18): the plant, two stair bugs, and the seed
+
+- **He thought he had no worm. He always had one** - `skipToMaze` sets `dcq.got` on the first
+  frame. It was **invisible state**, and invisible state reads exactly like not having the thing.
+  The walk HUD now says `WORM` while he carries it and `WORM PLANTED` after. *An item the player
+  cannot see he is holding is an item he does not have.*
+- **U played quest 1's bunker brief** over the top of the lab, because `skipToCity` goes through
+  `enterCity` -> `questIntro`. Four lines about a cement mixer, nowhere near the datacenter. The
+  lab now drops the queue after `skipToCity` has run (pressing C still briefs you, as it should).
+- **THE PLANT IS BUILT** (step 5). The pour's verb: stand on the unit, **HOLD E**, do not move,
+  `DC.PLANT_T` 4.5 s, with a bar. Letting go or walking off **bleeds** progress rather than
+  zeroing it - once there are guards in here, that difference is the whole fight. With no worm on
+  him it never starts, and the far cell of any floor above the bottom is stairs, not a unit, so it
+  cannot happen on the wrong floor. The worm then speaks through the plant's PA
+  (`RADIO.SPEAKERS.WORM`, tagged **THE PLANT** - it is talking through a building, not a band).
+- **Climbing teleported him across the floor.** `dcEnter` always placed him on the floor's arrival
+  cell, so going UP from floor 3 dropped him at floor 2's *start* instead of the down-stairs he
+  had originally taken. `dcEnter(i, at)` now takes which end of the flight he comes out of: down
+  lands on `'start'`, up lands on `'core'`. A flight is reversible, and there is a test for it.
+- **The minimap was wiped every time he took the stairs.** A floor is now built **once per run and
+  kept** (`dcFloorState`, cached on `dcq.floors`): the explored map survives leaving the floor, and
+  so do its 270 rings, which were being rebuilt for nothing. A new run forgets all of it.
+
+**The maze seed is FIXED (`DC.SEED`), so every run gets the same three floors - HIS CALL, for
+now.** Worth revisiting: the rest of the game rolls per run (`questRoll` uses `Math.random`), and
+the escape design wants a building the player has *learned*, which a per-run roll still gives you
+inside one run. Changing it is one argument to `dcGenerate` plus somewhere to keep the seed
+(`questSites` already rides the checkpoint, so a restart would keep the same building).
+
+### His third play (2026-11-18): "floor 3 is only 2 regions, I want 3 or 4"
+
+Fair, and it was not a tuning problem - **the knob could not express it.** `splits` was a count of
+BSP *rounds*, and a round-based BSP splits every leaf at once, so it only ever yields powers of
+two: 2, 4, 8. Three sectors was not a number you could ask for.
+
+**`splits` is now `regions`, an EXACT count.** maze.js cuts the BIGGEST leaf one at a time until
+the target is reached, which makes any number reachable and keeps the floor evenly cut rather
+than leaving one huge region beside a row of slivers. Measured over 8 seeds a floor: 2, 3 and 4
+are exact on every floor; 19x19 caps at 4, 23x23 reaches 5-6 some seeds, 27x27 is reliable to 5
+and reaches 6-8 some seeds.
+
+Floors are now **OFFICES 4 · SERVERS 2 · PLANT 4**. SERVERS was left alone because he did not ask
+about it, but it is one number if two big halves turns out to be wrong for the middle floor.
+
+**And it uncovered a guarantee that had never actually held.** `dcBridgeFix` hunts corridors whose
+removal would split the floor - the chokepoint a chase cannot have - but it read `M.regions`,
+which is not filled in until *after* the corridor passes run. So it silently answered "no bridges"
+on every floor ever generated. At 2 regions the random extra-corridor pass happened to cover it
+and the single-seed test passed on luck; at 4 regions the luck ran out and the PLANT came back
+with region 1 hanging off one corridor.
+
+Fixed, and the test is now a **sweep across 18 floors (3 floors x 6 seeds)** rather than one. A
+single-seed test on a seeded generator proves the seed, not the generator - worth remembering for
+anything else in here. `dcCorridor` also had to start reporting how many cells it *claimed*, so a
+second corridor that lands on a lane another one already owns (and therefore fixes nothing) can be
+told from a real one.
+
+**A stairwell is eight full-height posts on a cell's corners, not a box.** A box swallows the
+camera the moment he stands in it, and standing in it is the whole point. Open corners let him
+walk in from any side and still see the frame; full height is what makes it readable from the far
+end of a corridor. Markers never collide (there is a test).
+
+---
 
 ## 2026-11-12 — The Saints' body shop: the hero gets his own upgrades
 
@@ -969,6 +1284,12 @@ that instead of inventing specialists.
   none of the three claims cleanly, because she is the only one who has been inside.
 
 ### Quest 2 — THE DATACENTER  (a fight in a huge city square)
+
+> **SUPERSEDED 2026-11-17 — do not build from this.** The datacenter is now an
+> infiltration: one hardware payload, three floors of braided labyrinth, the plant as the
+> boss fight, and the heat as the escape. The square android and the three-part bomb are
+> dropped. See *Quest 2 — THE DATACENTER: the worm, three floors, and the heat* at the top
+> of this file. Kept here for the reasoning only.
 
 - **The Saints brief you** over the radio. It is their war aim: if claim 1 is true, the usurper
   lives in the machine.

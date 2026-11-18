@@ -921,7 +921,7 @@ ok('the door faces back at the highway, not out at the city wall',
    E(`(function(){ const d = questSaints().door; return d.nx === -questSites.saints.side; })()`) === true);
 ok('the building draws it on the same face the site reports',
    E(`(function(){ const b = cityChunk(questSites.saints.k, questSites.saints.side).bld.find(x => x.saints);
-        return b.door === questSaints().door; })()`) === true);
+        return b.doors && b.doors[0] === questSaints().door; })()`) === true);
 ok('the spot you stand on is OUTSIDE the wall, clear of it',
    E(`(function(){ const G = questSaints(), d = G.door;
         return (G.x - d.x)*d.nx >= WALK_R; })()`) === true);
@@ -960,6 +960,353 @@ E('onFoot = false');
 // ---------------------------------------------------------------------------
 // Losing focus must PAUSE a live run. The forced scroll needs no input, so an
 // unattended leg 1 finishes itself in 70 s and opens the Saints' garage.
+// ---------------------------------------------------------------------------
+// QUEST 2 - THE DATACENTER (HANDOFF.md 2026-11-17). The chain is: leave the
+// Saints' shop -> the worm -> the map -> the service door -> the floor.
+// ---------------------------------------------------------------------------
+head("the datacenter's site, deepest of the four");
+ok('the run rolled one', E('!!(questSites && questSites.data)') === true);
+ok('and it is DEEPER than the shop that briefs it (the gear-shallower rule)',
+   E('(cityLimitY - questSites.data.k*CITY_CH)') > E('(cityLimitY - questSites.saints.k*CITY_CH)'));
+ok('in its own band', E(`(function(){
+     const m = (cityLimitY - questSites.data.k*CITY_CH)/RUN.UNITS_PER_M;
+     return m >= QUEST.DATA_M[0] - CITY_CH/RUN.UNITS_PER_M && m <= QUEST.DATA_M[1] + CITY_CH/RUN.UNITS_PER_M;
+   })()`) === true);
+ok('never a chunk another site took',
+   E('questSites.data.k') !== E('questSites.bunker.k') &&
+   E('questSites.data.k') !== E('questSites.saints.k') &&
+   !(E('questSites.data.k') === E('questSites.yard.k') && E('questSites.data.side') === E('questSites.yard.side')));
+ok('the plant is a real building and it DWARFS the Saints shop', E(`(function(){
+     const d = cityChunk(questSites.data.k, questSites.data.side).bld.find(b => b.data);
+     const s = cityChunk(questSites.saints.k, questSites.saints.side).bld.find(b => b.saints);
+     return !!d && d.h > s.h*3 && (d.x1-d.x0)*(d.y1-d.y0) > (s.x1-s.x0)*(s.y1-s.y0)*2; })()`) === true);
+ok('it has a square in front of it, not a forecourt',
+   E('(function(){ const D = questData(); return Math.abs(D.open.x1 - D.open.x0); })()') > 120);
+
+head('two doors, and only one of them is a way in');
+ok('the plant carries both', E(`(function(){
+     const b = cityChunk(questSites.data.k, questSites.data.side).bld.find(x => x.data);
+     return b.doors.length === 2 && b.doors.some(d => d.kind === 'main') && b.doors.some(d => d.kind === 'back'); })()`) === true);
+ok('the main doors face the square', E('questData().main.nx') === -E('questSites.data.side'));
+ok('the service door is round a DIFFERENT face', E('questData().back.seg') !== E('questData().main.seg'));
+ok('...and it is the narrow one',
+   E('QUEST.DATA_BACK_W') < E('QUEST.DATA_DOOR_W') && E('QUEST.DATA_BACK_H') < E('QUEST.DATA_DOOR_H'));
+ok('both stand-on spots are outside the wall', E(`(function(){ const D = questData();
+     return Math.hypot(D.x - D.main.x, D.y - D.main.y) >= WALK_R &&
+            Math.hypot(D.bx - D.back.x, D.by - D.back.y) >= WALK_R; })()`) === true);
+
+head('the worm is handed over by LEAVING the shop, bought or not');
+E(`(function(){ quest.done = true; onFoot = true; state = "play";
+     dcq = { got:false, atDoor:null, inside:null, said:{} };
+     const G = questSaints(); walker.x = G.x; walker.y = G.y; })()`);
+ok('he has nothing before he goes in', E('dcq.got') === false);
+E('saintsTick()'); E('saintsEnter()');
+ok('the shop opened', E('state') === 'store');
+const cashBefore = E('cash');
+E('closeStore()');
+ok('and walking out hands it over, with NOTHING bought', E('dcq.got') === true && E('cash') === cashBefore);
+ok('the Saints say their piece', E(`radio.q.some(n => /module|service door/i.test(n.text))`) === true);
+ok('it does not hand over twice', E(`(function(){ const n = radio.q.length; closeStore(); return radio.q.length === n; })()`) === true);
+ok('the map marks the plant AND the service door', E(`(function(){ const got = [], f = ctx.fillText;
+     ctx.fillText = s => got.push(String(s)); mapOpen = true; drawMap(); mapOpen = false; ctx.fillText = f;
+     return got.some(s => /DATACENTER/.test(s)) && got.some(s => /SERVICE DOOR/.test(s)); })()`) === true);
+
+head('the main doors never open - that is what the tip is FOR');
+E('(function(){ const D = questData(); walker.x = D.x; walker.y = D.y; })()'); E('dataTick()');
+ok('standing there arms the main-door prompt', E('dcq.atDoor') === 'main');
+E('dataEnter()');
+ok('and E does not get him in', E('!!dcq.inside') === false);
+ok('the Saints tell him so once', E(`radio.q.some(n => /Not the front/i.test(n.text))`) === true);
+
+head('the service door does, and only while he is carrying the worm');
+E('(function(){ const D = questData(); walker.x = D.bx; walker.y = D.by; })()'); E('dataTick()');
+ok('standing there arms the service prompt', E('dcq.atDoor') === 'back');
+E('(function(){ dcq.got = false; })()'); E('dataEnter()');
+ok('without the worm it stays shut', E('!!dcq.inside') === false);
+E('(function(){ dcq.got = true; })()'); E('dataEnter()');
+ok('with it, he is in', E('!!dcq.inside') === true);
+ok('on floor 1, the offices', E('dcq.inside.M.name') === 'OFFICES' && E('dcq.inside.floor') === 0);
+ok('standing on the floor\'s start cell', E(`(function(){
+     const M = dcq.inside.M, c = dcCellAt(M, walker.x, walker.y);
+     return c.x === M.start.x && c.y === M.start.y; })()`) === true);
+ok('the floor\'s walls were turned into rings ONCE, not per frame',
+   E('dcq.inside.rings.length') > 50 && E('dcq.inside.rings === dcq.inside.rings') === true,
+   E('dcq.inside.rings.length') + ' rings');
+ok('and merged, so the raycaster is not handed one stub per cell',
+   E(`(function(){ const M = dcq.inside.M; let stubs = 0;
+      for(let y=0;y<=M.rows;y++) for(let x=0;x<M.cols;x++) if(dcWallH(M,x,y)) stubs++;
+      for(let x=0;x<=M.cols;x++) for(let y=0;y<M.rows;y++) if(dcWallV(M,x,y)) stubs++;
+      return dcq.inside.rings.length < stubs*0.6; })()`) === true);
+
+head('inside, the city stops applying');
+ok('the walls hold him in', E(`(function(){
+     const M = dcq.inside.M;
+     for(let i=0;i<240;i++){ walker.a = (i*0.37)%(Math.PI*2); keys["KeyW"] = true; updateWalker(1/60); }
+     keys["KeyW"] = false;
+     const c = dcCellAt(M, walker.x, walker.y), cell = M.grid[c.y] && M.grid[c.y][c.x];
+     return !!cell && (cell.region >= 0 || cell.corridor >= 0); })()`) === true,
+   'walked 4s in a turning spiral and is still on walkable floor');
+ok('the first-person pane draws it', E(`(function(){ drawWalkView(); drawWalkHUD(); return true; })()`) === true);
+ok('it is first person only - the axo camera is not asked to draw a floor',
+   E('!!(dcq && dcq.inside)') === true);
+
+head('the stairs: three floors down and back up again');
+// HIS report: "I couldn't find the exit to the other levels" - there were none.
+const standOn = cell => E(`(function(){ const M = dcq.inside.M, c = M.${cell};
+  const p = dcWorld(M, c.x, c.y); walker.x = p.x; walker.y = p.y; })()`);
+ok('floor 1 has a way DOWN, on the far side of it', E(`(function(){
+     const M = dcq.inside.M; return Math.abs(M.core.x - M.start.x) + Math.abs(M.core.y - M.start.y); })()`) > 10,
+   'start to core, in cells');
+standOn('core');
+ok('standing on it reads as stairs down', E('dcAt()') === 'down');
+E('dataEnter()');
+ok('E takes him to floor 2', E('dcq.inside.floor') === 1 && E('dcq.inside.M.name') === 'SERVERS');
+ok('...and puts him at that floor\'s arrival cell', E(`(function(){
+     const M = dcq.inside.M, c = dcCellAt(M, walker.x, walker.y);
+     return c.x === M.start.x && c.y === M.start.y; })()`) === true);
+standOn('core'); E('dataEnter()');
+ok('and again, to floor 3', E('dcq.inside.floor') === 2 && E('dcq.inside.M.name') === 'PLANT');
+ok('arriving anywhere drops him at the stairs he came DOWN, not at the far side',
+   E('dcAt()') === 'up');
+standOn('core');
+ok('the bottom floor has no stairs down - it has the UNIT', E('dcAt()') === 'core');
+E('dataEnter()');
+ok('which does not move him anywhere yet', E('dcq.inside.floor') === 2);
+standOn('start'); E('dataEnter()');
+ok('the arrival cell climbs BACK up', E('dcq.inside.floor') === 1);
+// HIS report: climbing used to drop him at the floor's ARRIVAL cell, which is
+// the far side of it - a teleport across ground he had already crossed.
+ok('and he comes out of the DOWN stairs he originally took, not across the floor',
+   E('dcAt()') === 'down',
+   'standing on floor 2\'s down-stairs, the far end of the flight he just climbed');
+standOn('start'); E('dataEnter()');
+ok('...all the way to floor 1', E('dcq.inside.floor') === 0);
+ok('...coming out of ITS down stairs too', E('dcAt()') === 'down');
+ok('going DOWN still lands on the new floor\'s arrival cell', E(`(function(){
+     standOnCore(); dataEnter();                        // floor 1 -> floor 2
+     return dcAt() === 'up'; })()`.replace('standOnCore()',
+     '(function(){ const M = dcq.inside.M, c = M.core, p = dcWorld(M, c.x, c.y); walker.x = p.x; walker.y = p.y; })()')) === true);
+ok('so a flight is reversible: down then up puts him back where he started', E(`(function(){
+     dcEnter(0); const M0 = dcq.inside.M, p = dcWorld(M0, M0.core.x, M0.core.y);
+     walker.x = p.x; walker.y = p.y;                    // on floor 1's down stairs
+     dataEnter();                                       // down to floor 2
+     const at = dcAt();                                 // ...arrives at its up stairs
+     dataEnter();                                       // straight back up
+     return at === 'up' && dcq.inside.floor === 0 && dcAt() === 'down'; })()`) === true);
+E('(function(){ dcEnter(0); })()');
+ok('both stairwells are drawn as something you can SEE down a corridor', E(`(function(){
+     const r = dcq.inside.rings.filter(x => x.dcMark);
+     return r.length === 16 && r.every(x => x.h === DC.WALL_H); })()`) === true,
+   'eight posts per stairwell, full height');
+ok('and a post never blocks the cell it marks (markers do not collide)', E(`(function(){
+     const M = dcq.inside.M, p = dcWorld(M, M.core.x, M.core.y);
+     const q = { x:p.x, y:p.y };
+     dcPushOut(M, q, WALK_R);
+     return Math.hypot(q.x - p.x, q.y - p.y) < 0.001; })()`) === true);
+
+head('the floor map: only what he has walked, and it is REMEMBERED');
+// HIS report: "the minimap is completely lost and starts to be explored again"
+// every time he took the stairs. A floor is now built once per run and kept.
+E('(function(){ dcq.floors = null; dcq.inside = null; })()');       // a floor nobody has walked
+ok('a floor nobody has entered is blank', E(`(function(){
+     const F = dcFloorState(0); let n = 0; for(const v of F.seen) n += v; return n; })()`) === 0);
+E('(function(){ dcq.floors = null; dcq.inside = null; dcEnter(0); })()');
+ok('arriving reveals where he is standing and its ring, and no more', E(`(function(){
+     let n = 0; for(const v of dcq.inside.seen) n += v; return n; })()`) <= 9);
+ok('standing somewhere reveals it and its ring', E(`(function(){
+     let n = 0; for(const v of dcq.inside.seen) n += v; return n; })()`) >= 4);
+ok('but not the whole floor', E(`(function(){ const F = dcq.inside;
+     let n = 0; for(const v of F.seen) n += v; return n < F.M.cols*F.M.rows*0.1; })()`) === true);
+ok('walking fills it in', E(`(function(){ const F = dcq.inside, M = F.M;
+     let before = 0; for(const v of F.seen) before += v;
+     for(const [x, y] of dcCells(M).slice(0, 40)){ const p = dcWorld(M, x, y);
+       walker.x = p.x; walker.y = p.y; dcSee(); }
+     let after = 0; for(const v of F.seen) after += v;
+     return after > before + 20; })()`) === true);
+ok('it draws, at every floor size', E(`(function(){
+     for(const i of [0, 1, 2]){ dcEnter(i); dcSee(); dcMinimap(); }
+     return true; })()`) === true);
+// the memory itself
+ok('what he walked on a floor SURVIVES leaving it', E(`(function(){
+     dcq.floors = null; dcq.inside = null; dcEnter(0);
+     const M = dcq.inside.M;
+     for(const [x, y] of dcCells(M).slice(0, 60)){ const p = dcWorld(M, x, y);
+       walker.x = p.x; walker.y = p.y; dcSee(); }
+     let before = 0; for(const v of dcq.inside.seen) before += v;
+     dcEnter(1); dcEnter(2); dcEnter(0);                 // away and back
+     let after = 0; for(const v of dcq.inside.seen) after += v;
+     return after >= before && before > 30; })()`) === true);
+ok('and so does the floor itself - same layout, not a new roll', E(`(function(){
+     const sig = () => { const M = dcq.inside.M; let h = 0;
+       for(let y=0;y<M.rows;y++) for(let x=0;x<M.cols;x++){ const c = M.grid[y][x];
+         h = (h*31 + (c.walls.top?1:0) + (c.walls.left?2:0))|0; } return h; };
+     dcEnter(1); const a = sig(); dcEnter(0); dcEnter(1); return sig() === a; })()`) === true);
+// questStart re-rolls the SITES and resets quest 1 as well, so put all three
+// back - otherwise every later check is running against a different city.
+ok('a NEW run forgets all of it', E(`(function(){
+     const kq = dcq, ks = questSites, kd = quest.done, kc = cityCache;
+     questStart(null);
+     const fresh = !dcq.floors || !dcq.floors[0];
+     dcq = kq; questSites = ks; quest.done = kd; questForgetCity();
+     return fresh; })()`) === true);
+E('(function(){ dcq.floors = null; dcq.inside = null; dcEnter(0); })()');
+ok('and a cell is at least 2 px even on the biggest floor', E(`(function(){ dcEnter(2);
+     return Math.max(2, Math.floor(DC.MAP_SIZE/Math.max(dcq.inside.M.cols, dcq.inside.M.rows))) >= 3; })()`) === true);
+E('(function(){ dcEnter(0); })()');
+
+head('and the way he came in is the way back out');
+// go in through the DOOR this time, so dcq.outside is the street and not
+// wherever the previous block left him (it is captured on the first entry)
+E(`(function(){ dcq.inside = null; dcq.outside = null; dcq.got = true;
+     const D = questData(); walker.x = D.bx; walker.y = D.by; })()`);
+E('dataTick()'); E('dataEnter()');
+ok('in through the service door', E('!!dcq.inside') === true && E('dcq.inside.floor') === 0);
+E(`(function(){ const M = dcq.inside.M, p = dcWorld(M, M.start.x, M.start.y);
+     walker.x = p.x; walker.y = p.y; })()`);
+ok('on floor 1 the arrival cell is the way OUT, not up', E('dcAt()') === 'up' && E('dcq.inside.floor') === 0);
+ok('E on it leaves the building', E('dataEnter()') === true && E('!!dcq.inside') === false);
+ok('and puts him back at the service door',
+   E('(function(){ const D = questData(); return Math.hypot(walker.x - D.bx, walker.y - D.by); })()') < 1);
+ok('the worm is still on him', E('dcq.got') === true);
+E('onFoot = false');
+
+// ---------------------------------------------------------------------------
+// THE MAZE LAB (his ask, 2026-11-18): a way to LOOK at the floors without
+// playing a whole quest to reach them. Driven through onPress, not by calling
+// the functions - a dev hook nobody can reach by pressing the key is no hook.
+// ---------------------------------------------------------------------------
+head('U drops you inside the plant, from anywhere');
+E('state = "title"');
+E(`onPress(SKIP_TO_MAZE_KEY)`); frame(2);
+ok('from the TITLE screen it is a live run, on foot, inside',
+   E('state') === 'play' && E('onFoot') === true && E('!!(dcq && dcq.inside)') === true);
+ok('on floor 1', E('dcq.inside.M.name') === 'OFFICES');
+ok('and it went the REAL way: the city rolled, quest 1 done, the worm in hand',
+   E('!!questSites.data') === true && E('quest.done') === true && E('dcq.got') === true);
+ok('standing on the arrival cell, as a player would be', E(`(function(){
+     const M = dcq.inside.M, c = dcCellAt(M, walker.x, walker.y);
+     return c.x === M.start.x && c.y === M.start.y; })()`) === true);
+
+head('1 / 2 / 3 are the floors');
+for(const [code, name, i] of [['Digit2','SERVERS',1], ['Digit3','PLANT',2], ['Digit1','OFFICES',0]]){
+  E(`onPress(${JSON.stringify(code)})`); frame();
+  ok(`${code} -> ${name}`, E('dcq.inside.M.name') === name && E('dcq.inside.floor') === i);
+}
+
+head('U again re-rolls the floor under you');
+const floorSig = () => E(`(function(){ const M = dcq.inside.M; let h = 0;
+  for(let y=0;y<M.rows;y++) for(let x=0;x<M.cols;x++){ const c = M.grid[y][x];
+    h = (h*31 + (c.walls.top?1:0) + (c.walls.left?2:0) + (c.region+2)*4)|0; }
+  return h; })()`);
+const rolls = new Set();
+for(let i=0;i<5;i++){ rolls.add(floorSig()); E('onPress(SKIP_TO_MAZE_KEY)'); frame(); }
+ok('five rolls, five different floors', rolls.size === 5, rolls.size + ' distinct');
+ok('same floor and same knobs throughout',
+   E('dcq.inside.floor') === 0 && E('dcq.inside.M.cols') === E('DC.FLOORS[0].cols'));
+ok('a re-rolled floor is still whole', E(`(function(){ const M = dcq.inside.M, cs = dcCells(M);
+     return dcReach(M, cs[0][0], cs[0][1]).size === cs.length; })()`) === true);
+ok('and still carries both stairwells',
+   E('dcq.inside.rings.filter(r => r.dcMark).length') === 16);
+
+head('M means the floor map inside, and the CITY map outside');
+ok('inside, M reveals the floor and leaves the city map alone', E(`(function(){
+     const was = dcLabAll; onPress(MAP_KEY);
+     return dcLabAll !== was && mapOpen === false; })()`) === true);
+ok('the HUD draws with the reveal on', E('(function(){ drawWalkHUD(); return true; })()') === true);
+E('onPress(MAP_KEY)');
+ok('and it toggles back', E('dcLabAll') === false);
+E(`(function(){ const M = dcq.inside.M, p = dcWorld(M, M.start.x, M.start.y);
+     walker.x = p.x; walker.y = p.y; })()`);
+E('onPress("KeyE")'); frame();
+ok('out on the street again', E('!!dcq.inside') === false);
+ok('...where M is the city map once more', E(`(function(){ onPress(MAP_KEY);
+     const open = mapOpen; onPress(MAP_KEY); return open; })()`) === true);
+ok('the lab parked the car within reach, so leaving is not a hike',
+   E('nearCar()') === true,
+   E('(function(){ const c = cars[0]; return Math.round(Math.hypot(walker.x-c.x, walker.y-c.y)); })()') + ' units');
+
+head('the lab does not play quest 1 over the top of it');
+// HIS report: pressing U played the bunker brief, same as pressing C.
+E('state = "title"'); E('onPress(SKIP_TO_MAZE_KEY)'); frame(2);
+ok('the radio is silent on arrival', E('radio.q.length') === 0 && E('!radio.cur') === true);
+ok('...and it is not silent on the ordinary way in', E(`(function(){
+     skipToCity(); return radio.q.length > 0; })()`) === true,
+   'pressing C still briefs you, as it should');
+E('state = "title"'); E('onPress(SKIP_TO_MAZE_KEY)'); frame(2);
+
+head('he is carrying the worm, and the HUD SAYS so');
+// HIS report: "I can't test the quest, I don't have the unit on me." He did
+// have it - dcq.got was true from the first frame. It was invisible.
+ok('U gives him the worm', E('dcq.got') === true);
+const walkHud = () => E(`(function(){ const o = [], f = ctx.fillText;
+  ctx.fillText = s => o.push(String(s)); drawWalkHUD(); ctx.fillText = f; return o.join('|'); })()`);
+ok('and the HUD shows it', /WORM/.test(walkHud()), walkHud().split('|').find(t => /WORM/.test(t)));
+ok('it is not shown when he has not got it',
+   E('(function(){ const k = dcq.got; dcq.got = false; return k; })()') === true &&
+   !/WORM/.test(walkHud()));
+E('dcq.got = true');
+
+head('THE PLANT: held, standing still, at the unit');
+E(`(function(){ dcEnter(2); dcq.plant = 0; dcq.planted = false;
+     const M = dcq.inside.M, p = dcWorld(M, M.core.x, M.core.y);
+     walker.x = p.x; walker.y = p.y; })()`);
+ok('the bottom floor\'s far cell is the unit', E('dcAt()') === 'core');
+ok('and the prompt tells him to HOLD, not press', /HOLD E/.test(walkHud()));
+ok('a press just says so', E(`(function(){ onPress("KeyE"); return /HOLD E/.test(walkMsg); })()`) === true);
+E('keys[DC.PLANT_KEY] = true');
+frame(60);
+ok('holding it starts the plant going in', E('dcq.plant') > 0.8 && E('dcq.planted') === false,
+   E('dcq.plant').toFixed(2) + ' of ' + E('DC.PLANT_T'));
+ok('the bar is on screen while it goes in', /PLANTING/.test(walkHud()));
+frame(Math.ceil(E('DC.PLANT_T')*60) + 10);
+ok('and after DC.PLANT_T seconds it is in', E('dcq.planted') === true);
+ok('the worm wakes up and speaks', E(`radio.q.concat(radio.cur ? [radio.cur] : [])
+     .some(n => n.who === 'WORM')`) === true);
+ok('...through the building, not on a radio band', E('RADIO.SPEAKERS.WORM.name') === 'THE PLANT');
+ok('it says what it has taken', E(`radio.q.concat(radio.cur ? [radio.cur] : [])
+     .some(n => /doors|turrets|cooling/i.test(n.text))`) === true);
+ok('and it is not a Saints line - they never betrayed him',
+   E(`radio.q.concat(radio.cur ? [radio.cur] : []).filter(n => /cooling/i.test(n.text))
+      .every(n => n.who === 'WORM')`) === true);
+ok('the HUD switches to PLANTED', /PLANTED/.test(walkHud()));
+E('keys[DC.PLANT_KEY] = false');
+
+head('...and it cannot be done by accident');
+E(`(function(){ dcq.planted = false; dcq.plant = 3; keys[DC.PLANT_KEY] = false; })()`);
+frame(60);
+ok('letting go bleeds it back down', E('dcq.plant') < 2.5 && E('dcq.plant') > 0,
+   'decays rather than snapping to zero: a shove must not undo four seconds');
+E(`(function(){ dcq.plant = 3; keys[DC.PLANT_KEY] = true;
+     const M = dcq.inside.M, p = dcWorld(M, M.start.x, M.start.y); walker.x = p.x; walker.y = p.y; })()`);
+frame(60);
+ok('walking off the unit bleeds it too', E('dcq.plant') < 2.5);
+E(`(function(){ dcq.got = false; dcq.plant = 0; dcq.planted = false;
+     const M = dcq.inside.M, p = dcWorld(M, M.core.x, M.core.y);
+     walker.x = p.x; walker.y = p.y; keys[DC.PLANT_KEY] = true; })()`);
+frame(Math.ceil(E('DC.PLANT_T')*60) + 60);
+ok('and with no worm on him it never starts', E('dcq.plant') === 0 && E('dcq.planted') === false);
+E('keys[DC.PLANT_KEY] = false; dcq.got = true;');
+ok('a floor above the bottom has STAIRS on its far cell, not a unit', E(`(function(){
+     dcEnter(1); const M = dcq.inside.M, p = dcWorld(M, M.core.x, M.core.y);
+     walker.x = p.x; walker.y = p.y; return dcAt(); })()`) === 'down');
+ok('...so the plant cannot happen on the wrong floor', E(`(function(){
+     dcq.plant = 0; dcq.planted = false; keys[DC.PLANT_KEY] = true;
+     for(let i=0;i<Math.ceil(DC.PLANT_T*60)+60;i++) dcPlantTick(1/60);
+     keys[DC.PLANT_KEY] = false; return dcq.planted; })()`) === false);
+
+head('the #maze URL takes the same road');
+ok('the hash parser takes #maze and #maze<n> only', E(`(function(){
+     const re = /^#maze(\\d)?$/;
+     return ['#maze','#maze2','#maze3'].every(h => re.test(h)) &&
+            !re.test('#other') && !re.test('') && !re.test('#mazes'); })()`) === true);
+ok('skipToMaze lands on the floor it is asked for', E(`(function(){
+     for(const i of [2, 1, 0]){ skipToMaze(i); if(dcq.inside.floor !== i) return false; }
+     return true; })()`) === true);
+ok('and clamps a floor that does not exist', E(`(function(){
+     skipToMaze(9); return dcq.inside.floor <= DC.FLOORS.length - 1; })()`) === true);
+E(`(function(){ const M = dcq.inside.M, p = dcWorld(M, M.start.x, M.start.y);
+     walker.x = p.x; walker.y = p.y; onPress("KeyE"); onFoot = false; })()`);
+
 head('losing window focus pauses the run');
 E('stage = "run"'); E('startMatch(1)'); frame(2);
 ok('a fresh run is not paused', E('paused') === false && E('state') === 'play');

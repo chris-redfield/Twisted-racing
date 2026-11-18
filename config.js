@@ -816,7 +816,127 @@ const QUEST = {
   SAINTS_DOOR_H: 24,         // ...and this tall, which is most of a 34-unit wall
   SAINTS_DOOR_COL: '#c9a227',// the Saints' brass: the door frame and the light up the stairs
   SAINTS_R:     56,          // stand this close to the DOOR, on foot, and E goes in
+
+  // THE DATACENTER (quest 2's target - HANDOFF.md 2026-11-17). The shipped radio
+  // promises "the lords' own plant, standing in the open on a square", so that is
+  // what it is: a big slab set back behind a plaza. DEEPER than every other site,
+  // because the canon rule is that the gear site (the Saints, 450-700 m) sits
+  // SHALLOWER than the target, so a quest is one push deeper and never a backtrack.
+  //
+  // TWO doors. The MAIN one faces the plaza and is where the guards are - walking
+  // up to it is not a plan. The SERVICE door is round the far side, narrow, unlit,
+  // and the Saints' tip is that it exists at all. Only the service door opens.
+  DATA_M:      [900, 1200],  // metres from the gate: past the bunker, deepest site
+  DATA_FAR:     0.30,        // ...and a block whose middle is past this share of the width
+  DATA_PLAZA:   0.46,        // share of the lot left as open square in FRONT of it
+  DATA_W:      300,          // the plant's footprint: this deep into the lot...
+  DATA_D:      280,          // ...and this wide. It dwarfs the Saints' shop (84x132).
+  DATA_H:      165,          // and it is tall - the one slab on its block
+  DATA_COL:   '#2b3a44',     // cold machine blue-green: not the Saints', not concrete
+  DATA_LIT:     0.80,        // every window lit. Nobody is home; the machines are.
+  DATA_DOOR_W:  52,          // the main entrance, wide and obvious
+  DATA_DOOR_H:  46,
+  DATA_DOOR_COL:'#d8464f',   // state red over the main doors: a warning, not a welcome
+  DATA_BACK_W:  26,          // the service door: narrow...
+  DATA_BACK_H:  30,
+  DATA_BACK_COL:'#3f8f6a',   // ...and a dull service green. The way in.
+  DATA_R:       56,          // stand this close to a door, on foot, to read it
+  DATA_GUARDS:  7,           // sentries standing on the plaza, between you and the main door
 };
+// -----------------------------------------------------------------------------
+// 3d. THE DATACENTER (quest 2) - three floors of braided BSP labyrinth
+// -----------------------------------------------------------------------------
+// Design: HANDOFF.md 2026-11-17. The generator is maze.js, ported from
+// /home/cmoryah/proj/maze-explorer3/src/campaignMaze.js - BSP splits the floor
+// into regions, each region gets a recursive-backtracker maze, corridors join
+// them. Two things are OURS and both matter:
+//
+//   BRAID   the port makes a PERFECT maze (one path between any two cells, zero
+//           loops). Fine going down, lethal coming up: you can never loop round a
+//           pursuer and every wrong turn is a full backtrack while the building
+//           cooks. Braiding re-opens a share of the dead ends, which is what puts
+//           cycles in. 0 = perfect maze, 1 = every dead end opened. A chase wants
+//           0.4-0.6; below ~0.3 the escape turns into a corridor queue.
+//   REGIONS how many sectors the floor is cut into - an EXACT count, and separate
+//           from SIZE, which the port tied together (its level 1 was its SMALLEST
+//           floor and had ZERO splits - no rooms at all, which runs backwards
+//           from the fiction). It used to be a SPLITS round count, and a
+//           round-based BSP only yields powers of two: 2, 4, 8. "Three sectors"
+//           could not be asked for. maze.js now cuts the BIGGEST leaf one at a
+//           time until this count is reached, so any number works.
+//           Still a TARGET: a leaf too small to hold two halves of MIN_REGION is
+//           set aside, so a small floor can fall short. MEASURED over 8 seeds a
+//           floor, with MIN_REGION 7 - 2, 3 and 4 are exact on every floor, and
+//           above that: 19x19 caps at 4 (ask for 8, get 4), 23x23 is reliable to
+//           4 and reaches 5-6 some seeds, 27x27 is reliable to 5 and reaches 6-8
+//           some seeds. Want more than that: bigger floor, or lower MIN_REGION.
+//
+// Floor 3 is the biggest, his call - but only somewhat, because it also holds the
+// core room and a climax floor should read as arrival, not as another slog.
+const DC = {
+  FLOORS: [
+    // 1. OFFICES. Smallest and roomiest: the most splits, so it reads as rooms
+    //    and corridors rather than a maze. Teaches the space. On the way out it
+    //    is the WORST heat - it is the top floor and heat rises.
+    { name:'OFFICES', cols:19, rows:19, regions:4, braid:0.60 },
+    // 2. SERVERS. The racks ARE the walls: the real labyrinth, fewer and bigger
+    //    regions. A maze should peak in the MIDDLE of a three-floor run.
+    { name:'SERVERS', cols:23, rows:23, regions:2, braid:0.40 },
+    // 3. PLANT. Biggest, fewest regions - one big maze, not a suite of rooms -
+    //    and it ends in the core room, where the worm goes in.
+    { name:'PLANT',   cols:27, rows:27, regions:4, braid:0.45 },
+  ],
+  CEIL_RGB:  [26, 32, 38],// the ceiling slab...
+  FLOOR_RGB: [20, 24, 28],// ...and the floor, both fogged to black with distance
+  FOG:        560,        // world units to full dark. Short: the dark at the end
+                          // of a corridor is the mood, and it is also what stops
+                          // the player reading the whole floor from one doorway.
+  COL:       '#36424e',   // corridor wall, and...
+  COL_TOP:   '#4d5c6b',   // ...its top edge, so a wall reads against the ceiling
+  // One flat colour for every wall is why the first cut was unreadable: with no
+  // texture and no per-face shading, a corner is invisible and every corridor is
+  // the same corridor. Three fixes, all in the r.dc branch of rcWalls:
+  REGION_COLS: ['#36424e', '#3d4a40', '#463f4e', '#3a4752'],   // a wing tints its walls.
+                          // Kept close together on purpose - this is a plant, not a
+                          // funfair; it only has to say "a different part of the floor".
+  FACE_NS:    1.00,       // a wall running east-west is lit...
+  FACE_EW:    0.70,       // ...and one running north-south is not. THE big one: it is
+                          // what makes a corner a corner instead of a colour change.
+  PANEL:      22,         // world units between panel joints along a wall. Banded off
+                          // the WORLD distance, not the ring fraction - the city's code
+                          // bands by ring index, which on a merged run gives 2 bands for
+                          // a whole corridor and no lateral parallax at all.
+  STRIP_H:    0.14,       // share of wall height taken by the service light at the top.
+  STRIP_COL: '#8fd4c4',   // it runs the length of every corridor, so there is always one
+                          // straight line to read the geometry against.
+  STAIR_COL: '#e0b73c',   // the stairwell: the one warm thing on a cold floor
+  PLANT_T:      4.5,      // seconds of HOLDING the key at the unit. The pour's verb
+                          // (QUEST.POUR_T is 6): stand still, hold, cannot move. It is
+                          // the one thing a labyrinth never asks of you, which is why
+                          // it is the mission's boss fight and not a cutscene.
+  PLANT_KEY: 'KeyE',      // held, not pressed - same key that works the stairs
+  MAP_SIZE:  100,         // the floor map, virtual px (VW is 640). Only cells he has walked past
+                          // (dcSee) - the floor IS the puzzle, so the whole plan would
+                          // delete it, but blind exploration is not navigation either.
+  SEED:       20261117,   // the run's floors are rolled off this plus the floor index
+  CELL:       64,         // world units per maze cell (maze-explorer3's own figure)
+  WALL_H:     90,         // corridor wall height, world units
+  MIN_REGION: 7,          // a BSP leaf never splits below this. 7 keeps every leaf's
+                          // inner maze at 4+ cells a side (inner = size - 3), which is
+                          // what stops the port's shrink step overflowing its own leaf.
+  GAP_MAX:    5,          // two regions this close (cells, edge to edge) count as
+                          // neighbours and may take an EXTRA corridor
+  PAIR_MAX:   2,          // corridors between any ONE pair of regions. A floor with
+                          // only two regions gets a single tree corridor joining
+                          // them, and that is a CHOKEPOINT - the one way across the
+                          // floor, which on the escape is a pursuer you cannot
+                          // avoid. 2 gives the big floors a second way across.
+  EXTRA_CORR: 0.5,        // ...and this is the share of neighbour pairs that get one.
+                          // Braiding only makes loops INSIDE a region (the padding
+                          // between regions is dead cells), so this is what gives the
+                          // floor loops BETWEEN regions - the ones a chase runs on.
+};
+
 const CITY_SPAWN_GAP    = 2.2;      // seconds between arrivals while under that number
 const CITY_SPAWN_MIN    = 900;      // they turn up this far away...
 const CITY_SPAWN_MAX    = 1500;     // ...and no further (always off screen)
@@ -831,6 +951,11 @@ const CITY_CRUISE       = 115;      // how fast they idle round the city once yo
 const ENEMY_TOGGLE_KEY  = 'KeyN';
 // testing: jump straight to the city gate (from the menu, or anywhere in a run)
 const SKIP_TO_CITY_KEY = 'KeyC';
+// U: straight into the DATACENTER's maze, from anywhere, so the inside can be
+// LOOKED at without driving a whole quest to reach it (his ask, 2026-11-18).
+// Inside, U re-rolls the floor and 1/2/3 jump between them - see dcLab().
+// The URL does it too: index.html#maze, or #maze2 / #maze3 for a floor.
+const SKIP_TO_MAZE_KEY = 'KeyU';
 
 // -----------------------------------------------------------------------------
 // 7. ON FOOT (E next to a stopped car)

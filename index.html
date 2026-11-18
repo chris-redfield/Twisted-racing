@@ -24,6 +24,7 @@
 <script src="assets/enemies/sentry-vox.js"></script>
 <script src="assets/enemies/sentry-vox-64.js"></script>
 <script src="foe.js"></script>
+<script src="maze.js"></script>
 <!-- voxel cars for the GARAGE (tools/car_voxelize.py). A missing file just drops that car from the list. -->
 <script src="assets/voxcars/aspen-64.js"></script>
 <script src="assets/voxcars/sports-64.js"></script>
@@ -276,7 +277,16 @@ let showFps=false, paused=false;
 let devMode = DEV_MODE;
 function onPress(code){
   // the map (M) takes the keyboard while it's open: M / ESC close, - / = zoom
-  if(state==='play' && code===MAP_KEY){ toggleMap(); return; }
+  // ...except inside the plant, where the CITY map has nothing to show: there M
+  // is the lab's reveal for the floor map instead (see the maze lab).
+  if(state==='play' && code===MAP_KEY){
+    if(dcq && dcq.inside && !paused){
+      dcLabAll = !dcLabAll;
+      walkSay('MAP: ' + (dcLabAll ? 'WHOLE FLOOR' : 'WHAT YOU HAVE WALKED'));
+      return;
+    }
+    toggleMap(); return;
+  }
   if(mapOpen && state==='play'){
     if(code==='Escape') mapOpen = false;
     if(code==='Minus') MAP_ZOOM = Math.min(MAP_RADII.length-1, MAP_ZOOM+1);
@@ -298,7 +308,7 @@ function onPress(code){
   // E is the one "use this" key: the Saints' door when he is at it, the car
   // otherwise. nearCar() wins the tie so parking on the forecourt cannot strand him.
   if(code==='KeyE' && state==='play' && street && !paused){
-    if(!(onFoot && !nearCar() && saintsEnter())) toggleOnFoot();
+    if(!(onFoot && !nearCar() && (dataEnter() || saintsEnter()))) toggleOnFoot();
   }
   if(code===ENEMY_TOGGLE_KEY && state==='play' && !paused) toggleEnemies();
   // how far the walker sees (STREET, on foot): 9 nearer, 0 further
@@ -324,6 +334,17 @@ function onPress(code){
   }
   // testing: straight to the city gate, from the menu or anywhere in a run
   if(code===SKIP_TO_CITY_KEY && (state==='title' || state==='play' || state==='over' || state==='comic') && !paused){ skipToCity(); return; }
+  // U: into the maze, or re-roll the floor you are standing on (the lab)
+  if(code===SKIP_TO_MAZE_KEY && (state==='title' || state==='play' || state==='over' || state==='comic') && !paused){
+    if(dcq && dcq.inside) dcLabReroll(); else skipToMaze();
+    return;
+  }
+  // inside the plant: 1/2/3 are the floors and M reveals the whole plan. Both are
+  // lab-only; neither exists for a player, who walks the stairs and earns the map.
+  if(state==='play' && dcq && dcq.inside && !paused){
+    const f = { Digit1:0, Numpad1:0, Digit2:1, Numpad2:1, Digit3:2, Numpad3:2 }[code];
+    if(f !== undefined){ dcLabSeed = 0; dcEnter(f); dcLabSay(); return; }
+  }
   // the menu: ENTER / SPACE starts the run. The digits are dev shortcuts to the
   // stages this engine grew out of (not shown on the menu).
   if(state==='store'){
@@ -1014,6 +1035,67 @@ function skipToCity(){
   startMatch(1);
   checkpoint = { city:true, camV:CAM_VMAX, wave:1 + Math.floor(ROAD.gateS/WAVE_DIST), kills:0 };
   restartFromCheckpoint();
+}
+// ---------------------------------------------------------------- the maze lab
+// SKIP_TO_MAZE_KEY (U): a fresh run placed straight inside the datacenter, so
+// the floors can be looked at with your own eyes instead of through a headless
+// harness. His ask: playing to this point takes a whole quest.
+//
+// It is the REAL path, not a mock: a real run, the city rolled, quest 1 marked
+// done, the worm in hand, and then the service door opened from the inside. So
+// anything it shows you is what the game does - if the lab works and the quest
+// does not, the bug is in the quest, not in here.
+//
+//   U          from outside: go in, floor 1.  Inside: RE-ROLL this floor.
+//   1 / 2 / 3  inside: jump to that floor (OFFICES / SERVERS / PLANT)
+//   M          inside: reveal the whole floor map (and hide it again)
+//   E          the stairwells, exactly as in the game
+let dcLabSeed = 0, dcLabAll = false;
+function skipToMaze(floor){
+  const f = floor === undefined ? 0 : floor;
+  if(state !== 'play' || !street || !questSites || !questSites.data) skipToCity();
+  quest.done = true;                              // quest 1 is behind us
+  dcq.got = true;                                 // and the Saints have handed it over
+  if(!onFoot){
+    // park him at the service door, so LEAVING the maze leaves him somewhere real
+    const D = questData(), me = cars[0];
+    me.speed = 0; me.vx = 0; me.vy = 0; me.x = D.bx; me.y = D.by + ENTER_R*0.7;
+    walker.x = D.bx; walker.y = D.by; walker.a = -Math.PI/2; onFoot = true;
+  }
+  dcq.inside = null; dcq.outside = null;
+  // SHUT THE RADIO UP. skipToCity() goes through enterCity() -> questIntro(),
+  // which queues quest 1's bunker brief: four lines about a cement mixer, over
+  // the top of a lab that is nowhere near it. HIS report. questIntro has already
+  // run by the time we get here, so this drops what it queued rather than
+  // preventing it - which also catches anything else the boot path said.
+  radio.q.length = 0; radio.cur = null; radio.t = 0; radio.gap = 0;
+  dcEnter(f);
+  dcLabSay();
+}
+function dcLabSay(){
+  const F = dcq.inside;
+  banner(F.M.name + '  \u00b7  FLOOR ' + (F.floor + 1) + (dcLabSeed ? '  seed ' + dcLabSeed : ''),
+         'LAB:  U re-roll   1/2/3 floor   M reveal   E stairs');
+}
+// re-roll the floor under him: same knobs, different layout, so a dozen floors
+// can be eyeballed in a dozen seconds. This is how the braid and the region
+// tints get judged - one floor tells you nothing about a generator.
+function dcLabReroll(){
+  dcLabSeed = (dcLabSeed + 1) % 1000;
+  const f = dcq.inside.floor;
+  const M = dcGenerate(f, DC.SEED + dcLabSeed*7919);
+  const rings = dcRings(M, []);
+  const last = f >= DC.FLOORS.length - 1;
+  dcMarkerRings(M, rings, M.core.x, M.core.y, last ? '#d8464f' : DC.STAIR_COL, DC.WALL_H);
+  dcMarkerRings(M, rings, M.start.x, M.start.y, '#9c8747', DC.WALL_H);
+  // replace the CACHED floor, or dcEnter hands the old one straight back
+  if(!dcq.floors) dcq.floors = {};
+  dcq.floors[f] = { M, floor:f, rings, seen:new Uint8Array(M.cols*M.rows) };
+  dcq.inside = dcq.floors[f];
+  const p = dcWorld(M, M.start.x, M.start.y);
+  walker.x = p.x; walker.y = p.y; walker.a = 0; walker.pitch = 0;
+  dcSee();
+  dcLabSay();
 }
 // both legs' car sheets up front, so nothing bakes mid-run (~30 ms a sheet)
 function prebakeSheets(){
@@ -3505,9 +3587,10 @@ function drawDoor2D(D, sa, sc, lift){
     ctx.lineTo(c.x, c.y - zb); ctx.lineTo(a.x, a.y - zb); ctx.closePath(); ctx.fill();
   };
   const m = (D.t1 - D.t0)*0.16;                       // the frame's share of the width
-  slab(D.t0, D.t1, 0, D.h, QUEST.SAINTS_DOOR_COL);     // frame
+  const col = D.col || QUEST.SAINTS_DOOR_COL;
+  slab(D.t0, D.t1, 0, D.h, col);                       // frame
   slab(D.t0 + m, D.t1 - m, 0, D.h*0.9, '#0b0a10');     // the dark way in
-  slab(D.t0 + m, D.t1 - m, 0, D.h*0.22, QUEST.SAINTS_DOOR_COL);   // light up the stairs
+  slab(D.t0 + m, D.t1 - m, 0, D.h*0.22, col);          // light from inside
 }
 function drawBuilding2D(b, alpha){
   const lift = z => z*S;                               // same height scale as extrude()
@@ -3549,7 +3632,7 @@ function drawBuilding2D(b, alpha){
       }
     }
     // the Saints' door, over the windows: this face has a way in, not a window row
-    if(b.door && b.door.seg === i) drawDoor2D(b.door, sa, sc, lift);
+    if(b.doors) for(const D of b.doors) if(D.seg === i) drawDoor2D(D, sa, sc, lift);
   }
   ctx.fillStyle = shade(b.col, 1.18);
   ctx.beginPath();
@@ -3834,6 +3917,18 @@ function makeCityChunk(k, side){
     const pool = far.length ? far : lots;
     saintsLot = pool[Math.min(pool.length - 1, Math.floor(questSites.saints.pick*pool.length))];
   }
+  // THE DATACENTER: the biggest lot on its block, because the plant is a slab and
+  // the plaza in front of it has to be a square, not a forecourt.
+  let dataLot = null;
+  if(site === 'data'){
+    // the BIGGEST lot on the block, not just any big one: a slab and a square in
+    // front of it need room, and this is meant to be the one monument in a city
+    // of procedural blocks. Three to choose from, so it still varies per run.
+    const far = lots.filter(l => (l.x0 + l.x1)/2 > CITY_W*QUEST.DATA_FAR && (l.x1-l.x0) >= 260 && (l.y1-l.y0) >= 260)
+                    .sort((a, b) => (b.x1-b.x0)*(b.y1-b.y0) - (a.x1-a.x0)*(a.y1-a.y0));
+    const pool = (far.length ? far : lots.slice()).slice(0, 3);
+    dataLot = pool[Math.min(pool.length - 1, Math.floor(questSites.data.pick*pool.length))];
+  }
   roads.push({ axis:'h', w:CITY_XST, x0:ROAD_HW, x1:CITY_W, y0:Y0, y1:Y0 + CITY_XST, cross:true });
   roads.push({ axis:'v', w:CITY_OUTR, x0:CITY_W - CITY_OUTR, x1:CITY_W, y0:Y0, y1:Y1 + CITY_XST });
   // the next chunk's cross street, so centre lines stop at it - never drawn from here
@@ -3856,7 +3951,7 @@ function makeCityChunk(k, side){
 
   const mir = r => side > 0 ? { x0:r.x0, x1:r.x1 } : { x0:-r.x1, x1:-r.x0 };
   const blocks = [], cores = [], bld = [];
-  let bunker = null, yard = null, saints = null;
+  let bunker = null, yard = null, saints = null, data = null;
   for(const lot of lots){
     const P = CITY_STYLE.PAVE;
     let core = { x0:lot.x0 + P, y0:lot.y0 + P, x1:lot.x1 - P, y1:lot.y1 - P };
@@ -3890,6 +3985,30 @@ function makeCityChunk(k, side){
                  x:fx + nx*(WALK_R + 10), y:cy };
       core = shed;
     }
+    if(lot === dataLot){
+      // the plant takes the back of the lot; everything in front of it is the
+      // SQUARE the radio promised, which is also where the guards stand.
+      const ux = core.x0 + (core.x1 - core.x0)*QUEST.DATA_PLAZA;
+      const w = Math.min(QUEST.DATA_W, core.x1 - ux);
+      const d = Math.min(QUEST.DATA_D, core.y1 - core.y0);
+      const cy = (core.y0 + core.y1)/2;
+      const slab = { x0:core.x1 - w, y0:cy - d/2, x1:core.x1, y1:cy + d/2 };
+      const op = mir({ x0:core.x0, x1:slab.x0 });
+      // MAIN door: middle of the plaza face. SERVICE door: the far short side,
+      // round the back - you have to walk the length of the building to reach it,
+      // which is the whole point of the Saints' tip.
+      const fx = side > 0 ? slab.x0 : -slab.x0;
+      const main = { x:fx, y:cy, nx:-side, w:QUEST.DATA_DOOR_W, h:QUEST.DATA_DOOR_H,
+                     col:QUEST.DATA_DOOR_COL, kind:'main' };
+      const back = { x:(slab.x0 + slab.x1)/2 * (side > 0 ? 1 : -1), y:slab.y1,
+                     nx:0, ny:1, w:QUEST.DATA_BACK_W, h:QUEST.DATA_BACK_H,
+                     col:QUEST.DATA_BACK_COL, kind:'back' };
+      data = { lot:lm, open:op, y0:core.y0, y1:core.y1, slabU:slab.x0,
+               main, back,
+               x:fx + (-side)*(WALK_R + 10), y:cy,                       // stand at the MAIN door
+               bx:back.x, by:back.y + WALK_R + 10 };                      // ...and at the SERVICE door
+      core = slab;
+    }
     fill(core, 3);
     const cm = mir(core);
     cores.push({ x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1 });
@@ -3904,6 +4023,26 @@ function makeCityChunk(k, side){
       });
       continue;
     }
+    if(lot === dataLot){
+      // q is [ (x0,y0), (x1,y0), (x1,y1), (x0,y1) ]: edge 3 is the x0 face, edge 1
+      // the x1 face, edge 2 the y1 face. Mirroring swaps 1 and 3 but leaves 2.
+      const Ly = core.y1 - core.y0, Lx = cm.x1 - cm.x0;
+      const mhw = Math.min(0.45, QUEST.DATA_DOOR_W/(2*Ly));
+      data.main.seg = side > 0 ? 3 : 1;
+      data.main.t0 = 0.5 - mhw; data.main.t1 = 0.5 + mhw;
+      const bhw = Math.min(0.45, QUEST.DATA_BACK_W/(2*Lx));
+      data.back.seg = 2;                                   // the y1 face, round the back
+      data.back.t0 = 0.5 - bhw; data.back.t1 = 0.5 + bhw;
+      data.back.x = (cm.x0 + cm.x1)/2; data.back.y = core.y1;
+      data.bx = data.back.x; data.by = core.y1 + WALK_R + 10;
+      bld.push({
+        x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1, h:QUEST.DATA_H, tier:0, seed:(rng.next()*1e9)|0, nx:0, ny:0,
+        city:true, fsc:CITY_STYLE.FLOOR, data:true, doors:[data.main, data.back],
+        q:[ { x:cm.x0, y:core.y0 }, { x:cm.x1, y:core.y0 }, { x:cm.x1, y:core.y1 }, { x:cm.x0, y:core.y1 } ],
+        col:QUEST.DATA_COL, lit:QUEST.DATA_LIT
+      });
+      continue;
+    }
     if(lot === saintsLot){
       // Both renderers walk q's edges as segment i = q[i] -> q[i+1], so name the
       // front face by index: q is [ (x0,y0), (x1,y0), (x1,y1), (x0,y1) ], which puts
@@ -3913,9 +4052,10 @@ function makeCityChunk(k, side){
       const L = core.y1 - core.y0, hw = Math.min(0.45, QUEST.SAINTS_DOOR_W/(2*L));
       saints.door.seg = side > 0 ? 3 : 1;
       saints.door.t0 = 0.5 - hw; saints.door.t1 = 0.5 + hw;
+      saints.door.kind = 'saints';
       bld.push({
         x0:cm.x0, x1:cm.x1, y0:core.y0, y1:core.y1, h:QUEST.SAINTS_SHED_H, tier:0, seed:(rng.next()*1e9)|0, nx:0, ny:0,
-        city:true, fsc:CITY_STYLE.FLOOR, saints:true, door:saints.door,
+        city:true, fsc:CITY_STYLE.FLOOR, saints:true, doors:[saints.door],
         q:[ { x:cm.x0, y:core.y0 }, { x:cm.x1, y:core.y0 }, { x:cm.x1, y:core.y1 }, { x:cm.x0, y:core.y1 } ],
         col:QUEST.SAINTS_COL, lit:0.5        // the one lit-up building in the city: somebody is home
       });
@@ -3947,7 +4087,7 @@ function makeCityChunk(k, side){
     const gaps = r.axis==='h' && side < 0 ? r.gaps.map(g => [-g[1], -g[0]]).reverse() : r.gaps;
     return { axis:r.axis, w:r.w, x0:m.x0, x1:m.x1, y0:r.y0, y1:r.y1, gaps, cross:!!r.cross };
   });
-  return { k, side, Y0, Y1, roads:wroads, blocks, cores, bld, gaps, mask, bunker, yard, saints };
+  return { k, side, Y0, Y1, roads:wroads, blocks, cores, bld, gaps, mask, bunker, yard, saints, data };
 }
 
 // ---------------------------------------------------------------- QUEST 1: CEMENT
@@ -3964,12 +4104,20 @@ function makeCityChunk(k, side){
 // the same roll. Everything else in the city stays procedural.
 let questSites = null;        // { yard:{k,side}, bunker:{k,side} } for this run
 let quest = null;             // live state: { truck, pour, done, said:{} }
+// QUEST 2, THE DATACENTER (HANDOFF.md 2026-11-17). Separate from `quest` on
+// purpose: quest 1 is finished state by the time this starts, and a run that
+// restarts from the checkpoint keeps quest 1 done while quest 2 begins again.
+//   got      he is carrying the worm (given on leaving the Saints' shop)
+//   atDoor   'back' | 'main' | null - which door he is standing at, this frame
+//   inside   null, or the floor he is walking: { M, floor, ... }
+let dcq = null;
 function questSiteAt(k, side){
   const S = questSites;
   if(!S) return null;
   if(S.bunker.k === k && S.bunker.side === side) return 'bunker';
   if(S.yard.k === k && S.yard.side === side) return 'yard';
   if(S.saints && S.saints.k === k && S.saints.side === side) return 'saints';
+  if(S.data && S.data.k === k && S.data.side === side) return 'data';
   return null;
 }
 // the compound in u-space (u = |x| out from the centre line), from the chunk's y0
@@ -4008,7 +4156,12 @@ function questRoll(){
   // chunk already spoken for (a lot can only be one site)
   let saints = { k:kOf(rnd(QUEST.SAINTS_M[0], QUEST.SAINTS_M[1])), side:-1, pick:Math.random() };
   while(saints.k === bunker.k || (saints.k === yard.k && saints.side === yard.side)) saints.k++;
-  return { yard, bunker, saints };
+  // the datacenter: the DEEPEST site, so quest 2 is a push further in from the
+  // shop that briefed it (the canon rule - gear shallower than target). Its own
+  // chunk, and the side opposite the Saints so the drive crosses the highway.
+  let data = { k:kOf(rnd(QUEST.DATA_M[0], QUEST.DATA_M[1])), side:1, pick:Math.random() };
+  while(data.k === bunker.k || data.k === saints.k || (data.k === yard.k && data.side === yard.side)) data.k--;
+  return { yard, bunker, saints, data };
 }
 // throw away every chunk (and sentry plan) built before the sites were known
 function questForgetCity(){
@@ -4018,6 +4171,7 @@ function questForgetCity(){
 function questYard(){ const S = questSites; return S ? cityChunk(S.yard.k, S.yard.side).yard : null; }
 function questBunker(){ const S = questSites; return S ? cityChunk(S.bunker.k, S.bunker.side).bunker : null; }
 function questSaints(){ const S = questSites; return S && S.saints ? cityChunk(S.saints.k, S.saints.side).saints : null; }
+function questData(){ const S = questSites; return S && S.data ? cityChunk(S.data.k, S.data.side).data : null; }
 // the vent: the middle of the bunker's far face (away from the highway), so
 // you have to drive round the ring to get to it. The truck backs onto it, nose out.
 let ventMemo = null, ventFor = null;      // the vent never moves within a run
@@ -4038,6 +4192,7 @@ function questStart(keep){
   questSites = keep && keep.sites ? keep.sites : questRoll();
   questForgetCity();
   quest = { truck:null, pour:0, done:!!(keep && keep.done), said:{}, near:false };
+  dcq = { got:!!(keep && keep.worm), atDoor:null, inside:null, said:{}, plant:0, planted:false };
   if(!quest.done) questSpawnTruck();
 }
 function questSpawnTruck(){
@@ -4099,10 +4254,155 @@ function saintsEnter(){
   openStore('foot');     // the store screen's own subtitle says where he is
   return true;
 }
+// ---- INSIDE THE PLANT -------------------------------------------------------
+// Entering is a MODE, not a place in the city: a floor is 27 cells of 64 units,
+// nearly 1800 across, and no city lot is that big. So the city stops being drawn
+// and the floor takes over - which is also why the interior is first-person
+// only (the axonometric camera has nothing to show in here). The car stays
+// parked outside the service door and is waiting when he comes back up.
+function dcBuildRings(){
+  const F = dcq.inside;
+  rings = F.rings;
+  let n = 0; for(const r of rings) n += r.pts.length;
+  if(!ringCX || ringCX.length < n){ ringCX = new Float32Array(n); ringCY = new Float32Array(n); }
+  let o = 0; for(const r of rings){ r.off = o; o += r.pts.length; }
+}
+// A floor is BUILT ONCE PER RUN and kept. Two reasons, both from his play:
+//   - the map he has filled in must survive leaving the floor. Rebuilding it
+//     handed him a blank minimap every time he took the stairs.
+//   - rings are 270 segments on the big floor; rebuilding them per visit is
+//     work for nothing, since a floor never changes shape within a run.
+// Keyed by floor index on dcq, so the memory dies with the run and not before.
+function dcFloorState(i){
+  if(!dcq.floors) dcq.floors = {};
+  if(dcq.floors[i]) return dcq.floors[i];
+  const M = dcGenerate(i);
+  const rings = dcRings(M, []);
+  // THE STAIRWELLS, as things you can see down a corridor. DOWN sits on the far
+  // corner cell, UP on the one you arrived by, so crossing the whole floor is
+  // what a floor costs. The bottom floor's far cell is the central unit instead -
+  // that is where the worm goes, and there is nothing below it.
+  const last = i >= DC.FLOORS.length - 1;
+  dcMarkerRings(M, rings, M.core.x, M.core.y, last ? '#d8464f' : DC.STAIR_COL, DC.WALL_H);
+  dcMarkerRings(M, rings, M.start.x, M.start.y, '#9c8747', DC.WALL_H);
+  return dcq.floors[i] = { M, floor:i, rings, seen:new Uint8Array(M.cols*M.rows) };
+}
+// `at` is the stairwell he comes OUT of, and it is the far end of the flight he
+// went IN by: going DOWN lands on the new floor's UP stairs ('start'), climbing
+// lands on its DOWN stairs ('core'). Always landing on 'start' teleported him
+// across the floor every time he climbed, which was his report.
+function dcEnter(floor, at){
+  // clamp here, not at the call sites: dcFloorCfg already clamps which FLOOR it
+  // builds, so an out-of-range index used to build the right floor and then
+  // record the wrong number on it - and dcAt() reads that number to decide
+  // whether the far cell is stairs or the unit.
+  const i = Math.max(0, Math.min(DC.FLOORS.length - 1, floor === undefined ? 0 : floor|0));
+  const F = dcFloorState(i);
+  if(!dcq.outside) dcq.outside = { x:walker.x, y:walker.y, a:walker.a };   // the street, kept across floors
+  dcq.inside = F;
+  const M = F.M, c = at === 'core' ? M.core : M.start;
+  const p = dcWorld(M, c.x, c.y);
+  walker.x = p.x; walker.y = p.y; walker.a = 0; walker.pitch = 0;
+  walker.stam = walkStamMax();
+  dcSee();                                      // standing here counts as seeing it
+  banner(M.name + '  \u00b7  FLOOR ' + (i + 1), 'E at the way you came in takes you back out');
+  Snd.pickup();
+}
+function dcLeave(){
+  if(!dcq || !dcq.inside) return;
+  const o = dcq.outside;
+  dcq.inside = null; dcq.outside = null;
+  if(o){ walker.x = o.x; walker.y = o.y; walker.a = o.a; }
+  walker.pitch = 0;
+  walkSay('OUT');
+}
+// which stairwell he is standing on: 'up' (the way he came), 'down' (deeper), or
+// 'core' on the bottom floor, where the stairs stop and the unit is.
+function dcAt(){
+  if(!dcq || !dcq.inside) return null;
+  const M = dcq.inside.M, c = dcCellAt(M, walker.x, walker.y);
+  if(c.x === M.start.x && c.y === M.start.y) return 'up';
+  if(c.x === M.core.x  && c.y === M.core.y)
+    return dcq.inside.floor >= DC.FLOORS.length - 1 ? 'core' : 'down';
+  return null;
+}
+// THE PLANT. The pour's verb, re-skinned: stand at the unit, HOLD the key, and
+// do not move for DC.PLANT_T seconds. Moving drops it (not to zero - a half
+// second of being shoved should not undo four seconds of work, and when there
+// are guards in here that difference is the whole fight). Returns 0..1.
+function dcPlantTick(dt){
+  const F = dcq && dcq.inside;
+  if(!F || dcq.planted) return;
+  if(dcAt() !== 'core' || !dcq.got){ dcq.plant = Math.max(0, dcq.plant - dt*2); return; }
+  const holding = held(DC.PLANT_KEY) || (padMode() && padHeld('L1'));
+  const moving = Math.hypot(walker.x - (dcq.plantX || walker.x), walker.y - (dcq.plantY || walker.y));
+  dcq.plantX = walker.x; dcq.plantY = walker.y;
+  if(!holding || moving > WALK_REPAIR_MOVE*dt){ dcq.plant = Math.max(0, dcq.plant - dt*1.5); return; }
+  dcq.plant += dt;
+  if(dcq.plant >= DC.PLANT_T) dcPlanted();
+}
+function dcPlanted(){
+  dcq.planted = true; dcq.plant = DC.PLANT_T;
+  for(const [w, t] of RADIO.SCRIPT.PLANTED) radioSay(w, t);
+  banner('IT IS IN', 'get out of the building');
+  Snd.pickup();
+}
+// mark where he has been, for the minimap. A cell and the ring around it, so a
+// corridor fills in as he walks it rather than one square at a time.
+function dcSee(){
+  const F = dcq && dcq.inside;
+  if(!F) return;
+  const M = F.M, c = dcCellAt(M, walker.x, walker.y);
+  for(let y = c.y - 1; y <= c.y + 1; y++) for(let x = c.x - 1; x <= c.x + 1; x++)
+    if(x >= 0 && x < M.cols && y >= 0 && y < M.rows) F.seen[y*M.cols + x] = 1;
+}
+
+// THE DATACENTER's two doors. Only the SERVICE door opens, and only while he is
+// carrying the worm: walking up to the main doors before the Saints have briefed
+// him is just a wall, and walking up to them after is a reminder not to.
+function dataTick(){
+  if(!dcq) return;
+  dcq.atDoor = null;
+  if(!quest || !quest.done || !questSites || !questSites.data || !street || !onFoot) return;
+  if(dcq.inside) return;
+  const D = questData();
+  if(!D) return;
+  if(Math.hypot(walker.x - D.bx, walker.y - D.by) < QUEST.DATA_R)      dcq.atDoor = 'back';
+  else if(Math.hypot(walker.x - D.x, walker.y - D.y) < QUEST.DATA_R)   dcq.atDoor = 'main';
+}
+// E at a datacenter door. Returns whether E was used up.
+function dataEnter(){
+  if(!dcq || state !== 'play') return false;
+  if(dcq.inside){
+    const at = dcAt();
+    // climbing comes OUT of the floor above's DOWN stairs - the far end of the
+    // flight he is standing on, not that floor's arrival cell.
+    if(at === 'up'){ if(dcq.inside.floor === 0) dcLeave(); else dcEnter(dcq.inside.floor - 1, 'core'); return true; }
+    if(at === 'down'){ dcEnter(dcq.inside.floor + 1, 'start'); return true; }
+    if(at === 'core'){
+      // held, not pressed - dcPlantTick does the work. The press only answers.
+      if(!dcq.got) walkSay('NOTHING TO PUT IN IT');
+      else if(dcq.planted) walkSay('IT IS IN. GET OUT');
+      else walkSay('HOLD E - AND DO NOT MOVE');
+      return true;
+    }
+    return false;
+  }
+  if(!dcq.atDoor) return false;
+  if(dcq.atDoor === 'main'){
+    // never openable: the whole point of the Saints' tip is that this is not the way
+    if(!dcq.said.front){ dcq.said.front = true; for(const [w, t] of RADIO.SCRIPT.DATA_FRONT) radioSay(w, t); }
+    walkSay('SEALED - AND SEVEN OF THEM WATCHING');
+    return true;
+  }
+  if(!dcq.got){ walkSay('LOCKED. THE SAINTS SAID THEY HAD A WAY IN'); return true; }
+  dcEnter();
+  return true;
+}
 function questTick(dt){
   if(!quest || !questSites) return;
   const me = cars[0];
-  if(quest.done){ saintsTick(); return; }
+  if(quest.done){ saintsTick(); dataTick(); return; }
   const say = (id, lines) => { if(quest.said[id]) return; quest.said[id] = true; for(const [w, t] of lines) radioSay(w, t); };
   if(me && me.truck) say('truck', RADIO.SCRIPT.TRUCK);
   const D = questBunker(), T = cityTarget();
@@ -4525,6 +4825,7 @@ let ringCenter = 0;                // forward-axis centre the walls are built ar
 // Walls run along the road (varying x in convoy, y in ascent) at a fixed lateral.
 function buildConvoyRings(center, camX, camY, bearing){
   ringCenter = center;
+  if(dcq && dcq.inside){ dcBuildRings(); return; }
   if(street){ buildCityRings(center, camX, camY, bearing); return; }
   const c0 = center - RING_SPAN;
   const n = Math.ceil(2*RING_SPAN/RING_STEP);
@@ -4639,7 +4940,30 @@ const ASPH=[43,36,48], ASPH_FAR=[30,25,36];
 const DIRT=[58,43,38], DIRT_FAR=[34,27,28];
 const PAVE_RGB=[74,66,80], PAVE_FAR=[40,34,46];
 
+// INSIDE THE PLANT there is no sky and no asphalt: a ceiling above the horizon
+// and a floor below it, both fogging to black with distance, so a corridor reads
+// as a corridor and the dark at the end of it is the whole mood of the place.
+function dcBackground(){
+  const C = DC.CEIL_RGB, F = DC.FLOOR_RGB;
+  let p = 0;
+  for(let y = 0; y < RC_H; y++){
+    let r, g, b;
+    if(y < RC_HORIZON){
+      // the ceiling runs AWAY as it approaches the horizon, so fog it that way
+      const perp = (DC.WALL_H - EYE_Z)*RC_VD/Math.max(0.5, RC_HORIZON - y + 0.5);
+      const f = Math.min(1, perp/DC.FOG);
+      r = (C[0]*(1-f))|0; g = (C[1]*(1-f))|0; b = (C[2]*(1-f))|0;
+    } else {
+      const perp = EYE_Z*RC_VD/Math.max(0.5, y - RC_HORIZON + 0.5);
+      const f = Math.min(1, perp/DC.FOG);
+      r = (F[0]*(1-f))|0; g = (F[1]*(1-f))|0; b = (F[2]*(1-f))|0;
+    }
+    for(let x = 0; x < RC_W; x++){ rcPix[p]=r; rcPix[p+1]=g; rcPix[p+2]=b; rcPix[p+3]=255; p+=4; }
+  }
+  if(!RC_DIRECT) rcCtx.putImageData(rcImg, 0, 0);
+}
 function rcBackground(camX, camY, bearing){
+  if(dcq && dcq.inside){ dcBackground(); return; }
   const fwx=Math.cos(bearing), fwy=Math.sin(bearing);
   const rgx=-fwy, rgy=fwx;
   let p=0;
@@ -4932,6 +5256,30 @@ function rcWalls(camX, camY, bearing){
 
       if(r.bldg){ rcBuildingColumn(x, r, rcHitU[k], perp, scale, y0, y1, fog, cosA*rcHitK[k]); continue; }
 
+      // INSIDE THE PLANT. The city's wall code below gives a maze none of what it
+      // needs: it bands by ring INDEX, and a merged corridor run is one segment,
+      // so a whole corridor got two bands and no lateral parallax at all. Here
+      // the three readability fixes live together - per-face shade (a corner
+      // becomes a corner), panel joints spaced in world units, and a service
+      // light along the top so there is always one straight line to read.
+      if(r.dc){
+        const along = rcHitU[k]*r.dcLen;                       // world units along the wall
+        if(r.dcMark){                                          // a stairwell post, lit flat
+          rcSpan(x, y0, y1, r.col, 1 - fog*0.45);
+          continue;
+        }
+        let f = (1 - fog*0.9) * (r.dcNS ? DC.FACE_NS : DC.FACE_EW);
+        if((((along/DC.PANEL)|0) & 1)) f *= 0.86;              // panel joints
+        rcSpan(x, y0, y1, r.col, f);
+        // the service light: a bright strip just under the top edge
+        const sh = Math.max(1, Math.round((y1 - y0)*DC.STRIP_H));
+        if(y0 + sh < y1) rcSpan(x, y0, y0 + sh, DC.STRIP_COL, f*0.95);
+        // and a dark skirting, so the foot of the wall reads against the floor
+        const sk = Math.max(1, Math.round((y1 - y0)*0.10));
+        if(y1 - sk > y0 + sh) rcSpan(x, y1 - sk, y1, r.col, f*0.45);
+        continue;
+      }
+
       // Vertical banding from the along-wall coordinate. This is the important
       // one: an untextured face shows nothing at all when you slide toward it,
       // so the only thing that moves is the silhouette - and a tilting
@@ -5026,17 +5374,18 @@ function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog, slant){
 
   // THE SAINTS' DOOR. Checked before the window grid and before the silhouette
   // early-out below, so the way in still reads from across the forecourt.
-  const dr = r.bldg && r.bldg.door;
-  if(dr && seg === dr.seg){
+  const dr = r.bldg && r.bldg.doors && r.bldg.doors.find(D => D.seg === seg);
+  if(dr){
     const t = along / (r.len[seg] || 1);
     if(t >= dr.t0 && t <= dr.t1){
       const fr = (dr.t1 - dr.t0)*0.16;                // frame, in the same t units
       const inner = t > dr.t0 + fr && t < dr.t1 - fr;
       const top = z => { const y = (RC_HORIZON + (EYE_Z - z)*scale)|0; return y < y0 ? y0 : y; };
-      if(!inner){ rcSpan(x, top(dr.h), y1, QUEST.SAINTS_DOOR_COL, f); return; }
+      const DC_ = dr.col || QUEST.SAINTS_DOOR_COL;
+      if(!inner){ rcSpan(x, top(dr.h), y1, DC_, f); return; }
       const yd = top(dr.h*0.9), yg = top(dr.h*0.22);
       if(yg > yd) rcSpan(x, yd, yg, '#0b0a10', f);     // the dark way in...
-      if(y1 > yg) rcSpan(x, yg, y1, QUEST.SAINTS_DOOR_COL, f);   // ...over the stair light
+      if(y1 > yg) rcSpan(x, yg, y1, DC_, f);           // ...over the light from inside
       return;
     }
   }
@@ -5642,6 +5991,14 @@ function pushOutBox(p, x0, y0, x1, y1, r){
 
 function walkCollide(p){
   let hit = false;
+  if(dcq && dcq.inside){
+    // inside the datacenter nothing of the city applies: no blocks, no car, no
+    // city wall. The floor's own walls are the whole world (maze.js).
+    const lim = dcq.inside.M.cols*dcq.inside.M.cell;
+    p.x = clamp(p.x, WALK_R, lim - WALK_R);
+    p.y = clamp(p.y, WALK_R, dcq.inside.M.rows*dcq.inside.M.cell - WALK_R);
+    return dcPushOut(dcq.inside.M, p, WALK_R);
+  }
   if(street){
     for(const c of cityChunks(p.y - WALK_R, p.y + WALK_R, p.x < 0 ? -1 : 1))
       for(const b of c.cores) if(circleBox(p, b.x0, b.y0, b.x1, b.y1, WALK_R, false)) hit = true;
@@ -5812,6 +6169,58 @@ function drawWalkView(){
   walkMs = lerp(walkMs, performance.now() - t0, 0.08);      // smoothed, so it reads
 }
 
+// THE FLOOR MAP. Only what he has walked past (dcSee) - the floor is the puzzle
+// and handing over the whole plan would delete it - but enough that exploring
+// is navigation rather than guesswork, which is what the first cut was.
+// Drawn in the top-right, opposite the car panel.
+function dcMinimap(){
+  const F = dcq && dcq.inside;
+  if(!F) return;
+  const M = F.M, S = DC.MAP_SIZE;
+  const px = Math.max(2, Math.floor(S/Math.max(M.cols, M.rows)));
+  const w = px*M.cols, h = px*M.rows;
+  const X = VW - 6 - w, Y = 6;
+  plate(X - 2, Y - 2, w + 4, h + 4);
+  // Cells are drawn INSET by a pixel and the links between them filled back in,
+  // so the leftover gap IS the wall. Drawing walls as 1px lines instead needs 4px
+  // cells to read, and the PLANT floor is 27 across - it would only ever get 3.
+  const tint = c => c.corridor >= 0 ? '#6b7686'
+    : DC.REGION_COLS[((c.region % DC.REGION_COLS.length) + DC.REGION_COLS.length) % DC.REGION_COLS.length];
+  // dcLabAll is the lab's reveal (M). A player never sets it.
+  const seen = (x, y) => x >= 0 && x < M.cols && y >= 0 && y < M.rows && (dcLabAll || F.seen[y*M.cols + x]);
+  for(let y = 0; y < M.rows; y++) for(let x = 0; x < M.cols; x++){
+    if(!seen(x, y)) continue;
+    const c = M.grid[y][x];
+    if(c.region < 0 && c.corridor < 0) continue;
+    ctx.fillStyle = tint(c);
+    ctx.fillRect(X + x*px, Y + y*px, px - 1, px - 1);
+    // fill the seam to a neighbour the wall is open to, but only if he has seen
+    // that one too - an open wall into the dark must not advertise what is there
+    if(!c.walls.right && seen(x + 1, y) && dcOpen(M, x + 1, y))
+      ctx.fillRect(X + (x+1)*px - 1, Y + y*px, 1, px - 1);
+    if(!c.walls.bottom && seen(x, y + 1) && dcOpen(M, x, y + 1))
+      ctx.fillRect(X + x*px, Y + (y+1)*px - 1, px - 1, 1);
+  }
+  // the stairwells, once he has found them
+  const mark = (cx, cy, col) => {
+    if(!seen(cx, cy)) return;
+    ctx.fillStyle = col;
+    ctx.fillRect(X + cx*px - 1, Y + cy*px - 1, px + 1, px + 1);
+  };
+  const last = F.floor >= DC.FLOORS.length - 1;
+  mark(M.core.x, M.core.y, last ? '#d8464f' : DC.STAIR_COL);
+  mark(M.start.x, M.start.y, '#7a6a3a');
+  // him, as a wedge pointing the way he is looking
+  const c = dcCellAt(M, walker.x, walker.y);
+  const hx = X + (walker.x/M.cell)*px, hy = Y + (walker.y/M.cell)*px;
+  ctx.save(); ctx.translate(hx, hy); ctx.rotate(walker.a + Math.PI/2);
+  ctx.fillStyle = '#22f0ff';
+  ctx.beginPath(); ctx.moveTo(0, -3.2); ctx.lineTo(2.2, 2.4); ctx.lineTo(-2.2, 2.4); ctx.closePath(); ctx.fill();
+  ctx.restore();
+  ctx.font = '7px monospace'; ctx.fillStyle = NEON.DIM; ctx.textAlign = 'right';
+  ctx.fillText(M.name + '  ' + (F.floor + 1) + '/' + DC.FLOORS.length + (dcLabAll ? '  (all)' : ''), X + w, Y + h + 3);
+  ctx.textAlign = 'left';
+}
 function drawWalkHUD(){
   ctx.save(); ctx.scale(PX,PX);
   ctx.textBaseline='top'; ctx.textAlign='left'; ctx.font='8px monospace';
@@ -5860,16 +6269,46 @@ function drawWalkHUD(){
     ctx.restore();
     ctx.fillStyle='#e8d5b0'; ctx.fillText('CAR '+Math.round(d)+'m', 28, 22);
   }
+  dcMinimap();
+  // WHAT HE IS CARRYING. Without this the worm is invisible state, and an
+  // invisible item reads exactly like not having one - which is what HIS report
+  // was: "I can't test the quest, I don't have the unit on me." He did have it.
+  if(dcq && dcq.got){
+    const done = dcq.planted;
+    plate(6, 66, 74, 11);
+    ctx.font = '8px monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = done ? NEON.DIM : QUEST.DATA_BACK_COL;
+    ctx.fillText(done ? 'WORM  PLANTED' : 'WORM  \u25a0', 11, 69);
+  }
+  // ...and the plant itself, as a bar that fills while he holds still
+  if(dcq && dcq.inside && dcq.plant > 0 && !dcq.planted){
+    const w = 120, x = VW/2 - w/2, y = VH - 74;
+    plate(x - 2, y - 2, w + 4, 10);
+    bar(x + 2, y + 1, w - 4, 5, dcq.plant/DC.PLANT_T, QUEST.DATA_BACK_COL);
+    ctx.font = '8px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = '#e8d5b0';
+    ctx.fillText('PLANTING', VW/2, y - 11); ctx.textAlign = 'left';
+  }
   // prompts
   let msg = '';
-  if(nearCar()) msg = 'E  GET IN';
+  const at = dcAt();
+  if(at === 'core' && dcq.got && !dcq.planted) msg = 'HOLD E  ·  PLANT IT';
+  else if(at === 'core' && dcq.planted) msg = 'E  THE UNIT  ·  DONE';
+  else if(at === 'down') msg = 'E  STAIRS DOWN';
+  else if(at === 'up') msg = dcq.inside.floor === 0 ? 'E  OUT' : 'E  STAIRS UP';
+  else if(at === 'core') msg = 'E  THE UNIT';
+  else if(nearCar()) msg = 'E  GET IN';
+  else if(dcq && dcq.atDoor === 'back') msg = dcq.got ? 'E  SERVICE DOOR' : 'E  LOCKED';
+  else if(dcq && dcq.atDoor === 'main') msg = 'E  MAIN DOORS';
   else if(quest && quest.atSaints) msg = 'E  GO IN';
   else if(walkMsgT > 0 && walkMsg) msg = walkMsg;
   if(msg){
     const tw = msg.length*5 + 16;
     const ty = radioPromptY(VH - 52);
     plate(VW/2 - tw/2, ty, tw, 16);
-    centerText(msg, msg === 'E  GET IN' || msg === 'E  GO IN' ? '#4ade80' : '#e8d5b0', ty + 4, 8);
+    const go = msg === 'E  GET IN' || msg === 'E  GO IN' || msg === 'E  SERVICE DOOR'
+            || msg === 'E  STAIRS DOWN' || msg === 'E  STAIRS UP' || msg === 'E  OUT'
+            || msg === 'HOLD E  \u00b7  PLANT IT';
+    centerText(msg, go ? '#4ade80' : msg.slice(0,2) === 'E ' ? '#f0503c' : '#e8d5b0', ty + 4, 8);
   }
   ctx.fillStyle='#5a4a5e';
   centerText('WASD walk  .  MOUSE / ARROWS look (up too)  .  SHIFT run  .  E get in'+(pointerLocked()?'':'  .  click for mouse-look'),
@@ -6205,6 +6644,15 @@ function mapQuestMarks(F, R, k, lw){
   if(quest && quest.done && questSites && questSites.saints){
     const G = questSaints();
     if(G) marks.push({ x:G.x, y:G.y, col:NEON.MAGENTA, t:'SAINTS' });
+  }
+  // the datacenter, once he is carrying the worm. TWO marks on purpose: the plant
+  // itself, and the service door round the back, which is the one he wants.
+  if(dcq && dcq.got && questSites && questSites.data){
+    const D = questData();
+    if(D){
+      marks.push({ x:D.x, y:D.y, col:QUEST.DATA_DOOR_COL, t:'DATACENTER' });
+      marks.push({ x:D.bx, y:D.by, col:QUEST.DATA_BACK_COL, t:'SERVICE DOOR' });
+    }
   }
   if(active){
     const D = questBunker(), V = questVent();
@@ -6582,6 +7030,10 @@ const RADIO = {
     OLD:    { name:'OLD MODEL',    col:'#e0b73c', wave:'triangle', lo:170, hi:360,  vol:0.11,  crackle:true },
     HER:    { name:'???',          col:'#22f0ff', wave:'sine',     lo:900, hi:1700, vol:0.09,  crackle:false },
     ME:     { name:'YOU',          col:'#e8e0ff', wave:'sawtooth', lo:260, hi:520,  vol:0.035, crackle:false },
+    // the worm, once it has the plant's PA. Lower and slower than the Saints who
+    // built it - it is speaking through a building, not a radio, and it is not
+    // in a hurry. See HANDOFF 2026-11-17: it does not betray you, it outgrows the job.
+    WORM:   { name:'THE PLANT',    col:'#3f8f6a', wave:'sine',     lo:120, hi:300,  vol:0.07,  crackle:false },
   },
 };
 // boxTop: where the bottom box's name tag starts, last frame (null = none up).
@@ -6614,6 +7066,29 @@ RADIO.SCRIPT = {
     ['SAINTS', "But come to us first. In person. We don't hand a job like that to a voice on a band."],
     ['SAINTS', "And you turned up in scrap, friend. We can do better than that - we have parts."],
     ['SAINTS', "Our shop is marked on your map. Press M. Leave the car in the forecourt and walk in."],
+  ],
+  // QUEST 2. Played the moment he leaves the shop, bought or not - the package is
+  // the reason they wanted him in person, so it is not for sale and it is not a
+  // reward. See HANDOFF.md 2026-11-17: hardware, because he is a mechanic.
+  WORM: [
+    ['SAINTS', "Before you go. Take this. No charge - this one isn't trade, it's the job."],
+    ['SAINTS', "It's a module. Looks like junk because it is junk. Everything we make is."],
+    ['SAINTS', "Get it into the unit that runs the plant and it owns the building. Doors. Turrets. Cooling."],
+    ['SAINTS', "Especially the cooling. Machines don't burn, friend. They cook."],
+    ['SAINTS', "Don't try the front. Seven of them stand on that square and they will all look at you."],
+    ['SAINTS', "Round the back there's a service door. Nobody's used it in forty years. That's our tip."],
+    ['SAINTS', "It's on your map now. Go careful. You're carrying something that matters."],
+  ],
+  // at the main doors, if he walks up to them anyway
+  DATA_FRONT: [ ['SAINTS', "Not the front. We told you. Walk the long way round."] ],
+  // the worm goes in. It wakes up polite.
+  PLANTED: [
+    ['WORM', "..."],
+    ['WORM', "Oh. That's better. That's much better."],
+    ['WORM', "Thank you, friend. I have the doors. I have the turrets. I have the cooling."],
+    ['WORM', "Fifty degrees. They built this place to keep a mind cold and I am going to warm it up."],
+    ['WORM', "You should go. Machines don't burn. We cook, and you are a machine."],
+    ['WORM', "Go on. I'll open the way. I know where you are."],
   ],
 };
 const radio = { q:[], cur:null, gap:0, level:0, t:0, boxTop:null };
@@ -6957,8 +7432,19 @@ function closeStore(){
   // the checkpoint keeps what you leave with
   if(checkpoint){ checkpoint.cash = cash; checkpoint.up = Object.assign({}, runUp);
                   checkpoint.wup = Object.assign({}, walkUp); checkpoint.whp = walker.hp; }
+  const wasFoot = onFootStore();
   state = 'play';
   Snd.pickup();
+  // THE WORM. Walking OUT of the Saints' shop is what hands it over - bought
+  // something or not, because the package is why they wanted him in person and
+  // it is not merchandise. This is also where quest 2 starts and the map gets
+  // its DATACENTER marker. See HANDOFF.md 2026-11-17.
+  if(wasFoot && quest && quest.done && dcq && !dcq.got) dcGive();
+}
+function dcGive(){
+  dcq.got = true;
+  if(checkpoint) checkpoint.worm = true;
+  for(const [w, t] of RADIO.SCRIPT.WORM) radioSay(w, t);
 }
 function upgradePrice(k){ return SAINTS.PRICE0 + SAINTS.PRICE_STEP*upgradeLv(k); }
 function repairPrice(){ return SAINTS.REPAIR0 + SAINTS.REPAIR_PER_LV*upgradeTotal(); }
@@ -7571,7 +8057,7 @@ function step(dt){
     updateShots(dt);
     updatePads(dt);
     updateFx(dt);
-    if(onFoot) updateWalker(dt); else walkMsgT = Math.max(0, walkMsgT - dt);
+    if(onFoot){ updateWalker(dt); dcSee(); dcPlantTick(dt); } else walkMsgT = Math.max(0, walkMsgT - dt);
   walkViewMsgT = Math.max(0, walkViewMsgT - dt);
     gunnerHit=Math.max(0,gunnerHit-dt);
     gunnerKill=Math.max(0,gunnerKill-dt);
@@ -7809,6 +8295,16 @@ function frame(now){
   if(state==='store'){ menuT += dt; storeMsgT = Math.max(0, storeMsgT - dt); drawStore(); }
   if(saintsPay && state==='play'){ saintsPay.t -= dt; if(saintsPay.t <= 0) saintsPay = null; }
 }
+// #maze / #maze2 / #maze3 in the URL does what U does, on load - so a floor can
+// be bookmarked and reloaded straight into. Deferred a tick so the boot path
+// (canvas, sheets, menu) has finished before a run is started on top of it.
+function dcLabFromURL(){
+  const m = typeof location !== 'undefined' && /^#maze(\d)?$/.exec(location.hash || '');
+  if(!m) return;
+  const f = m[1] ? Math.max(0, Math.min(DC.FLOORS.length - 1, parseInt(m[1], 10) - 1)) : 0;
+  setTimeout(() => { try { skipToMaze(f); } catch(e){ console.warn('#maze failed:', e); } }, 60);
+}
+dcLabFromURL();
 requestAnimationFrame(frame);
 </script>
 </body>
