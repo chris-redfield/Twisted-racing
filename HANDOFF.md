@@ -145,20 +145,42 @@ read.
 BYTE-IDENTICAL to the shipped ones (`md5sum -c`). If a source file had been needed, that check
 fails. The `.obj` is enough to re-carve at any resolution, which is all the game needs.
 
-**Nothing is actually lost, and the repo did NOT get smaller.** He had already committed these in
-`cdd025b`, so the delete is a working-tree delete:
+**They are GONE from this machine, and that was his call** - see the push story below, which is
+where they actually went. `.git` is **76 MB**, down from 460 MB. The `.obj` and turret-02's `.fbx`
+are still in the repo, which is all the pipeline ever reads; `The_Turret_1.blend` was the only
+EDITABLE source for turret-01 (the `.obj` is an export of it) and would have to be downloaded
+again. **He confirmed both models are free and open source** (2026-11-23), so that is a download,
+not a problem - but the URL is recorded nowhere, so finding it again is the cost. Re-carving at any
+resolution needs none of it.
 
-* to get any of them back: `git checkout -- assets/enemies/turret-01 assets/enemies/turret-02`.
-  That matters for `The_Turret_1.blend`, which is the only EDITABLE source for turret-01 - the
-  `.obj` is an export of it - and for the textures. The author and licence are still unrecorded for
-  both models (see the pipeline entry below).
-* **`.git` is 459 MB and stays that way.** The delete only keeps the files out of future checkouts;
-  the blobs live in history. Shrinking it needs `git filter-repo`/BFG, which rewrites every commit
-  hash and breaks any clone.
+**AND THEN GITHUB REFUSED THE PUSH, so it was not deferrable after all.** He pushed, and the
+pre-receive hook declined it: `The_Turret_1.blend` is 149.76 MB against a 100 MB HARD limit (three
+more files drew 50 MB warnings). The trap worth remembering: **`e05e92a` had already deleted those
+files, and that does not help at all.** The push still carries the blobs - 383.74 MiB written - and
+the hook scans every object in the PACK, not the final tree. A later delete is not a fix.
 
-**DEFERRED, his call (2026-11-23):** *"oh yes, we need to rewrite history... that sounds like a
-headache, lets leave that for later."* So the history rewrite is OPEN WORK, not forgotten. Whoever
-picks it up: it is his to run and it must be coordinated with every clone.
+What it cost to fix was almost nothing, because **the three bad commits had never been pushed**.
+The headache everyone fears about rewriting history is the SHARED case, where every clone has to be
+coordinated; here there was nobody to coordinate with. He chose to squash:
+
+    git reset --soft cde6e6c        # keep the whole working tree, drop the 3 commits
+    git commit                      # one commit in which the big files are never ADDED
+    git push                        # plain fast-forward: the remote never took the bad commits
+
+Checked before going near the network: nothing oversized staged, largest object 11 MB (no error and
+no warning), and `origin/main` an ancestor of HEAD so no `--force`. Landed as `cde6e6c..cef7904`.
+
+**And the 387 MB then cost two commands, not `filter-repo`.** Once the squash was done those
+commits were unreachable from `main` and the blobs were held alive ONLY by the reflog - no remote
+branch had them. So:
+
+    git reflog expire --expire=now --expire-unreachable=now --all
+    git gc --prune=now
+
+**460 MB -> 76 MB**, `git fsck` clean, still in sync, all four carves still rebuild byte-identical.
+No filter-repo, no BFG, no force-push, no clone coordination. Worth internalising: a bad blob is
+cheap to remove while it is local and expensive once it is pushed - and if a squash has already
+taken it out of the branch, a reflog expire plus a gc is the whole job.
 
 **`.gitignore` now stops it happening again** (his ask, same day): `*.blend`, `*.blend1`, `*.rar`,
 `*.7z`, `assets/**/*.zip`. Deliberately NOT ignored are `.obj .fbx .stl .glb .3ds` - every one of
