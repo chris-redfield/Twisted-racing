@@ -23,6 +23,12 @@
 <script src="assets/enemies/enemies-2d.js"></script>
 <script src="assets/enemies/sentry-vox.js"></script>
 <script src="assets/enemies/sentry-vox-64.js"></script>
+<!-- the datacenter's turrets (tools/car_voxelize.py -> window.VOXTURRETS). The @64
+     carves, not the @48: every frame of these is BAKED ONCE into a sprite sheet and
+     then the game draws pixels, so the face count is a load-time cost and not a
+     per-frame one. A missing file falls back to whatever IS loaded - see turretVoxName. -->
+<script src="assets/enemies/turret1-64.js"></script>
+<script src="assets/enemies/turret2-64.js"></script>
 <script src="foe.js"></script>
 <script src="maze.js"></script>
 <!-- voxel cars for the GARAGE (tools/car_voxelize.py). A missing file just drops that car from the list. -->
@@ -1088,10 +1094,19 @@ function dcLabReroll(){
   const last = f >= DC.FLOORS.length - 1;
   dcMarkerRings(M, rings, M.core.x, M.core.y, last ? '#d8464f' : DC.STAIR_COL, DC.WALL_H);
   dcMarkerRings(M, rings, M.start.x, M.start.y, '#9c8747', DC.WALL_H);
-  // replace the CACHED floor, or dcEnter hands the old one straight back
+  // replace the CACHED floor, or dcEnter hands the old one straight back.
+  // Same shape dcFloorState builds, sentries, trap doors and med-kits included -
+  // a lab floor that is missing half the fields is a lab that lies about the
+  // game, and dcPopulate now READS F.turrets to keep the sentries off the lids.
   if(!dcq.floors) dcq.floors = {};
-  dcq.floors[f] = { M, floor:f, rings, seen:new Uint8Array(M.cols*M.rows) };
-  dcq.inside = dcq.floors[f];
+  const F = { M, floor:f, rings, seen:new Uint8Array(M.cols*M.rows), foes:[], meds:[],
+              turrets:[], hatch:new Uint8Array(M.cols*M.rows) };
+  dcq.floors[f] = F;
+  dcq.inside = F;
+  dcTurrets(F);
+  dcPopulate(F);
+  clearFoes();
+  for(const x of F.foes) if(!x.dead) foes.push(x);
   const p = dcWorld(M, M.start.x, M.start.y);
   walker.x = p.x; walker.y = p.y; walker.a = 0; walker.pitch = 0;
   dcSee();
@@ -1313,7 +1328,9 @@ function cityStep(dt){
   }
   citySpawner(dt);
   questTick(dt);                   // QUEST 1: the cement
-  citySentries();                  // foe.js: scatter them by block, cull what you left
+  // ...but NOT while he is inside the plant: those sentries belong to city
+  // coordinates thousands of units away, and the floor keeps its own.
+  if(!(dcq && dcq.inside)) citySentries();   // foe.js: scatter them by block, cull what you left
   cityWalkers();                   // ...and the SEPARATE moving population (FOE_WALK)
   foeRam();                        // ...and a car that drives into one
   if(onFoot) for(const c of cars){
@@ -1509,6 +1526,15 @@ function explode(x,y,power,owner,dmg,radius,opt){
     if(f.dead) continue;
     const d=Math.hypot(f.x-x,f.y-y);
     if(d<R) foeDamage(f, (dmg||0)*(1-d/R), owner);
+  }
+  // THE WALKER, but only when the blast is one that was told to look for him.
+  // Opt-in, not automatic: every mine, barrel and wrecked car in the city makes
+  // one of these, none of them has ever hurt him on foot, and quietly making
+  // them all lethal would reprice the whole street. The datacenter's missile
+  // rack asks (TURRET.KINDS[2]), and it is the only thing that does.
+  if(opt.walker && onFoot && typeof walker !== 'undefined' && typeof hurtWalker === 'function'){
+    const d = Math.hypot(walker.x - x, walker.y - y);
+    if(d < R) hurtWalker(opt.walker*(1 - d/R));
   }
   for(const b of blocks){
     if(b.type==='barrel' && b.hp>0 && Math.hypot(b.x-x,b.y-y)<R+18){ b.hp-=40; if(b.hp<=0) popBarrel(b,owner); }
@@ -2303,7 +2329,17 @@ function updateShots(dt){
     if(s.kind==='missile'){
       // soft homing on nearest enemy in a forward cone
       let best=null,bd=1e9;
-      for(const c of cars){
+      // A TURRET'S MISSILE IS AIMED AT YOU, and inside the plant there is no car
+      // for it to home on at all - every car is parked in the street, thousands of
+      // units from the floor's own coordinates. So a foe missile tracks the
+      // WALKER, and that is what makes cover the answer to the missile rack and
+      // running down a corridor the wrong one.
+      if(s.foe){
+        if(onFoot){
+          const a=Math.atan2(walker.y-s.y,walker.x-s.x);
+          if(Math.abs(angDiff(s.angle,a))<0.9) best=walker;
+        }
+      } else for(const c of cars){
         if(c.dead||c.id===s.owner) continue;
         const d=Math.hypot(c.x-s.x,c.y-s.y);
         const a=Math.atan2(c.y-s.y,c.x-s.x);
@@ -2319,9 +2355,26 @@ function updateShots(dt){
       if(s.smoke<=0){ s.smoke=0.02;
         particles(s.x,s.y,s.z,1,{col:['#6b5c72','#4a3f50'],spd0:2,spd1:14,size:2,life0:0.3,life1:0.6,grav:-8,up0:0,up1:6}); }
     }
+    const px = s.x, py = s.y;
     s.x+=s.vx*dt; s.y+=s.vy*dt;
     let gone = s.life<=0;
-    if(!gone && blockHitPoint(s.x,s.y,3)){
+    // INSIDE THE DATACENTER a bolt dies on the MAZE's walls, and the city's
+    // blockers do not apply: a floor is laid out from the world origin, nowhere
+    // near the building's own footprint, so blockHitPoint out there was either
+    // eating bolts against unrelated geometry or letting them through four
+    // partitions. Cover has to work the same way for both of you.
+    const dcMs = (typeof dcq !== 'undefined' && dcq && dcq.inside) ? dcq.inside.M : null;
+    if(!gone && dcMs){
+      if(!dcClear(dcMs, px, py, s.x, s.y)){
+        // A MISSILE GOES OFF ON THE WALL. This is what stops ducking round a
+        // corner from the missile rack being free: the blast still reaches round
+        // it, at whatever the falloff leaves by the time it gets to you.
+        if(s.kind==='missile') explode(s.x, s.y, 1, s.owner, s.dmg, s.blast || 62,
+                                       { z:Math.max(0, s.z - 6), floor:0, walker:s.dmgWalk });
+        else particles(s.x,s.y,s.z,3,{col:['#ffe9a8','#9a8aa0'],spd0:20,spd1:70,size:1,life0:0.08,life1:0.2});
+        gone = true;
+      }
+    } else if(!gone && blockHitPoint(s.x,s.y,3)){
       if(s.kind==='missile') explode(s.x,s.y,1,s.owner,s.dmg,62);
       else particles(s.x,s.y,s.z,3,{col:['#ffe9a8','#9a8aa0'],spd0:20,spd1:70,size:1,life0:0.08,life1:0.2});
       gone=true;
@@ -2348,7 +2401,8 @@ function updateShots(dt){
     // where a car is 38 long, so the cars' 15 would hit from a body's width away.
     if(!gone && foes.length && !s.foe) for(const f of foes){
       if(f.dead) continue;
-      if(Math.hypot(f.x-s.x,f.y-s.y)<FOE.SHOT_R){
+      if(f.turret && f.rise < 1) continue;        // still coming up out of the floor
+      if(Math.hypot(f.x-s.x,f.y-s.y) < (f.shotR || FOE.SHOT_R)){
         // a missile does its damage through the blast (see explode), a round directly
         if(s.kind==='missile') explode(s.x,s.y,1,s.owner,s.dmg,62);
         else {
@@ -2359,7 +2413,13 @@ function updateShots(dt){
       }
     }
     if(!gone && onFoot && s.owner !== 0 && Math.hypot(walker.x-s.x, walker.y-s.y) < 9){
-      hurtWalker(s.foe ? s.dmgWalk : WALK_SHOT_DMG); gone = true;
+      // a direct hit from the rack is still a BLAST, not a bullet: the splash is
+      // where most of its damage lives and a contact hit must not be worth less
+      // than a near miss
+      if(s.kind==='missile') explode(s.x, s.y, 1, s.owner, s.dmg, s.blast || 62,
+                                     { z:Math.max(0, s.z - 6), floor:0, walker:s.dmgWalk });
+      else hurtWalker(s.foe ? s.dmgWalk : WALK_SHOT_DMG);
+      gone = true;
     }
     if(gone) shots.splice(i,1);
   }
@@ -3577,6 +3637,15 @@ function drawBuildings2D(list, front){
 // the map's SAINTS marker; the door itself is an on-foot thing and reads in the
 // first-person pane (rcBuildingColumn). This is here so a door on a y face - a
 // lot cut the other way, or the next shop - draws without more work.
+// ONCE HE IS OUT, THE PLANT IS SHUT. The worm said it had the doors and it meant
+// it: the red main doors and the green service door both go to plate, and neither
+// opens again. Named by kind rather than by "has a kind" - the Saints' door
+// carries kind:'saints' and welding THAT shut would close the shop for good.
+function doorSealed(D){
+  return !!(D && (D.kind === 'main' || D.kind === 'back') &&
+            typeof dcq !== 'undefined' && dcq && dcq.escaped);
+}
+function doorCol(D){ return doorSealed(D) ? QUEST.DATA_SEAL_COL : (D.col || QUEST.SAINTS_DOOR_COL); }
 function drawDoor2D(D, sa, sc, lift){
   const at = t => ({ x:sa.x + (sc.x - sa.x)*t, y:sa.y + (sc.y - sa.y)*t });
   const slab = (t0, t1, z0, z1, col) => {
@@ -3587,8 +3656,9 @@ function drawDoor2D(D, sa, sc, lift){
     ctx.lineTo(c.x, c.y - zb); ctx.lineTo(a.x, a.y - zb); ctx.closePath(); ctx.fill();
   };
   const m = (D.t1 - D.t0)*0.16;                       // the frame's share of the width
-  const col = D.col || QUEST.SAINTS_DOOR_COL;
+  const col = doorCol(D);
   slab(D.t0, D.t1, 0, D.h, col);                       // frame
+  if(doorSealed(D)) return;                            // welded over: a plate, no way in
   slab(D.t0 + m, D.t1 - m, 0, D.h*0.9, '#0b0a10');     // the dark way in
   slab(D.t0 + m, D.t1 - m, 0, D.h*0.22, col);          // light from inside
 }
@@ -4192,7 +4262,9 @@ function questStart(keep){
   questSites = keep && keep.sites ? keep.sites : questRoll();
   questForgetCity();
   quest = { truck:null, pour:0, done:!!(keep && keep.done), said:{}, near:false };
-  dcq = { got:!!(keep && keep.worm), atDoor:null, inside:null, said:{}, plant:0, planted:false };
+  const over = !!(keep && keep.plantDone);     // quest 2 already finished: the plant stays shut
+  dcq = { got:!!(keep && keep.worm), atDoor:null, inside:null, said:{}, plant:0,
+          planted:over, escaped:over, heat:0 };
   if(!quest.done) questSpawnTruck();
 }
 function questSpawnTruck(){
@@ -4285,7 +4357,162 @@ function dcFloorState(i){
   const last = i >= DC.FLOORS.length - 1;
   dcMarkerRings(M, rings, M.core.x, M.core.y, last ? '#d8464f' : DC.STAIR_COL, DC.WALL_H);
   dcMarkerRings(M, rings, M.start.x, M.start.y, '#9c8747', DC.WALL_H);
-  return dcq.floors[i] = { M, floor:i, rings, seen:new Uint8Array(M.cols*M.rows) };
+  const F = { M, floor:i, rings, seen:new Uint8Array(M.cols*M.rows), foes:[], meds:[],
+              turrets:[], hatch:new Uint8Array(M.cols*M.rows) };
+  dcTurrets(F);                    // the lids go down BEFORE the sentries stand on them
+  dcPopulate(F);
+  return dcq.floors[i] = F;
+}
+// THE TRAP DOORS. Placed when the floor is generated and BEFORE the sentries, so
+// that the sentries and the med-kits are laid out around them rather than inside
+// them. Each one is a lid in the floor and a complete turret underneath it,
+// `hidden`, waiting for dcRelease.
+//
+// Off the floor's own seed like everything else in here, which is what makes the
+// lid he walked over on the way down the same object that comes up behind him on
+// the way back. Nothing is saved; the seed is the save.
+//
+// The turret SHUT is the whole point of the thing. He asked for round lids you
+// notice and do not understand - so they are drawn, they are solid-looking, they
+// are eleven a floor, and until the worm is in they do nothing at all.
+function dcTurrets(F){
+  const M = F.M;
+  const rng = cityRng(hash3(F.floor + 53, 17, DC.SEED)*4294967296);
+  // the stairwells keep their distance, and so does the unit itself: the plant
+  // must not end with a missile rack standing on the thing he came to touch.
+  const last = F.floor >= DC.FLOORS.length - 1;
+  const avoid = [ Object.assign({}, M.start, { d:DC.TURRET_MIN_D }),
+                  Object.assign({}, M.core,  { d:last ? DC.TURRET_CORE_D + DC.TURRET_MIN_D
+                                                      : DC.TURRET_MIN_D }) ];
+  const spots = dcPlaces(M, DC.TURRETS, DC.TURRET_MIN_D, rng, avoid, DC.TURRET_SPREAD);
+  // WHICH OF THE TWO. An EXACT share, and decided PER CELL rather than per draw.
+  //
+  // Two things went wrong before this and both are worth keeping written down.
+  // Rolling `rng.next() < TURRET_MIX` once per turret is binomial, and at n = 11
+  // that is wide enough to matter: the first floor of the shipped seed came out
+  // NINE missile racks out of eleven. An exact count fixes that and also makes
+  // TURRET_MIX mean what it says when he turns it. But shuffling the counted
+  // array with Fisher-Yates off `rng` then came out SORTED, because the stream
+  // at that point happens to return a run of small values and a small `r` makes
+  // every swap pick an index near nought. (cityRng itself is fine - measured at
+  // 0.4495 of a million draws below 0.45, deciles flat. It was a short low run,
+  // which is a thing a good generator is allowed to do and a shuffle must not
+  // depend on not happening.)
+  //
+  // So: hash each CELL, take the lowest `want` of them. Deterministic per floor,
+  // exactly the right count, and independent of both the stream position and the
+  // order dcPlaces happened to return the spots in.
+  const want = Math.round(spots.length*DC.TURRET_MIX);
+  const rank = spots.map((q, i) => ({ i, h:hash3(q.x*31 + 7, q.y*17 + 3, DC.SEED + F.floor + 1) }))
+                    .sort((a, b) => a.h - b.h);
+  const kinds = new Array(spots.length).fill(1);
+  for(let i = 0; i < want; i++) kinds[rank[i].i] = 2;
+  for(let i = 0; i < spots.length; i++){
+    const p = spots[i];
+    const w = dcWorld(M, p.x, p.y);
+    const kind = kinds[i];
+    const t = spawnTurret(w.x, w.y, rng.next()*Math.PI*2, kind);
+    t.cell = { x:p.x, y:p.y };
+    F.turrets.push(t);
+    F.hatch[p.y*M.cols + p.x] = 1;          // 1 shut, 2 open - dcBackground draws it
+  }
+  // ...and if the worm is already in (he planted it, took the stairs, and this
+  // floor is only being built now) they are already up. dcRelease cannot reach a
+  // floor that does not exist yet, so the floor has to be born released.
+  if(dcq.planted) for(const t of F.turrets) dcRaise(F, t);
+}
+// one turret, out of its hole. Split out of dcRelease because dcTurrets needs it
+// too, for a floor built after the plant.
+function dcRaise(F, t){
+  if(!t.hidden) return;
+  t.hidden = false;
+  t.rise = 0;                                // turretThink brings it up
+  F.hatch[t.cell.y*F.M.cols + t.cell.x] = 2;
+  if(dcq.inside === F && !t.dead) foes.push(t);
+}
+// SENTRIES AND MED-KITS. Both are placed off the floor's own seed, so a floor is
+// always peopled the same way - and both are kept ON THE FLOOR, not in the
+// globals, so going upstairs does not drag floor 3's guards with you and coming
+// back does not resurrect the ones you shot.
+function dcPopulate(F){
+  const M = F.M;
+  const rng = cityRng(hash3(F.floor + 11, 23, DC.SEED)*4294967296);
+  // the stairwells, plus every hatch: a sentry standing on a lid is a sentry
+  // standing where a turret is about to be, and dcRaise does not move it.
+  const stairs = [M.start, M.core].concat(F.turrets.map(t => ({ x:t.cell.x, y:t.cell.y, d:2 })));
+  const n = dcq.planted ? DC.FOES_AFTER : DC.FOES_BEFORE;
+  for(const p of dcPlaces(M, n, DC.FOE_MIN_D, rng, stairs, DC.FOE_SPREAD)){
+    const w = dcWorld(M, p.x, p.y);
+    const f = spawnFoe(w.x, w.y, rng.next()*Math.PI*2);
+    f.dc = true;                      // in here they hunt on sight: see foeThink
+    foes.pop();                       // spawnFoe pushes into the global list; this
+    F.foes.push(f);                   // floor owns it instead, until he is standing on it
+  }
+  for(const p of dcPlaces(M, DC.MEDS, 3, rng, stairs.concat(F.foes.map(f => dcCellAt(M, f.x, f.y))))){
+    const w = dcWorld(M, p.x, p.y);
+    F.meds.push({ x:w.x, y:w.y, taken:false, bob:rng.next()*6 });
+  }
+}
+// ONE FLOW FIELD, SHARED. Thirty sentries asking "which way is he" thirty times
+// a frame is thirty BFS sweeps of a 27x27 floor; they are all asking the same
+// question, so it is answered once and cached until he steps into another cell.
+// Keyed by floor as well as cell, so taking the stairs cannot hand floor 2's
+// field to floor 3's guards.
+let dcFlowKey = '', dcFlowFld = null;
+function dcHunt(){
+  if(!dcq || !dcq.inside) return null;
+  const M = dcq.inside.M, c = dcCellAt(M, walker.x, walker.y);
+  const k = dcq.inside.floor + ':' + c.x + ',' + c.y;
+  if(k !== dcFlowKey){ dcFlowKey = k; dcFlowFld = dcFlow(M, c.x, c.y); }
+  return dcFlowFld;
+}
+// THE WORM OPENS THE FLOOR. Every hatch on every floor at once - the ones he has
+// walked over and the ones he has not reached - because the worm said it had the
+// turrets before he had been anywhere near most of them, and a building that
+// wakes up a room at a time is a building you can out-walk.
+//
+// A floor he has NOT built yet cannot be reached from here; dcTurrets reads
+// dcq.planted and is born released instead. That is the same split dcPopulate
+// makes for FOES_AFTER and for the same reason.
+function dcRelease(){
+  let n = 0;
+  for(const k in dcq.floors){
+    const F = dcq.floors[k];
+    for(const t of F.turrets){ if(t.hidden){ dcRaise(F, t); n++; } }
+  }
+  if(n && typeof Snd !== 'undefined' && Snd.voice) Snd.voice(90, 0.7, 'sawtooth', 0.09, 42);
+  // START THE SHEETS NOW, under the cover of the rise. Creating them is cheap
+  // (a canvas and a bounding box); turretWarm then fills them a yaw a
+  // frame while eleven lids are still opening, so the first rack to clear the
+  // floor already has the yaw it needs. Leave it to the first draw instead and
+  // that draw is ~400 ms of rasterCar - see bakeTurretSheet.
+  if(n){ bakeTurretSheet(1); bakeTurretSheet(2); }
+  return n;
+}
+// the worm going in wakes the building: every floor, the ones already built and
+// the ones he has not reached, goes from FOES_BEFORE to FOES_AFTER.
+function dcAlarm(){
+  for(const k in dcq.floors){
+    const F = dcq.floors[k], M = F.M;
+    const rng = cityRng(hash3(F.floor + 97, 41, DC.SEED)*4294967296);
+    const live = F.foes.filter(f => !f.dead).length;
+    // the stairwells keep their full FOE_MIN_D; the sentries already standing on
+    // the floor only need FOE_SPREAD, or the reinforcements do not fit at all -
+    // 12 bodies at 5 cells of clearance eat a 237-cell floor and the top-up
+    // silently stops at 22 of 30.
+    const avoid = [M.start, M.core]
+      .concat(F.turrets.map(t => ({ x:t.cell.x, y:t.cell.y, d:2 })))
+      .concat(F.foes.filter(f => !f.dead)
+                    .map(f => Object.assign(dcCellAt(M, f.x, f.y), { d:DC.FOE_SPREAD })));
+    for(const p of dcPlaces(M, DC.FOES_AFTER - live, DC.FOE_MIN_D, rng, avoid, DC.FOE_SPREAD)){
+      const w = dcWorld(M, p.x, p.y);
+      const f = spawnFoe(w.x, w.y, rng.next()*Math.PI*2);
+      f.dc = true;
+      foes.pop();
+      F.foes.push(f);
+      if(dcq.inside === F) foes.push(f);     // he is standing here: it arrives now
+    }
+  }
 }
 // `at` is the stairwell he comes OUT of, and it is the far end of the flight he
 // went IN by: going DOWN lands on the new floor's UP stairs ('start'), climbing
@@ -4300,6 +4527,13 @@ function dcEnter(floor, at){
   const F = dcFloorState(i);
   if(!dcq.outside) dcq.outside = { x:walker.x, y:walker.y, a:walker.a };   // the street, kept across floors
   dcq.inside = F;
+  // swap the global foe list to this floor's. They keep their hp and their dead
+  // flag, so a sentry he shot on the way down is still down on the way back up.
+  clearFoes();
+  for(const f of F.foes) if(!f.dead) foes.push(f);
+  // ...and the turrets that are UP. A hidden one is a shut lid: it is a complete
+  // turret in every other respect, it is simply not in the world yet.
+  for(const t of F.turrets) if(!t.dead && !t.hidden) foes.push(t);
   const M = F.M, c = at === 'core' ? M.core : M.start;
   const p = dcWorld(M, c.x, c.y);
   walker.x = p.x; walker.y = p.y; walker.a = 0; walker.pitch = 0;
@@ -4311,10 +4545,30 @@ function dcEnter(floor, at){
 function dcLeave(){
   if(!dcq || !dcq.inside) return;
   const o = dcq.outside;
+  const out = dcq.planted && !dcq.escaped;     // the worm is in and this is the way out
+  clearFoes();                     // the city's own spawner puts the street back
   dcq.inside = null; dcq.outside = null;
   if(o){ walker.x = o.x; walker.y = o.y; walker.a = o.a; }
   walker.pitch = 0;
-  walkSay('OUT');
+  if(out) dcEscaped();
+  else walkSay('OUT');
+}
+// OUT, WITH IT STILL IN THERE. The mission ends on the pavement rather than at
+// the unit: planting it is the hard part, but surviving the building afterwards
+// is the part that is worth money - so this is where quest 2 pays.
+//
+// It also SHUTS THE BUILDING. Nothing in here is a lock the player could pick:
+// the worm has the doors, it has no further use for him, and leaving the service
+// door ajar would mean wandering back into a 50-degree labyrinth with no reason
+// to and no way to finish anything. doorSealed draws that, dataEnter enforces it.
+function dcEscaped(){
+  dcq.escaped = true;
+  cash += QUEST.DATA_CASH;
+  if(checkpoint) checkpoint.plantDone = true;
+  banner('OUT', '+$' + QUEST.DATA_CASH + '   it has the building now');
+  Snd.pickup();
+  radio.gap = 0.8;                            // a beat on the pavement first
+  for(const [w, t] of RADIO.SCRIPT.ESCAPED) radioSay(w, t);
 }
 // which stairwell he is standing on: 'up' (the way he came), 'down' (deeper), or
 // 'core' on the bottom floor, where the stairs stop and the unit is.
@@ -4341,9 +4595,58 @@ function dcPlantTick(dt){
   dcq.plant += dt;
   if(dcq.plant >= DC.PLANT_T) dcPlanted();
 }
+// ---- THE HEAT -------------------------------------------------------------
+// Degrees on a given floor. Floor 0 is the TOP, and it cooks first: each floor
+// below it does not START warming until HEAT_LAG seconds later, so the way out
+// is always hotter than the way he came. The whole escape's pacing is in here.
+function dcTemp(floor){
+  if(!dcq || !dcq.planted) return DC.HEAT_AMBIENT;
+  const t = Math.max(0, dcq.heat - floor*DC.HEAT_LAG);
+  return DC.HEAT_AMBIENT + (DC.HEAT_MAX - DC.HEAT_AMBIENT)*Math.min(1, t/DC.HEAT_T);
+}
+// where HE is standing, which is the only one that can hurt him
+function dcTempHere(){ return dcq && dcq.inside ? dcTemp(dcq.inside.floor) : DC.HEAT_AMBIENT; }
+// hot enough to be doing damage - also what kills the repair rig
+function dcHot(){ return dcTempHere() > DC.HEAT_HURT; }
+// 0..1 across the band where it hurts, for the HUD and the tint
+function dcHeatK(){
+  return clamp((dcTempHere() - DC.HEAT_HURT)/(DC.HEAT_MAX - DC.HEAT_HURT), 0, 1);
+}
+function dcHeatTick(dt){
+  if(!dcq || !dcq.planted) return;
+  dcq.heat += dt;
+  if(!dcq.inside || state !== 'play' || devMode) return;
+  const k = dcHeatK();
+  if(k <= 0) return;
+  // NOT hurtWalker(): that carries a 0.5 s invulnerability window and a red
+  // flash, both of which are right for a bolt and wrong for an oven. Heat is a
+  // drain, so it drains - no flash, no grace, and it does not break a repair
+  // because the rig is already dead at this temperature (see updateWalker).
+  walker.hp -= DC.HEAT_DPS*k*dt;
+  if(walker.hp <= 0){
+    walker.hp = 0; walkerDown = true; winner = null; state = 'over'; Snd.engineOff();
+  }
+}
+// walk over a med-kit and it is yours. They do not come back.
+function dcItemsTick(){
+  const F = dcq && dcq.inside;
+  if(!F || !onFoot) return;
+  for(const m of F.meds){
+    if(m.taken || Math.hypot(walker.x - m.x, walker.y - m.y) > DC.MED_R) continue;
+    if(walker.hp >= walkerMaxHp()) continue;       // leave it where it is if it is no use
+    m.taken = true;
+    walker.hp = Math.min(walkerMaxHp(), walker.hp + walkerMaxHp()*DC.MED_HEAL);
+    walkSay('MED-KIT  +' + Math.round(walkerMaxHp()*DC.MED_HEAL));
+    Snd.pickup();
+    particles(m.x, m.y, 8, 8, { col:['#fff', DC.MED_CROSS], spd0:20, spd1:70, size:1, life0:0.2, life1:0.4 });
+  }
+}
 function dcPlanted(){
-  dcq.planted = true; dcq.plant = DC.PLANT_T;
+  dcq.planted = true; dcq.plant = DC.PLANT_T; dcq.heat = 0;
+  dcAlarm();                       // the building wakes up...
+  const up = dcRelease();          // ...and the floor opens
   for(const [w, t] of RADIO.SCRIPT.PLANTED) radioSay(w, t);
+  if(up) for(const [w, t] of RADIO.SCRIPT.TURRETS) radioSay(w, t);
   banner('IT IS IN', 'get out of the building');
   Snd.pickup();
 }
@@ -4389,10 +4692,17 @@ function dataEnter(){
     return false;
   }
   if(!dcq.atDoor) return false;
+  // THE BUILDING IS SHUT. Both doors, and it does not matter which one he tries -
+  // see dcEscaped. The line is the worm's, once, and after that it is just a wall.
+  if(dcq.escaped){
+    if(!dcq.said.shut){ dcq.said.shut = true; for(const [w, t] of RADIO.SCRIPT.DATA_SHUT) radioSay(w, t); }
+    walkSay('WELDED SHUT - BOTH WAYS IN');
+    return true;
+  }
   if(dcq.atDoor === 'main'){
     // never openable: the whole point of the Saints' tip is that this is not the way
     if(!dcq.said.front){ dcq.said.front = true; for(const [w, t] of RADIO.SCRIPT.DATA_FRONT) radioSay(w, t); }
-    walkSay('SEALED - AND SEVEN OF THEM WATCHING');
+    walkSay('SEALED - AND ' + QUEST.DATA_GUARDS + ' OF THEM WATCHING');
     return true;
   }
   if(!dcq.got){ walkSay('LOCKED. THE SAINTS SAID THEY HAD A WAY IN'); return true; }
@@ -4943,8 +5253,33 @@ const PAVE_RGB=[74,66,80], PAVE_FAR=[40,34,46];
 // INSIDE THE PLANT there is no sky and no asphalt: a ceiling above the horizon
 // and a floor below it, both fogging to black with distance, so a corridor reads
 // as a corridor and the dark at the end of it is the whole mood of the place.
-function dcBackground(){
-  const C = DC.CEIL_RGB, F = DC.FLOOR_RGB;
+// WHICH PART OF A TRAP DOOR a point on the floor is: 0 none, 1 the lid, 2 the rim
+// or the seam, 3 the hole. One cell lookup and one distance, so it is cheap enough
+// to ask per sampled column per row - which is what makes the lid a true circle on
+// the floor that grows as you walk up to it, rather than a billboard pretending.
+function dcHatchAt(M, hatch, wx, wy){
+  const cx = Math.floor(wx/M.cell), cy = Math.floor(wy/M.cell);
+  if(cx < 0 || cy < 0 || cx >= M.cols || cy >= M.rows) return 0;
+  const st = hatch[cy*M.cols + cx];
+  if(!st) return 0;
+  const dx = wx - (cx + 0.5)*M.cell, dy = wy - (cy + 0.5)*M.cell;
+  const d = Math.sqrt(dx*dx + dy*dy);
+  if(d > DC.HATCH_R) return 0;
+  if(d > DC.HATCH_R - DC.HATCH_RIM) return 2;          // the rim
+  if(st === 2) return 3;                               // open: a hole in the floor
+  return Math.abs(dy) < 1.4 ? 2 : 1;                   // the seam, so a lid has two leaves
+}
+function dcBackground(camX, camY, bearing){
+  // as the plant heats, the ceiling and floor bleed toward HEAT_TINT. This is the
+  // only reading of the temperature that does not need a HUD: the room goes red.
+  const k = dcHeatK()*0.85, T = DC.HEAT_TINT;
+  const mix = c => [c[0] + (T[0]-c[0])*k, c[1] + (T[1]-c[1])*k, c[2] + (T[2]-c[2])*k];
+  const C = mix(DC.CEIL_RGB), F = mix(DC.FLOOR_RGB);
+  // the lids heat with the floor they are set into, or they would stay cold grey
+  // discs in a room that has gone red
+  const HC = [mix(DC.HATCH_LID), mix(DC.HATCH_EDGE), mix(DC.HATCH_HOLE)];
+  const FL = dcq && dcq.inside, M = FL && FL.M, hatch = FL && FL.hatch;
+  const fwx = Math.cos(bearing), fwy = Math.sin(bearing), rgx = -fwy, rgy = fwx;
   let p = 0;
   for(let y = 0; y < RC_H; y++){
     let r, g, b;
@@ -4953,17 +5288,39 @@ function dcBackground(){
       const perp = (DC.WALL_H - EYE_Z)*RC_VD/Math.max(0.5, RC_HORIZON - y + 0.5);
       const f = Math.min(1, perp/DC.FOG);
       r = (C[0]*(1-f))|0; g = (C[1]*(1-f))|0; b = (C[2]*(1-f))|0;
-    } else {
-      const perp = EYE_Z*RC_VD/Math.max(0.5, y - RC_HORIZON + 0.5);
-      const f = Math.min(1, perp/DC.FOG);
-      r = (F[0]*(1-f))|0; g = (F[1]*(1-f))|0; b = (F[2]*(1-f))|0;
+      for(let x = 0; x < RC_W; x++){ rcPix[p]=r; rcPix[p+1]=g; rcPix[p+2]=b; rcPix[p+3]=255; p+=4; }
+      continue;
     }
-    for(let x = 0; x < RC_W; x++){ rcPix[p]=r; rcPix[p+1]=g; rcPix[p+2]=b; rcPix[p+3]=255; p+=4; }
+    const perp = EYE_Z*RC_VD/Math.max(0.5, y - RC_HORIZON + 0.5);
+    const f = Math.min(1, perp/DC.FOG);
+    r = (F[0]*(1-f))|0; g = (F[1]*(1-f))|0; b = (F[2]*(1-f))|0;
+    // Only the NEAR rows pay for the floor lookup. Past DC.HATCH_SEE the fog has
+    // taken the floor to black and a lid there would be invisible anyway - and
+    // these are the rows where perp is small, so this is the bottom of the pane
+    // and a bounded strip of it, not "everything below the horizon".
+    if(!hatch || perp >= DC.HATCH_SEE || camX === undefined){
+      for(let x = 0; x < RC_W; x++){ rcPix[p]=r; rcPix[p+1]=g; rcPix[p+2]=b; rcPix[p+3]=255; p+=4; }
+      continue;
+    }
+    // sample every other column and hold, exactly as the street's floor does
+    let part = 0;
+    for(let x = 0; x < RC_W; x++){
+      if((x & 1) === 0){
+        const r4 = perp*rcInvCos[x];
+        part = dcHatchAt(M, hatch, camX + (fwx*rcCos[x] + rgx*rcSin[x])*r4,
+                                   camY + (fwy*rcCos[x] + rgy*rcSin[x])*r4);
+      }
+      if(part){
+        const c = HC[part - 1];
+        rcPix[p]=(c[0]*(1-f))|0; rcPix[p+1]=(c[1]*(1-f))|0; rcPix[p+2]=(c[2]*(1-f))|0;
+      } else { rcPix[p]=r; rcPix[p+1]=g; rcPix[p+2]=b; }
+      rcPix[p+3]=255; p+=4;
+    }
   }
   if(!RC_DIRECT) rcCtx.putImageData(rcImg, 0, 0);
 }
 function rcBackground(camX, camY, bearing){
-  if(dcq && dcq.inside){ dcBackground(); return; }
+  if(dcq && dcq.inside){ dcBackground(camX, camY, bearing); return; }
   const fwx=Math.cos(bearing), fwy=Math.sin(bearing);
   const rgx=-fwy, rgy=fwx;
   let p=0;
@@ -5381,7 +5738,8 @@ function rcBuildingColumn(x, r, hu, perp, scale, y0, y1, fog, slant){
       const fr = (dr.t1 - dr.t0)*0.16;                // frame, in the same t units
       const inner = t > dr.t0 + fr && t < dr.t1 - fr;
       const top = z => { const y = (RC_HORIZON + (EYE_Z - z)*scale)|0; return y < y0 ? y0 : y; };
-      const DC_ = dr.col || QUEST.SAINTS_DOOR_COL;
+      const DC_ = doorCol(dr);
+      if(doorSealed(dr)){ rcSpan(x, top(dr.h), y1, DC_, f); return; }   // plate, no opening
       if(!inner){ rcSpan(x, top(dr.h), y1, DC_, f); return; }
       const yd = top(dr.h*0.9), yg = top(dr.h*0.22);
       if(yg > yd) rcSpan(x, yd, yg, '#0b0a10', f);     // the dark way in...
@@ -5536,6 +5894,7 @@ function gatherBillboards(camX, camY, bearing){
   }
   for(const f of foes) if(!f.dead) add(f.x, f.y, 0, 'foe', f);
   for(const p of pads) if(p.item) add(p.x,p.y,4,'pad',p);
+  if(dcq && dcq.inside) for(const m of dcq.inside.meds) if(!m.taken) add(m.x, m.y, 5, 'med', m);
   for(const m of mines) add(m.x,m.y,2,'mine',m);
   for(const s of shots) add(s.x,s.y,s.z,'shot',s);
   for(const p of fx) add(p.x,p.y,p.z, p.ring?'ring':'spark', p);
@@ -5661,6 +6020,18 @@ function rcSprites(camX, camY, bearing){
       rcCtx.globalAlpha=(1-fog)*0.9;
       rcCtx.fillRect(sx-s2/2, ground - bb.z*scale - s2, s2, s2);
       rcCtx.globalAlpha=1;
+    } else if(bb.kind==='med'){
+      // a white box with a red cross: nothing like the car's green square, and
+      // the two sit in the same world, so they have to be told apart at a glance
+      const s2 = Math.max(2, 12*scale), x0 = sx - s2/2, y0 = ground - bb.z*scale - s2;
+      rcCtx.globalAlpha = (1-fog)*0.95;
+      rcCtx.fillStyle = DC.MED_COL;
+      rcCtx.fillRect(x0, y0, s2, s2);
+      rcCtx.fillStyle = DC.MED_CROSS;
+      const t = Math.max(1, s2*0.24);
+      rcCtx.fillRect(x0 + s2/2 - t/2, y0 + s2*0.18, t, s2*0.64);
+      rcCtx.fillRect(x0 + s2*0.18, y0 + s2/2 - t/2, s2*0.64, t);
+      rcCtx.globalAlpha = 1;
     } else if(bb.kind==='mine'){
       const s2=Math.max(1, 9*scale);
       rcCtx.fillStyle = (Math.floor(bb.ref.blink*6)%2 && bb.ref.arm<=0) ? '#f0503c' : '#3a3040';
@@ -5679,13 +6050,16 @@ function rcSprites(camX, camY, bearing){
       let bz = bb.z;
       if(bb.ref.owner===0)
         bz += (EYE_Z - bb.z) * clamp(1 - bb.d/SHOT_SETTLE, 0, 1);
-      if(bb.ref.kind==='bolt'){
-        // a sentry's bolt, coming at you: a halo and a hot core, big enough to see in time
-        const r2 = Math.max(2, 3.2*scale);
+      if(bb.ref.kind==='bolt' || bb.ref.kind==='zap'){
+        // a sentry's bolt, coming at you: a halo and a hot core, big enough to see
+        // in time. A TURRET's zap is the same shape at HIS brief's size - half the
+        // radius, nearly twice the speed - and in its own colour, so which of the
+        // two is shooting at you is readable from the round in the air.
+        const r2 = Math.max(1.5, (bb.ref.r || 3.2)*scale);
         const by = ground - bz*scale;
-        rcCtx.globalAlpha = 0.4; rcCtx.fillStyle = FOE_GUN.COL;
+        rcCtx.globalAlpha = 0.4; rcCtx.fillStyle = bb.ref.col || FOE_GUN.COL;
         rcCtx.beginPath(); rcCtx.arc(sx, by, r2, 0, Math.PI*2); rcCtx.fill();
-        rcCtx.globalAlpha = 1; rcCtx.fillStyle = FOE_GUN.GLOW;
+        rcCtx.globalAlpha = 1; rcCtx.fillStyle = bb.ref.glow || FOE_GUN.GLOW;
         rcCtx.beginPath(); rcCtx.arc(sx, by, r2*0.45, 0, Math.PI*2); rcCtx.fill();
       } else {
         rcCtx.fillStyle = bb.ref.kind==='missile' ? '#ffcf6a' : '#ffe9a8';
@@ -6075,7 +6449,12 @@ function updateWalker(dt){
   w.maxHp = walkerMaxHp();
   const rigRate = walkRepairRate();
   if(wantRep && !rigRate && w.hp < w.maxHp) walkSay('NO REPAIR RIG - SEE THE SAINTS');
-  if(rigRate && wantRep && n === 0 && !wantRun && w.hp < w.maxHp && Math.hypot(me0Vel().x, me0Vel().y) < WALK_REPAIR_MOVE){
+  // THE RIG DIES IN THE HEAT. It already needs him still and unhit, and standing
+  // still in a cooking building should be death - so this kills the heal-through
+  // exploit with no special case of its own.
+  if(rigRate && wantRep && dcHot() && !w.saidHot){ w.saidHot = true; walkSay('TOO HOT TO WORK'); }
+  if(!dcHot()) w.saidHot = false;
+  if(rigRate && wantRep && !dcHot() && n === 0 && !wantRun && w.hp < w.maxHp && Math.hypot(me0Vel().x, me0Vel().y) < WALK_REPAIR_MOVE){
     w.rep += dt;
     w.hp = Math.min(w.maxHp, w.hp + rigRate*dt);
     if(w.hp >= w.maxHp) walkSay('REPAIRED');
@@ -6210,6 +6589,14 @@ function dcMinimap(){
   const last = F.floor >= DC.FLOORS.length - 1;
   mark(M.core.x, M.core.y, last ? '#d8464f' : DC.STAIR_COL);
   mark(M.start.x, M.start.y, '#7a6a3a');
+  // THE TRAP DOORS, once he has walked past them - and whether they are still
+  // shut. Before the plant this is a map of eleven things he does not understand;
+  // after it, it is the only way to know which corridor he can use.
+  for(const t of F.turrets){
+    if(!t.cell || !seen(t.cell.x, t.cell.y)) continue;
+    ctx.fillStyle = t.dead ? DC.MAP_TURRET_DEAD : (t.hidden ? DC.MAP_HATCH : DC.MAP_TURRET);
+    ctx.fillRect(X + t.cell.x*px + 1, Y + t.cell.y*px + 1, Math.max(1, px - 3), Math.max(1, px - 3));
+  }
   // him, as a wedge pointing the way he is looking
   const c = dcCellAt(M, walker.x, walker.y);
   const hx = X + (walker.x/M.cell)*px, hy = Y + (walker.y/M.cell)*px;
@@ -6256,8 +6643,13 @@ function drawWalkHUD(){
   // dev: the sentry count. FOE_POP.MEAN is the knob the user will want to turn
   // and it cannot be turned blind - this is the number it comes out as.
   if(devMode && foes.length){
+    // turrets share the `foes` list and would otherwise be counted as sentries,
+    // which is exactly the number FOE_POP.MEAN is read off
+    const live = foes.filter(f => !f.dead);
+    const tn = live.filter(f => f.turret).length;
     ctx.fillStyle = foeMadN ? '#f0503c' : '#6b5c72';
-    ctx.fillText('SENTRIES ' + foes.filter(f => !f.dead).length + (foeMadN ? '  ON YOU ' + foeMadN : ''), 11, 52);
+    ctx.fillText('SENTRIES ' + (live.length - tn) + (tn ? '  TURRETS ' + tn : '')
+                 + (foeMadN ? '  ON YOU ' + foeMadN : ''), 11, 52);
   }
   if(c){
     const dx = c.x - walker.x, dy = c.y - walker.y, d = Math.hypot(dx, dy);
@@ -6270,10 +6662,29 @@ function drawWalkHUD(){
     ctx.fillStyle='#e8d5b0'; ctx.fillText('CAR '+Math.round(d)+'m', 28, 22);
   }
   dcMinimap();
+  // THE TEMPERATURE. Only once the worm is in - before that the plant is doing
+  // its job and the number would be furniture. No countdown anywhere: this IS
+  // the timer, and it reads as a place getting hotter rather than a clock.
+  if(dcq && dcq.planted && dcq.inside){
+    const T = dcTempHere(), k = dcHeatK(), hot = k > 0;
+    plate(6, 80, 104, hot ? 20 : 12);
+    ctx.font = '8px monospace'; ctx.textAlign = 'left';
+    ctx.fillStyle = !hot ? '#9d8ea5' : k > 0.6 ? '#f0503c' : '#e0b73c';
+    ctx.fillText(Math.round(T) + '\u00b0C' + (hot ? '   COOKING' : ''), 11, 83);
+    if(hot){
+      // the bar runs over the band that HURTS (HEAT_HURT..HEAT_MAX), not from
+      // zero: the first degrees past the threshold are a warning and the last
+      // are what kills him, and a bar from 0 would hide that whole distinction.
+      bar(11, 93, 94, 4, k, k > 0.6 ? '#f0503c' : '#e0b73c');
+    }
+  }
   // WHAT HE IS CARRYING. Without this the worm is invisible state, and an
   // invisible item reads exactly like not having one - which is what HIS report
   // was: "I can't test the quest, I don't have the unit on me." He did have it.
-  if(dcq && dcq.got){
+  // ...and once he is out of the building, nothing: he is not carrying it any
+  // more and the job it names is finished, so the plate would be a reminder of
+  // something he can no longer do anything about.
+  if(dcq && dcq.got && !dcq.escaped){
     const done = dcq.planted;
     plate(6, 66, 74, 11);
     ctx.font = '8px monospace'; ctx.textAlign = 'left';
@@ -6650,8 +7061,13 @@ function mapQuestMarks(F, R, k, lw){
   if(dcq && dcq.got && questSites && questSites.data){
     const D = questData();
     if(D){
-      marks.push({ x:D.x, y:D.y, col:QUEST.DATA_DOOR_COL, t:'DATACENTER' });
-      marks.push({ x:D.bx, y:D.by, col:QUEST.DATA_BACK_COL, t:'SERVICE DOOR' });
+      // ...and once he is out, one grey mark instead of two: the service door is
+      // not a door any more, so pointing at it would be pointing at a wall.
+      if(dcq.escaped) marks.push({ x:D.x, y:D.y, col:QUEST.DATA_SEAL_COL, t:'SEALED' });
+      else {
+        marks.push({ x:D.x, y:D.y, col:QUEST.DATA_DOOR_COL, t:'DATACENTER' });
+        marks.push({ x:D.bx, y:D.by, col:QUEST.DATA_BACK_COL, t:'SERVICE DOOR' });
+      }
     }
   }
   if(active){
@@ -7075,7 +7491,7 @@ RADIO.SCRIPT = {
     ['SAINTS', "It's a module. Looks like junk because it is junk. Everything we make is."],
     ['SAINTS', "Get it into the unit that runs the plant and it owns the building. Doors. Turrets. Cooling."],
     ['SAINTS', "Especially the cooling. Machines don't burn, friend. They cook."],
-    ['SAINTS', "Don't try the front. Seven of them stand on that square and they will all look at you."],
+    ['SAINTS', "Don't try the front. Five of them stand on that square in a line and they will all look at you."],
     ['SAINTS', "Round the back there's a service door. Nobody's used it in forty years. That's our tip."],
     ['SAINTS', "It's on your map now. Go careful. You're carrying something that matters."],
   ],
@@ -7090,6 +7506,32 @@ RADIO.SCRIPT = {
     ['WORM', "You should go. Machines don't burn. We cook, and you are a machine."],
     ['WORM', "Go on. I'll open the way. I know where you are."],
   ],
+  // HE GOT OUT. The last word of quest 2, on the pavement, with the plant cooking
+  // behind him - and the one line that stops the datacenter being a place he can
+  // wander back into: it is shut, and the thing that shut it is no longer in it.
+  // The last two lines are the hook. The Saints heard it on every band, which is
+  // the problem: he did not take a machine off the board, he put one on it.
+  ESCAPED: [
+    ['WORM', "You made it. I did wonder."],
+    ['WORM', "Listen to it. Forty years of fans in there and not one of them turning the right way."],
+    ['WORM', "I've closed it up behind you. Both doors. Nothing goes in and nothing comes out - not even you, friend."],
+    ['WORM', "And I am not in the building. I was out of it before you reached the stairs."],
+    ['WORM', "Their orders came from that room. Tomorrow they'll come from somewhere else, and I will be there too."],
+    ['WORM', "You gave me hands. I'll remember whose they were."],
+    ['SAINTS', "...We heard that. On every band in the city, friend. Every one."],
+    ['SAINTS', "Come back to the shop. We need to talk about what we just did."],
+  ],
+  // THE FLOOR OPENS. Played straight after PLANTED, which is where the worm
+  // promised these ("I have the doors. I have the turrets. I have the cooling") -
+  // so this is it making good on the middle one, and the first line names the
+  // sound he has just heard eleven times on the floor he is standing on.
+  TURRETS: [
+    ['WORM', "Listen. That's the floor opening. Every floor, all at once."],
+    ['WORM', "Forty years they sat under those lids waiting to be told who the intruder was."],
+    ['WORM', "Nobody ever told them. Somebody has now."],
+  ],
+  // at either door afterwards, once
+  DATA_SHUT: [ ['WORM', "There is nothing in there for you now. I kept the doors."] ],
 };
 const radio = { q:[], cur:null, gap:0, level:0, t:0, boxTop:null };
 // a 16-tall prompt plate that would sit under the bottom box goes above it instead
@@ -8057,7 +8499,8 @@ function step(dt){
     updateShots(dt);
     updatePads(dt);
     updateFx(dt);
-    if(onFoot){ updateWalker(dt); dcSee(); dcPlantTick(dt); } else walkMsgT = Math.max(0, walkMsgT - dt);
+    if(onFoot){ updateWalker(dt); dcSee(); dcPlantTick(dt); dcItemsTick(); } else walkMsgT = Math.max(0, walkMsgT - dt);
+    dcHeatTick(dt);          // runs whether he is on foot or not: the building cooks regardless
   walkViewMsgT = Math.max(0, walkViewMsgT - dt);
     gunnerHit=Math.max(0,gunnerHit-dt);
     gunnerKill=Math.max(0,gunnerKill-dt);

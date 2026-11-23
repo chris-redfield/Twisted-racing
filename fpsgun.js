@@ -127,11 +127,16 @@ function gunFire(){
   }
   if(typeof foes !== 'undefined') for(const f of foes){
     if(f.dead) continue;
+    // `f.hitR`/`f.h` are the TURRET's own width and height. FOE.HIT_R (8) and
+    // FOE.H (22) are measured off a sentry about 12 wide and 22 tall; the missile
+    // rack is 35 across the base and 27 to the top of its arms, so at the sentry's
+    // numbers you could put a round straight over it and through its middle.
+    if(f.turret && f.rise < 1) continue;          // still in its hole: nothing to hit
     const dx = f.x - w.x, dy = f.y - w.y;
     const along = dx*fx + dy*fy, lat = Math.abs(-dx*fy + dy*fx);
-    if(along <= 0 || along >= bd || lat >= FOE.HIT_R) continue;
+    if(along <= 0 || along >= bd || lat >= (f.hitR || FOE.HIT_R)) continue;
     const z = eye - DROP*along, p = pad(along);
-    if(z < -p || z > FOE.H + p) continue;         // over his head, or into the road
+    if(z < -p || z > (f.h || FOE.H) + p) continue;   // over his head, or into the road
     bestFoe = f; best = null; bd = along;
   }
   if(best || bestFoe){

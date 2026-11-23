@@ -7,6 +7,11 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-23 | [Two turrets on the square, and 374 MB of assets deleted](#2026-11-23--two-turrets-on-the-square-and-374-mb-of-assets-deleted) | built, selftests 60/484/30/60 + screenshots; **his ask**; turrets now render in the TOP-DOWN pane; read "spawnFoe pushes, spawnTurret does not" |
+| 2026-11-23 | [His play: the sentry freeze, and the shots now leave the model](#2026-11-23--his-play-the-sentry-freeze-and-the-shots-now-leave-the-model) | built, selftests 60/471/30/60 + screenshots; **his play report**; read "one bake path" and "one field, two meanings" |
+| 2026-11-23 | [The turrets go in: trap doors, two weapons, and a bake that was NOT free](#2026-11-23--the-turrets-go-in-trap-doors-two-weapons-and-a-bake-that-was-not-free) | built, selftests 60/444/30/60 (now 466) + screenshots; **his design**; read "the bake was not free" and "the number to watch" |
+| 2026-11-23 | [Two turrets through the pipeline: an OBJ reader and an FBX reader](#2026-11-23--two-turrets-through-the-pipeline-an-obj-reader-and-an-fbx-reader) | built, both in voxcar-viewer + screenshots; **his assets**; new `read_obj.py`/`read_fbx.py`; read the UP-AXIS and ENVIRONMENT notes |
+| 2026-11-18 | [Quest 2 — step 6, the sentries, and the ending](#his-fourth-play-2026-11-18-they-dont-attack-and-the-ending) | built, selftests 58/384/30/60 + screenshots; **his play report**; read "the number to watch" |
 | 2026-11-17 | [Quest 2 — THE DATACENTER: the worm, three floors, and the heat](#2026-11-17--quest-2--the-datacenter-the-worm-three-floors-and-the-heat) | plan, **his design, decided this session**; overturns the "square fight" canon; maze code identified + its one fatal flaw |
 | 2026-11-12 | [The Saints' body shop: the hero gets his own upgrades](#2026-11-12--the-saints-body-shop-the-hero-gets-his-own-upgrades) | built, selftests 224/30/60; **his numbers**; **not played**; two behaviour changes flagged inside |
 | 2026-11-11 | [Three bugs from his play, and the car got 15 per cent bigger](#2026-11-11--three-bugs-from-his-play-and-the-car-got-15-per-cent-bigger) | built, committed `f3be143` + `75cdf79`; **his reports**; read the harness trap |
@@ -65,6 +70,598 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-23 — Two turrets on the square, and 374 MB of assets deleted
+
+His ask, in his words: *"add 2 turrets to the front of the building (where there are around 5
+sentries), not the front where the player enters, he enters through the back door actually, so the
+front front"* - and the reason: *"that will help me see the turrets rendered for the top down view"*.
+Then: *"delete the assets that we don't use"*.
+
+### The emplacements
+
+`QUEST.DATA_TURRETS` 2, one of **each kind** (`DATA_TURRET_KINDS: [1, 2]`) so both read from up
+there, flanking the MAIN doors on the plaza - never the service door round the back, which is his
+way in. They go in `foeChunkPlan`'s picket block beside the five guards, facing out across the
+square like everything else on that face, at `DATA_TURRET_D` 64 out and `DATA_TURRET_S` +/-76
+lateral. There is no trap door out here: a street turret is up from the moment the city spawns it,
+because the lid is a datacenter floor's trick.
+
+Three things this needed, each of which was a real defect:
+
+**1. `spawnFoe` pushes itself onto `foes`; `spawnTurret` does not.** That asymmetry is deliberate -
+a datacenter turret is born into its floor's `F.turrets` and `dcEnter` puts it in the world when you
+walk in - but the street spawner has to push by hand. Without it the keys went into `foeLive` and
+the turrets went NOWHERE: no error, no log, an empty square. Found by probing `foeLive` against
+`foes`, not by reading the code. There is a test for exactly this now.
+
+**2. At `DATA_TURRET_D` 30 the axonometric pane drew the building over them.** Flush with the slab,
+62 px of one sprite survived and none of the other - measured by scanning the PNG for the turrets'
+own colours. The guards read from up there because they stand at 58 and 116; the emplacements are
+now at 64, just outboard of the line of three. That number is load-bearing and the test says so.
+
+**3. A street turret was testing the street against a floor plan.** `turretThink` read
+`dcq.inside.M` without the `f.dc` gate a sentry's gun has, and had no city branch at all - so out on
+the square `see` was simply `true`, and a rack could traverse the whole way round and shoot THROUGH
+the building at someone at the service door, 181 units away and well inside its 540 reach. It now
+does what `foeGun` already did: `dcClear` against the maze when `f.dc`, `cityClear` against the
+city's footprints otherwise. The corner of the slab is cover, and the test asserts the service door
+is NOT visible from either emplacement - distance was never what kept his way in quiet.
+
+### The top-down view, which is what he asked for
+
+`drawFoe2D` used to `return` on a turret, with a comment saying one could never reach the driving
+pane. It can now, so there is `bakeTurret2D` + `drawTurret2D`: its own registry (`turretSheets2D`),
+one row, no rig, `TURRET.YAWS` directions, pinned to `PX*homeZoom()` like the cars' sheets and
+dropped by the same `clearFoeSheets` rescale. A turret may NOT go through `bakeFoe2D` - that one is
+keyed by `foeVoxName` and rigged, so it would hand a gun emplacement to `posedMesh` and swing its
+base like a pair of thighs. `turretWarm` now fills both registries, one sheet a frame; a 2D sheet
+only exists once something has drawn a turret from above, so warming it is never speculative.
+
+Verified in the real browser: `scratchpad/front-top.png` (both emplacements among the five guards,
+turret-01's barrel pointing out across the square), `front-foot.png` and `solo-k1.png`. The drawn
+rectangles were also read straight off `rcCtx.drawImage`: 49x28 and 41x34 pane units at 165 units'
+range, against a sentry's 34 tall at 110 - correct for h 19 and 27. Worth knowing, because a busy
+frame is misleading: the pane is 320x90 blitted at 4x, so a correct sprite looks enormous, and I
+mistook turret-01 composited with the guards in front of it for a scaling bug until I rendered it
+alone.
+
+### The assets: 387 MB -> 11.7 MB
+
+The recipes read exactly two files. Everything else was Blender source, texture archives and the
+download `.rar`s - and the carve pipeline colours by ROLE, not by texture, so none of it was ever
+read.
+
+| deleted | | kept |
+|---|---|---|
+| `The_Turret_1.blend` | 149.8 MB | `The_Turret_1.obj` (0.7 MB) |
+| `...Model+embeded.rar` | 75.1 MB | `Sci-Fi Heavy Missile Defense Turret....fbx` (11.0 MB) |
+| `textures.zip` | 73.5 MB | |
+| `...+textures.rar` | 67.6 MB | |
+| `...+model.rar` | 7.7 MB | |
+| `The_Turret_1.fbx` | 0.3 MB | |
+
+**Proved rather than asserted:** all four carves were rebuilt from what remains and are
+BYTE-IDENTICAL to the shipped ones (`md5sum -c`). If a source file had been needed, that check
+fails. The `.obj` is enough to re-carve at any resolution, which is all the game needs.
+
+**Nothing is actually lost, and the repo did NOT get smaller.** He had already committed these in
+`cdd025b`, so the delete is a working-tree delete:
+
+* to get any of them back: `git checkout -- assets/enemies/turret-01 assets/enemies/turret-02`.
+  That matters for `The_Turret_1.blend`, which is the only EDITABLE source for turret-01 - the
+  `.obj` is an export of it - and for the textures. The author and licence are still unrecorded for
+  both models (see the pipeline entry below).
+* **`.git` is 459 MB and stays that way.** The delete only keeps the files out of future checkouts;
+  the blobs live in history. Shrinking it needs `git filter-repo`/BFG, which rewrites every commit
+  hash and breaks any clone.
+
+**DEFERRED, his call (2026-11-23):** *"oh yes, we need to rewrite history... that sounds like a
+headache, lets leave that for later."* So the history rewrite is OPEN WORK, not forgotten. Whoever
+picks it up: it is his to run and it must be coordinated with every clone.
+
+**`.gitignore` now stops it happening again** (his ask, same day): `*.blend`, `*.blend1`, `*.rar`,
+`*.7z`, `assets/**/*.zip`. Deliberately NOT ignored are `.obj .fbx .stl .glb .3ds` - every one of
+those is a live pipeline input today (`car_voxelize.py` reads the mesh each recipe names, and
+turret-02's own source is an 11 MB `.fbx`), so a blanket mesh rule would have been exactly wrong.
+Checked both directions: no tracked file matches a new rule, and the six deleted files would be
+ignored if re-downloaded. `git add -f <path>` overrides.
+
+### The balance note
+
+These two shoot at the CAR on the plaza. A rack's missile is 34 to a car plus blast, against a
+picket that was five sentries. `QUEST.DATA_TURRETS` is the dial and 0 removes them. They cannot
+reach the service door, so the quiet way in is still quiet.
+
+## 2026-11-23 — His play: the sentry freeze, and the shots now leave the model
+
+Three things he reported after playing the turrets in ("this is spectacular"), and one standing
+instruction attached to them: *"please don't forget that these changes cannot create a performance
+burden on our game"*. Everything below is measured, because that sentence deserves numbers.
+
+### 1. "as soon as I saw a sentry, the screen froze for a little bit"
+
+He guessed it was the hatch next to the sentry. It was not: **the sentry's own sprite sheet**, and
+the diagnosis is the one already written up for the turrets one entry below - the sentry had the
+same disease the whole time and I did not look.
+
+MEASURED, in `tools/headless.js` (the canvas is stubbed, so `rasterCar`'s pixel loop is the only
+thing on the clock, which is exactly the thing being measured):
+
+| | |
+|---|---|
+| whole sentry sheet, 6 poses x 16 yaws | **643 ms** |
+| one POSE STRIP, 16 yaws | **~110 ms** |
+| one CELL, one pose at one yaw | **~7 ms** |
+| one cell of turret-02 (7478 faces) | ~13 ms |
+
+The old code filled a STRIP at a time: pose 0 eagerly, on the frame the first sentry came into
+sight, and then `foeWarm` fed in one more strip per frame as soon as anything walked. Six ~110 ms
+frames back to back - half a second of screen at 9 fps, once per sheet, exactly as he described it,
+and never again because the sheet is then full.
+
+**The fix is one bake path for everything.** `foeSheetEnsure(sp, p)` (a strip) is gone and
+`foeCellEnsure(sp, p, fr)` (one cell) replaces it; the turret's bespoke `turretYawEnsure` +
+`sp.yaws` + `turretScratch` are gone too, folded into it, because a turret's sheet is one pose and
+so for it a cell IS a yaw. One ledger, `sp.cell`, a `Uint8Array(POSES*YAWS)`, plus `sp.left` so a
+full sheet costs the fillers one compare a frame instead of a scan. `sp.pm[p]` caches `posedMesh`
+per pose, which used to be free (once per strip) and would otherwise be rebuilt for all 16 yaws.
+
+Nothing is baked at sheet creation any more. The draw path pulls the one cell it is about to draw;
+`foeWarm`/`turretWarm` fill the rest in the background. The POSE POLICY is unchanged and still
+deliberate: pose 0 always, the five walk poses only while something is walking, so a sentry that
+never takes a step never pays for the stride.
+
+`FOE_RIG.WARM` is **1**, and that is a measured choice, not a default. Over 240 real on-foot frames
+with a sentry walking at the camera (`drawWalkView()`, harness baseline 12.7 ms/frame):
+
+| WARM | worst frame | frames over 25 ms |
+|---|---|---|
+| 1 | 38 ms | **7 / 240** |
+| 2 | 44 ms | 32 / 240 |
+| 3 | 46 ms | 31 / 240 |
+
+Four times fewer long frames at 1, and the ceiling is the same either way (one background cell plus
+at most one the draw path pulls on demand). Filling slower costs nothing visible, because a cell
+missed is one 7 ms frame and not a stall. **Do not raise it to fill the sheet sooner.**
+
+Steady state, in the maze with 11 turrets up and the sentries walking: `foeWarm` and `turretWarm`
+cost **0.00 ms**, `updateFoes` settles at **0.23 ms**, and `rasterCar` is called **0 times** in the
+last 10 frames of a 180-frame run. That is the answer to his instruction.
+
+### 2. The bolt left from above the barrel
+
+*"the energy actually doesn't leave the tip of the canon, it leaves from a higher place"* - correct,
+and the cause was NOT the height. `K.muzzle` was a bare height (13) with a flat **8 units forward**,
+while turret-01's barrel tip is at **x = 22.5**. A muzzle 14 units behind the real one is FURTHER
+FROM THE PLAYER than the real one, and a point below eye level (`WALK_EYE` 16, bore 12.2) climbs
+toward the horizon as it recedes - so it drew higher up the screen. He saw a height error; it was
+mostly a depth error. The 0.8 of real height error pushed the same way, which is why it was obvious.
+
+`K.muzzle` is now a POINT on the carve - `{ fwd, side, z }` - and every number in it is measured off
+the shipped carve by role, not chosen:
+
+| | role | measured | muzzle |
+|---|---|---|---|
+| turret-01 barrel | `lamp` | end cap: 50 verts at x 22.5, y 0.1, z 10.7..13.5 | `fwd 22.5, side 0, z 12.2` |
+| turret-02 missiles | `tail` | two clusters: x 12.3..13.4, \|y\| 10.5..14.2, z 14.8..19.1 | `fwd 12.8, side 12.2, z 16.7` |
+
+Verified in the real browser, same scene, same seed, with only `muzzle` swapped: before, the bolt is
+a teal dot above the barrel and halfway along it; after, it is centred on the barrel's end cap.
+(Screenshotting a projectile needs care - `tools/shot.js` captures ~0.6 s of virtual time AFTER the
+setup runs, so a 340 units/s bolt is long gone. Zero its velocity. A foe MISSILE also re-aims every
+frame, so zeroing is not enough for one of those: it homes.)
+
+### 3. The missiles come off the arms
+
+*"the rockets should leave its arms"* - they do, and it was not hard, because the carve says where
+the arms are. `side` is a MAGNITUDE and `f.side` picks the arm, flipped at the START of the windup
+so the smoke pours out of the arm the missile then leaves. Measured: consecutive rounds are born
+**24.4 units apart**, which is 2 x 12.2, and 17.7 units out from the centre, which is
+`hypot(12.8, 12.2)`. The reference render he sent shows exactly this - two outboard pods, nothing on
+the centreline.
+
+Pre-existing and NOT touched: a missile in flight draws as a flat amber `fillRect` at r 8, which is
+a big square at close range. His note was about where they come from.
+
+### 4. "it starts shooting with the left arms but shoots with the right"
+
+He reported this after the arms went in, having first seen it stuck on one arm. Both symptoms, one
+cause, and it is a **name collision I created**: the arm lived in `f.side`, and `side` already
+belongs to the sentry - it means "lean off to ONE side, you are wedged on a corner", -1/0/+1,
+written by `foeThink` and by `foeStuck`. **`foeStuck` loops over every foe with no turret filter.**
+
+So, for a turret, every frame:
+
+* **calm** (`mad` false, which is a turret's normal state - nothing sets it): the first branch fires
+  and `f.side = 0`. The windup latches arm 1, `foeStuck` zeroes it before the next frame, and every
+  tell and the shot come off arm 0. *Always the same arm.*
+* **angry** (it has taken a round): the second branch fires, it has not moved - it cannot move - so
+  `f.side = f.side || (Math.random() < 0.5 ? -1 : 1)` gives it a random sign that then STICKS,
+  because of the `||`. Both -1 and +1 are truthy, so both pick the SAME arm. *Always the other arm.*
+* **turning angry mid-windup**: the branch changes between the first puff of smoke and the shot, so
+  the tell leaves one arm and the missile leaves the other. *Exactly what he saw.*
+
+Fixed three ways, because one is not enough: the arm is now `f.arm`, its own field that nothing else
+writes; it is LATCHED when the windup opens, because the tell and the shot are computed up to 1.2 s
+apart; and `foeStuck` returns early on a turret, which is true anyway - a thing bolted to the floor
+cannot be wedged on a corner.
+
+**It alternates, strictly - it is not a coin flip.** He asked for a coin flip and then withdrew it;
+alternation is the better answer for a rack cycling its tubes, and a flip would fire the same arm
+twice now and again for no reason visible on the model. `f.arm` starts at 0 and the latch happens
+before the first shot, so the first missile of a turret's life leaves the `+M.side` arm.
+
+The lesson, which is the reusable part: `spawnTurret` builds a record that is deliberately
+foe-shaped so it can reuse shot collision, blast splash, `foeDamage` and the billboard list unchanged
+(that is the whole design, see the entry below) - and the price is that EVERY generic loop over
+`foes` runs on turrets too. `foeSeparate` and `foeBlock` were given turret filters when the turrets
+went in; `foeStuck` was missed. Before adding a field to that record, grep for who else writes it.
+
+### The tests that now hold this down (`selftest_foe` 471)
+
+* `the sentry sheet is filled a cell at a time, not a strip at a time` - 9 checks, including that a
+  fresh sheet has NOTHING baked, that one cell is one cell and not its row, that `posedMesh` is
+  cached per pose, and the pose policy both ways round.
+* `the shot leaves the part of the model you can see` - 13 checks that read the SHIPPED CARVE, group
+  its faces by role, and assert the muzzle is inside the measured tip. Re-carve at another
+  resolution, or move which part is `lamp`, and these fail instead of the muzzle quietly drifting.
+* `the missile rack and its two arms` - 5 checks, and they were VERIFIED AGAINST THE BUG: with the
+  old code put back, 4 of the 5 fail. It runs a whole windup frame by frame with `foeStuck` and
+  `foeSeparate` running alongside and the turret taking a round halfway through, then asserts the
+  smoke is UNANIMOUS - every puff off the arm the missile then leaves - and that consecutive shots
+  come off opposite arms. The first version of this test averaged the smoke's side and passed with
+  the bug in, because the burst after the turret turns angry outnumbers the burst before it. An
+  average hides a tell that starts on one arm and ends on the other, which was the entire report.
+
+### The trap I fell into, worth not repeating
+
+I measured `rcSprites()` by calling it directly and got 220 ms a frame with `rasterCar` running 23
+times per frame forever. That was my harness: **`rcSprites(camX, camY, bearing)` takes the camera**,
+I passed none, every billboard got a NaN yaw, and `sp.cell[NaN] = 1` is silently swallowed by a
+typed array - so the ledger never recorded anything and every sprite re-baked. Driven properly
+through `drawWalkView()` it is 0 bakes a frame. `foeCellEnsure` now guards its index, because that
+failure is invisible: no error, no wrong pixel, just 200 ms a frame.
+
+## 2026-11-23 — The turrets go in: trap doors, two weapons, and a bake that was NOT free
+
+His brief, after seeing both models in the viewer:
+
+> *"When you enter the maze, you will notice some round things in the floor, but they are closed.
+> After adding the hardware worm into the data center, the worm will release the turrets, so they
+> will appear like on top of these round things on the ground, these round things are basically a
+> trap door where the turrets sit when not active... add some turrets to the datacenter, roughly
+> the same number of sentries that you added into each floor, don't forget that they don't move...
+> The turret 1 fires an energy projectile that is faster than the sentries projectile, and also
+> smaller. The turret2 actually fires missiles, so it is very dangerous"*
+
+All of it is in. The lids are there from the first step onto a floor; the worm opens every one on
+every floor at once; the turrets rise out of them; they traverse and they never travel.
+
+### A turret is a FOE RECORD, not a new kind of thing
+
+`f.turret` is 1 or 2 on an ordinary foe record, and that one decision is most of the feature. It
+buys, unchanged: the bolt and blast collision in `updateShots`, the splash in `explode`, the pistol's
+second pass in `fpsgun.js`, `foeDamage` and the hit flash, the billboard list, and the floor's
+ownership of its own bodies across the stairs. What it does NOT reuse is anything about walking -
+`foeThink` hands a turret to `turretThink` on its first line and comes straight back out, and
+`foeSeparate` skips turrets outright (the only thing that ever makes one `mad` is the player
+shooting it, and separation would then walk it off its own hole).
+
+Four shared sentry numbers are now read per body, because they were all measured off a figure
+12 wide and 22 tall and the missile rack is 35 across its base ring and 27 to the top of its arms:
+`f.r` (FOE.R 6), `f.hitR` (FOE.HIT_R 8), `f.shotR` (FOE.SHOT_R 9) and `f.h` (FOE.H 22). At the
+sentry's numbers you could stand inside one and put a round straight over it.
+
+### The trap doors
+
+`F.hatch` is a `Uint8Array` beside `F.foes` and `F.meds` - 0 none, 1 shut, 2 open - and `F.turrets`
+holds a complete turret per lid from the moment the floor is generated, `hidden`. **A turret exists
+before it can be seen**, which is the point: the lid he walks over on the way down is the same
+object that comes up behind him on the way back.
+
+They are DRAWN BY SAMPLING THE FLOOR, not as billboards. `dcBackground` now takes the camera and,
+for the rows whose `perp` is inside `DC.HATCH_SEE` (460, inside `DC.FOG` 560), samples every other
+column into world space exactly as the street's floor does and asks `dcHatchAt`. One cell lookup
+and one distance per sample, so a lid is a true circle on the floor that grows as you walk up to it -
+rim, seam and all - instead of a sprite pretending to lie down. The lid colours stay in
+`FLOOR_RGB`'s own cool hue and are only lifted, and they heat with the floor, or they would be cold
+grey discs in a room that has gone red.
+
+**Three places build a floor record and all three now need the two new fields** - `dcFloorState`,
+`dcLabReroll` and (reading them) `dcPopulate`. The lab re-roll was the one that broke: its own
+comment already said "a lab floor that is missing half the fields is a lab that lies about the
+game", and `dcPopulate` now READS `F.turrets` to keep the sentries off the lids.
+
+### The mix: an exact share, decided per CELL
+
+Two things went wrong here and both are worth keeping.
+
+1. `rng.next() < TURRET_MIX` once per turret is **binomial**, and at n = 11 that is far too wide for
+   a dial he will turn: the first floor of the shipped seed came out **nine missile racks out of
+   eleven** (a 0.4% draw) and that is the floor he learns the mechanic on.
+2. Counting them exactly and then shuffling with Fisher-Yates off `rng` came out **sorted**, because
+   the stream at that point returns a run of small values and a small `r` makes every swap pick an
+   index near nought.
+
+**`cityRng` is NOT broken** - measured at 0.4495 of a million draws below 0.45, deciles flat to
+±0.8%. It was a short low run, which a good generator is allowed to do and which a shuffle must not
+depend on not happening. The fix is to hash each CELL and take the lowest `want` of them: exact
+count, deterministic per floor, independent of both the stream position and the order `dcPlaces`
+returned the spots in. Now 5 racks on every floor, closest two 4-9 cells apart.
+
+### The two weapons (config.js 3c-ii, `TURRET.KINDS`)
+
+| | 1, the energy gun | 2, the missile rack |
+|---|---|---|
+| projectile | `zap`, **spd 340** (a sentry bolt is 180), **draw radius 1.7** (a bolt is 3.2) | `missile`, spd 150 off the rail, accelerating, **homing** |
+| on foot | 4 | **16** of WALK_HP 50, plus blast falloff |
+| windup | 0.45 s, sparks | **1.2 s, smoke** |
+| rest | 1.5-2.5 s | 3.4-5.4 s |
+
+His brief for turret 1 was "faster and smaller", so it is nearly twice the speed at half the size -
+deliberately hard to dodge, and paid for by chipping rather than biting. Turret 2 "is very
+dangerous", so it is, and what stops that being unfair is the longest tell in the game and a missile
+slow enough off the rail to break line of sight on. The tell is also COLOUR-CODED: the rack smokes
+grey-and-amber where the gun sparks cyan, so you can tell which of the two has you from across a
+corridor, and the round in the air carries its own colour too.
+
+Three things the missile needed that nothing else in the game had:
+
+- **It homes on the WALKER.** `updateShots`' missile branch only ever scanned `cars`, and inside the
+  plant there is no car to scan - every car is parked in the street thousands of units from the
+  floor's own coordinates. A `foe` missile now tracks the walker, which is what makes cover the
+  answer and running down a corridor the wrong one.
+- **It goes off ON a partition.** The DC branch of `updateShots` used to make particles for
+  everything; a missile now explodes there, so ducking round a corner from the rack is not free.
+- **`explode` can reach the walker** - `opt.walker`, and it is OPT-IN. Every mine, barrel and wrecked
+  car in the city makes one of these, none of them has ever hurt him on foot, and quietly making them
+  all lethal would reprice the whole street. The rack asks; nothing else does. There is a test
+  asserting a mine's own `explode` call still does nothing to him.
+
+### THE BAKE WAS NOT FREE - read this before adding another model
+
+He asked, reasonably: *"since everything is prerendered and the sprites are saved for later, use the
+options with more faces, that won't give us performance issues, right?"*
+
+**That is true of the drawing and false of the bake.** Measured: 32 yaws of `turret2@64` (7,478
+faces) in one go is **~400 ms**. A quarter-second freeze - triggered on the first frame a missile
+rack comes into view, which is a floor that has just opened eleven hatches at once. `turret1@64` is
+~100 ms, and the sentry's first pose is ~106 ms, which is the existing baseline and the reason
+`foeSheetEnsure` already fills **one walk pose at a time**.
+
+A turret has one row, so it is filled a few YAWS at a time instead:
+
+- `bakeTurretSheet` now creates the sheet and bakes **nothing**; `sp.yaws` is the per-yaw ledger and
+  `sp.done[0]` is set purely so the sentry's row filler can never touch the sheet.
+- `turretYawEnsure(sp, fr)` bakes one yaw (~3 ms turret-01, ~13 ms turret-02). `drawTurretBillboard`
+  asks for the one it needs, so a turret that becomes visible early is still correct.
+- `turretWarm()` runs beside `foeWarm()` in `updateFoes` and fills `TURRET.WARM` (1) yaws of ONE
+  sheet a frame.
+- **`dcRelease` starts both sheets**, so the 1.2 s rise is the cover they fill under: 64 yaws
+  between them at one a frame is 1.07 s, and it fits.
+
+Result: worst single frame **40 ms instead of a 400 ms freeze**, both sheets full inside the rise.
+The `@64` carves are kept, as he asked. *(Numbers are from the headless harness, whose canvas is
+stubbed - the ratios are what matter, not the absolute milliseconds.)*
+
+### The rise, drawn by clipping
+
+There is no second model and no animation. The sprite is **clipped to the part of it that has
+cleared the floor**: `sp.ay` is the sheet row the model's z = 0 sits on, so the floor line is
+`(1 - rise)*h*vsc` rows above it and everything below that row is still underground. What comes up
+first is whatever is at the top of the model - the barrel on one, the missile arms on the other.
+The full frame is drawn once it is up rather than using the clipped path at `rise` 1, because the
+frame's bottom rows hold the base's near face (`KY_FPS` tilts it into view).
+
+Three paths gate on `rise < 1` - the bolt collision, the pistol and `foeBlock` - or a turret you can
+kill before it clears the lid makes the whole rise cosmetic.
+
+### THE NUMBER TO WATCH
+
+`DC.TURRETS` is **11**, matched to `FOES_BEFORE` (12) and not to `FOES_AFTER` (30), which is how his
+"roughly the same number of sentries per floor" was read: 30 of these on top of 30 sentries is not a
+labyrinth, it is a wall.
+
+**Measured on the optimal escape route** (the flow field from the arrival cell, walked from the far
+cell), how many turrets ever get a clear line on a point of it inside their own range:
+
+| floor | route | turrets with a line | of which racks |
+|---|---|---|---|
+| OFFICES | 45 cells | 4 of 11 | 2 |
+| SERVERS | 55 cells | 1 of 11 | 0 |
+| PLANT | 77 cells | 2 of 11 | 1 |
+| | | **7 of 33** | **3** |
+
+The maze hides most of them, which is the whole reason a labyrinth is the right place for a thing
+that cannot move. But **3 racks with a line is ~48 hull** at one missile per pass, and 4 energy guns
+is another ~16 - against `WALK_HP` 50 (100 at full hull), on top of the ~36 of heat and the 19 of 90
+sentries that also get a sightline. **The escape is now dominated by the turrets, and at base hull
+it is probably not survivable.** That is his count, delivered as asked; `DC.TURRETS` is the first
+dial and `DC.TURRET_MIX` (0.45) the second. In its favour: a turret can be shot (150 and 240 hull,
+so 9 and 14 pistol rounds), it cannot follow, and breaking line of sight stops it after
+`TURRET.TRACK_LOST` (0.8 s of follow-through, so it does not freeze mid-swing when you cross a
+doorframe).
+
+### Where it all is
+
+- **config.js** - `DC.TURRETS / TURRET_MIN_D / TURRET_SPREAD / TURRET_CORE_D / TURRET_MIX`,
+  `HATCH_R / HATCH_RIM / HATCH_LID / HATCH_EDGE / HATCH_HOLE / HATCH_SEE`,
+  `MAP_HATCH / MAP_TURRET / MAP_TURRET_DEAD`, and the whole of **§3c-ii `TURRET`**.
+- **foe.js** - `turretVoxName/turretMesh`, `bakeTurretSheet/turretYawEnsure/turretWarm/
+  clearTurretSheets`, `spawnTurret`, `turretThink`, `turretGun`, `drawTurretBillboard`; the
+  `f.turret` line at the top of `foeThink`; `foeSheetNew`'s `opt {n, poses, rig}` and
+  `foeSheetEnsure`'s `rig === false`; the per-body radius in `foeBlock`; the `!f.turret` in
+  `foeSeparate`; the guard in `drawFoe2D`.
+- **index.html** - the two `<script>` tags, `dcTurrets`, `dcRaise`, `dcRelease`, `dcHatchAt`,
+  `dcBackground(camX, camY, bearing)`, the hatch fields in `dcFloorState` and `dcLabReroll`, the
+  lids in `dcPopulate`/`dcAlarm`'s avoid lists, the turret push in `dcEnter`, `dcPlanted`'s two
+  calls, `explode`'s `opt.walker`, the foe-missile homing and wall blast in `updateShots`, the
+  `zap` draw in `rcSprites`, `dcMinimap`'s lid marks, the dev HUD split, and `RADIO.SCRIPT.TURRETS`.
+- **fpsgun.js** - `f.hitR`/`f.h` and the `rise` gate in the sentry pass.
+- **tools/selftest_foe.js** - 438 -> 444, in five new sections.
+
+Screenshots in the scratchpad: `hatch-shut.png` (a lid, with its rim and seam), `hatch-up.png` (the
+top of one just clearing the floor mid-rise), `turret-k1.png` / `turret-aim.png` (the energy gun
+side-on and pointing straight at him - which also **answers the last open question from the viewer
+work: `nose: "+z"` is right for turret-01 too**), `turret-k2.png` (the rack over its open hatch) and
+`turret-ascii.png` (the rack in the ASCII pane - bright body, red tips, dark hole beneath).
+
+### Still open
+
+- The **~250-second walk out** is untouched and is now worse, not better: "stairs or elevator, and it
+  is a real choice" remains the fix, or shrink the floors.
+- **Asset licensing** for both turret folders.
+- Nothing is committed.
+
+## 2026-11-23 — Two turrets through the pipeline: an OBJ reader and an FBX reader
+
+His ask: *"I just added 2 new folders with 2 different turret assets... unfortunately from different
+authors, so they have different stacks. Lets process these 2 turrets through our voxelization +
+sprite extraction pipeline and add them to the voxcar-viewer.html file so I can test it out"*
+
+**Both are in the viewer** (`turret1@48/@64`, `turret2@48/@64`, labelled `(turret)`), rendered
+through the game's own bakes. Nothing is wired into the game yet - that is the turret ENTITY, and
+it is step 7's job.
+
+### The two "stacks", and what each one needed
+
+| | turret-01 | turret-02 |
+|---|---|---|
+| ships | `.obj` + `.fbx` + 157 MB `.blend`, textures in a `.zip` | **FBX only**, three `.rar` files |
+| parts | 3 named objects, ONE material | 7 objects, 6 materials, mirrored halves as separate instances |
+| tris | 9,917 (after fanning quads) | 341,542 |
+| axes | Y up, barrel +Z | Y up, +Z - but every node PRE-rotated -90 X (see below) |
+
+Neither could go through the pipeline as it stood:
+
+- **`tools/read_obj.py` (new).** `trimesh.load(force='mesh')` MERGES every object into one soup, and
+  for a turret the three objects - base / body / barrel - are exactly what we want coloured
+  differently. Numpy-only, same return shape as `read_3ds.py`.
+- **`tools/read_fbx.py` (new).** trimesh cannot read FBX at all (it needs Autodesk's closed SDK),
+  and blender/assimp are not installed here. Binary FBX 7.5: node records, zlib'd typed arrays,
+  polygons delimited by a negated last index, and geometry wired to its Model (and so to its NAME
+  and its placement) through `Connections`, with Models nesting - so the transform chain is walked
+  rather than trusted. This is the reader that lets the pipeline take the whole FBX-only class of
+  download, which is most asset packs. **Two traps, and both of them bit:**
+  - **Version >= 7500 widens three header fields to 64 bits.** Read as 32-bit, every offset past
+    the first node is nonsense. Caught before the first build.
+  - **A node is NOT translate-rotate-scale.** `_matrix` read only `Lcl Translation/Rotation/Scaling`
+    and that shipped a visibly broken turret-02 (see below). The real chain is
+    `T * Roff * Rp * Rpre * R * Rpost^-1 * Rp^-1 * Soff * Sp * S * Sp^-1`, and the factor that
+    matters is **`PreRotation`**. Max and Maya exports hang the Z-up -> Y-up conversion off it:
+    `GlobalSettings` says `UpAxis: Y` with `OriginalUpAxis: Z`, the mesh data is still Z-up, the
+    `Lcl Translation` beside it is already Y-up, and PreRotation is the ONLY thing reconciling the
+    two. Also honour `RotationActive` (pre/post rotation count only when it is set) and
+    `RotationOrder` (six Euler orders; the default XYZ composes `Rz @ Ry @ Rx`).
+
+#### turret-02 came out broken, and what it looked like (2026-11-23, his catch)
+
+He put the vendor's render beside the viewer: *"this one is completely broken."* It was. Every one
+of the 7 objects was present and both mirrored instances were placed, so nothing was being DROPPED -
+each part was individually 90 degrees out of its own placement, which is the specific signature of
+the dropped `PreRotation`. The base ring stood on edge (79.6 x 78.4 across, 18.7 thick, lying in XY
+while the body stacked up +y) and the rusty gimbal had flown off into a corner on its own.
+
+**How it was found, and the lesson:** bounding boxes could not settle it - a part 79.6 x 78.4 x 18.7
+is a plausible base pad under either axis convention, which is the same ambiguity that made the
+up-axis unreadable in the first place. What settled it in one look was dumping an **ASCII
+silhouette of the assembled model down each axis with one letter per part** (base B, gimbal M, body
+O, arm A, missile m). The gimbal sitting alone in a corner of the `looking down x` panel is
+unmistakable, and no amount of staring at numbers had shown it. Reach for that first next time a
+multi-part import looks wrong; the script pattern is a dozen lines (triangle-sampled points, not
+vertices - vertex clouds are far too sparse to read).
+
+After the fix the model sits on `y = 0` and the stack reads base -> gimbal -> body -> arms ->
+missiles, matching the vendor render, and **`nose: "+z"` was right all along** - the missiles come
+out at +z. That was the open question from the first pass; it is now answered for turret-02.
+
+**A canary worth adding, not yet added:** a misassembled import leaves the voxel model in two or
+more DISCONNECTED blobs, and `voxelize` already runs a flood fill for `outside`. Counting solid
+components and warning when there is more than one would have caught this before the screenshot.
+- **`trimesh` is now imported WHERE IT IS USED**, not at module scope. A turret recipe that touches
+  no trimesh code was still dying on `import trimesh` in an interpreter that had none (see the
+  environment note below for which one to run).
+- **`--res` now counts voxels along the model's LONGEST axis, not the nose.** For a car those are
+  the same thing. For turret-02, a squat tower whose nose axis is its SHORTEST, counting 48 along
+  the nose gave a 51x85x109 grid and a **400 KB** file; by its height it is **90 KB**.
+  **Proven a no-op for the cars by rebuilding them**, not by argument: all nine `assets/voxcars/*.js`
+  and both turrets come back byte-for-byte identical. Getting that exact needed one more line -
+  the axis span is taken from the recipe's DECLARED `length`/`height` when that axis is the longest,
+  and only measured when it is not. A measured extent agrees with the declared one to within an ULP,
+  and an ULP is enough to flip a rounding tie in `lo`, which rewrites a file for no reason.
+- **`height` as an alternative to `length` in a recipe.** A car is a length - you say how long the
+  car is. A turret is a height: you say how tall the thing in the corridor is, and the barrel is
+  however long the model says it is.
+- **Recipes take `objects` (name -> role, PREFIX matched) and `materials` (name -> role).** Prefix,
+  because an exporter numbers its instances: turret-02's launcher arms arrive as `turret left arm`
+  and `turret left arm001` and both want the same role.
+
+### THE UP-AXIS WAS MEASURED, NOT ASSUMED
+
+Bounding boxes are ambiguous - turret-02's base is 80 x 78 x 19, which reads as a base pad under
+either Y-up or Z-up. So: dense silhouettes per axis first (triangle-sampled, not vertex clouds -
+vertices are far too sparse to read), then **both** variants were built and rendered. Z-up lays the
+turret on its back, the base disc standing up as a vertical wall. **Y-up, nose +Z** for both.
+
+**Which END of the nose axis is forward** - `+z` vs `-z`, front vs back, which decides where a
+turret SHOOTS - was the open question from the first pass. **Answered: `+z` for both.** Once
+turret-02 was assembled correctly its missiles plainly come out at +z, and turret-01's barrel was
+never in doubt.
+
+### Sizes, and what the viewer needed
+
+`height` 18 for turret-01 (45 long on the barrel axis - it is a long gun) and 26 for turret-02
+(26 tall on a decorative ring 35 ACROSS - once assembled properly, its widest axis is the base, not
+its height). A walker's eye is `WALK_EYE` 16 and a sentry is ~22 tall, so both read as emplacements
+a person stands next to.
+
+| | @48 | @64 |
+|---|---|---|
+| turret1 | 35 KB, 1,066 faces, grid 51x27x23 | 52 KB, 1,541 faces, grid 67x35x30 |
+| turret2 | 153 KB, 4,479 faces, grid 51x51x40 | 262 KB, 7,478 faces, grid 67x67x52 |
+
+**turret-02 is the expensive one and the ring is why.** Its concentric ornamental base merges
+badly under greedy faces - a disc of rings is close to the worst case - and it is pure decoration
+at `S = 1.6 px/unit`. @48 (153 KB) is the cut to use in game; if that is still too much, the base
+object is one line in the recipe to drop and the turret above it is the half you can see.
+
+**turret-01's muzzle is `lamp`, not `dark`** (his note: *"it is black, so it is very hard to see
+in our first person rendering"*). `dark` is #241d2c against an already dark corridor, which hides
+the ONE thing a player must be able to read off a turret - where it is pointing. `lamp` (#ffe7a0)
+is the only role that is a fixed colour rather than a shade of the body, so it stays bright
+whatever colour the thing is tinted. `accent` (body x1.32) and `metal` (#585265) are the
+alternatives, one word each.
+
+The viewer grew **two flags where it had one**. They used to be the same thing because the sentry
+was the only non-car: `FIGURE` now means "posed by `FOE_RIG`" and `STOOD` means "framed standing on
+the floor and lit with the brightness lift". **A turret is STOOD but not a FIGURE** - it stands on
+a base like a figure stands on its feet and it shows the camera the same badly-lit +y faces, but it
+has no legs to swing and it traverses smoothly, so it keeps the cars' 32 yaws rather than the
+sentry's 16.
+
+### ENVIRONMENT NOTE - WHICH PYTHON
+
+**Run the voxel pipeline with `chatbot`'s python:**
+
+```
+~/anaconda3/envs/chatbot/bin/python -I tools/car_voxelize.py tools/cars/aspen.json --res 64 -o assets/voxcars/aspen-64.js
+```
+
+His call, and it is the right one. `chatbot` is numpy 2.1.3 with a matching scipy 1.15.3; anaconda
+**base** has numpy 2.2.6 beside a scipy 1.13.1 built against numpy 1.x, so `import trimesh` there
+raises `ValueError: numpy.dtype size changed` (trimesh pulls in `scipy.spatial`). `chatbot` had no
+trimesh of its own until `pip install trimesh` put 5.2.2 in it (2026-11-23); with that, every recipe
+in `tools/` rebuilds - STL, glTF, 3DS, OBJ and FBX alike - and all thirteen outputs match what is
+committed. The `-I` is deliberate: these recipes read downloaded asset directories, and `-I` keeps
+the interpreter from importing anything out of them.
+
+### Licensing, unresolved
+
+Both folders are "free assets" with **no author or licence recorded in the download**. Each recipe
+says so in its `source` field. Worth pinning down before these ship in anything public.
+
+---
 
 ## 2026-11-17 — Quest 2 — THE DATACENTER: the worm, three floors, and the heat
 
@@ -239,7 +836,7 @@ renderer and this is what it is best at.
 3. ~~The chain: the worm, the site, the two doors, the way in.~~ **DONE** - see below.
 4. ~~Stairs between floors.~~ **DONE** (his play report). The three floors' shapes still open.
 5. ~~The core room and the plant (the pour's verb, re-skinned).~~ **DONE** - hold E at the unit.
-6. Heat: one curve, hull drain, repair disabled.
+6. ~~Heat: one curve, hull drain, repair disabled.~~ **DONE** - plus sentries and med-kits inside.
 7. The escape: spawns, berserk turrets, the worm's voice.
 
 ### Built 2026-11-17 (steps 1-3), headless + screenshots only, NOT PLAYED
@@ -373,10 +970,152 @@ anything else in here. `dcCorridor` also had to start reporting how many cells i
 second corridor that lands on a lane another one already owns (and therefore fixes nothing) can be
 told from a real one.
 
+### Step 6 built (2026-11-18): the heat - and the number that reshaped it
+
+`dcTemp(floor)` is the whole timer. **No countdown anywhere.** Floor 0 is the top and cooks first;
+each floor below starts `HEAT_LAG` seconds later, so the way out is always hotter than the way in
+and the pressure rises as he nears safety, out of physics rather than out of a script. Past
+`HEAT_HURT` it drains hull - **not** via `hurtWalker`, which carries a 0.5 s grace window and a red
+flash, both right for a bolt and wrong for an oven. The rig refuses to work in the heat
+("TOO HOT TO WORK"), which kills the heal-through exploit with no special case. The room bleeds
+red toward `HEAT_TINT` as it cooks, so the temperature is readable with the HUD off.
+
+**THE FINDING: the escape is 256 SECONDS of walking.** `tools/selftest_maze.js` walks the shortest
+core -> up-stairs path on each floor - PLANT 76 cells, SERVERS 64, OFFICES 44 - and at `WALK_SPD`
+46 that is 106 + 89 + 61 seconds on the OPTIMAL route with no wrong turns. A four-minute escape
+cannot carry a steep ramp: anything that bites integrates into hundreds of hull. The first numbers
+(T 70 / LAG 20 / DPS 6) cost **983 hull on a perfect run**. So the heat is a DRAIN, not a cliff:
+
+| route | hull lost | at 50 (lv0) | at 100 (lv5) |
+|---|---|---|---|
+| optimal | 36 | lives | comfortable |
+| 1.3x | 74 | dies | needs a med-kit |
+| 1.6x | 120 | dies | dies |
+| 2.0x | 201 | dies | dies |
+
+Route knowledge is worth ~85 hull, which is the point of making him learn the building on the way
+down. **The balance is a TEST, not a vibe** - selftest_maze re-walks it, so changing a floor size,
+`DC.CELL`, `WALK_SPD` or any `HEAT_*` fails loudly instead of silently making the escape a
+death sentence or a stroll.
+
+**Still open, and the 256 s is why:** a four-minute walk out is a pacing problem independent of the
+heat. The design already has the answer - *"stairs or elevator, and it is a real choice"*, the
+elevator being fast and worm-controlled. Worth building in step 7, or shrinking the floors.
+
+### Sentries and med-kits in the plant (his ask, before step 7)
+
+- **`DC.FOES_BEFORE` 4 / `FOES_AFTER` 10 a floor.** Sparse on the way down on purpose: the descent
+  is a building you sneak through, and if it were already crawling the escape would have nothing
+  left to escalate into. `dcPlanted` calls `dcAlarm`, which tops every floor up - built or not yet
+  reached - and the ones on his own floor arrive that instant.
+- **A floor owns its sentries** (`F.foes`), not the globals. Going upstairs does not drag floor 3's
+  guards with you, coming back does not resurrect the ones you shot, and `citySentries` is gated
+  off while he is inside (those belong to city coordinates thousands of units away).
+- **`foeCollide` branches on `dcq.inside`** or they walk through every wall in the building.
+- **Nothing spawns within `FOE_MIN_D` of a stairwell.** An ambush you cannot see coming is not
+  difficulty.
+- **Med-kits: `DC.MEDS` 3 a floor, `MED_HEAL` 0.35 of HIS max hull.** They do NOT come back - the
+  floor holds what it holds, so spending one is a decision - and a full-hull walker leaves one
+  where it is. Drawn as a **white box with a red cross**, deliberately nothing like the car's green
+  square, because the two heal different things and he can stand next to both.
+
 **A stairwell is eight full-height posts on a cell's corners, not a box.** A box swallows the
 camera the moment he stands in it, and standing in it is the whole point. Open corners let him
 walk in from any side and still see the frame; full height is what makes it readable from the far
 end of a corridor. Markers never collide (there is a test).
+
+### His fourth play (2026-11-18): "they don't attack", and the ending
+
+> "Now the sentinels don't attack, you inside the datacenter, they should attack you on spot. Also,
+> they are too sparse, both before as after planting the worm, can you increase their counts by 3x?"
+> ... "if you are able to escape the building, you have a final dialogue with the AI WORM. Then the
+> datacenter kinda closes up... both front door and backdoor are closed now. Also, place a lot of
+> sentinels in front of the front door, like 5 in formation"
+
+**Why they didn't attack, and it was not a bug.** A city sentry is written to ignore you until you
+shoot it - `foeThink` returns on `!f.mad`, and only `f.guard` (quest 1's bunker ring) wakes on
+proximity. Correct on a street you are driving down; inside a building you have broken into it
+reads as an empty building. So the plant's sentries carry **`f.dc`** and have their own waking rule.
+
+**They wake ON SIGHT, and sight means the maze's walls.** `dcClear(M, x0,y0, x1,y1)` in maze.js is
+a DDA across cell boundaries - a handful of lookups down a long corridor, not a sample march. Used
+in three places, and all three were wrong before:
+
+1. **waking** - `DC.FOE_AGGRO` 420 of *line of sight*. A plain radius wakes a whole floor through
+   the partitions; with the sight test the corner you just turned is cover.
+2. **`foeGun`** - it fell through to `cityClear`, which knows nothing about a corridor, so a woken
+   sentry shot you through four walls.
+3. **`updateShots`** - a bolt died on `blockHitPoint`, the CITY's blockers. A floor is laid out from
+   the world origin, nowhere near the building's own footprint, so out there bolts were being eaten
+   by unrelated geometry and sailing through partitions. Cover has to work both ways.
+
+**And they have to ARRIVE.** `street` stays true inside the plant, so `foeThink` was routing them on
+`flowNext` - a BFS of **streets**. `dcFlow`/`dcFlowNext`/`dcFlowDist` are the floor's own field, one
+BFS shared by every sentry on it, rebuilt only when he steps into another cell (`dcHunt`). Give-up
+is on the **flow** distance (`DC.FOE_FORGET` 520), because through three partitions is a long walk,
+not 200 units.
+
+**3x: `FOES_BEFORE` 4 -> 12, `FOES_AFTER` 10 -> 30.** Measured first: **30 do not fit at 5 cells of
+clearance** - floor 1 has 237 walkable cells and placement dried up at 16. So `dcPlaces` took a
+`spread` argument separate from `minD` (`DC.FOE_SPREAD` 3), and an `avoid` entry can carry its own
+`d`. `dcAlarm` needs both: the stairwells keep their full 5, the sentries already standing there
+only need 3, or the top-up silently stops at 22 of 30.
+
+**THE PICKET** (`QUEST.DATA_GUARDS` 5, `DATA_GUARD_D1/D2/S`): three abreast on the main doors at 58
+units, two further out at 116, **all facing out across the square**. They are `guard:true`, so
+walking onto that square is the mistake, not opening the door. Unlike the bunker's ring this does
+**not** replace the chunk's own sentries - the datacenter is one lot of several. Five and not seven
+because he asked for five, and the two lines that counted them out loud were changed to match.
+
+**THE ENDING.** `dcLeave` with `dcq.planted` set is the escape: `dcEscaped()` pays `QUEST.DATA_CASH`
+900 and plays `RADIO.SCRIPT.ESCAPED` - six WORM lines and two from the Saints. The worm has closed
+the building behind him, **and it is not in it**; it was out before he reached the stairs. That is
+the hook for whatever comes next: he did not take a machine off the board, he put one on it.
+
+**Both doors shut, for good.** `doorSealed(D)` - named by `kind === 'main' || 'back'`, **not** by
+"has a kind", because the Saints' door carries `kind:'saints'` and welding that shut would close
+the shop for good (it did, for one run of the tests). Both renderers draw plate with no opening,
+`dataEnter` refuses either door with one line from the worm, the two map marks become one grey
+SEALED, and the WORM carry-plate leaves the HUD. `checkpoint.plantDone` carries it across a death.
+
+### Regions ramp 2 / 3 / 4 (his call, same day)
+
+> "now every level has 4 regions ?? I wanted only level 3 have 4 regions"
+
+It was **4 / 2 / 4** - SERVERS really was 2, but OFFICES had been 4 since the day it was written,
+which made the floor he walks in through as divided as the one the worm lives on. Now the sectors
+**ramp**, and four belongs to the PLANT alone:
+
+| floor | size | regions | corridors | loops | walkable |
+|---|---|---|---|---|---|
+| OFFICES | 19x19 | 2 | 2 (1 extra) | 17 | 259 |
+| SERVERS | 23x23 | 3 | 4 (2 extra) | 19 | 385 |
+| PLANT | 27x27 | 4 | 7 (3 extra) | 30 | 517 |
+
+Two tests changed with it. `the smallest floor still has rooms` asserted `>= 3` regions on OFFICES
+and encoded the design he has now overruled; it is replaced by the ramp itself plus "four belongs
+to the PLANT alone". And the **bridge-fixer canary** started failing for the wrong reason: fewer
+regions means fewer corridors means fewer bridges, and the 18-floor sweep found none at all. With
+2/3/4 it is about **6 floors in 90**, so the sweep is 30 seeds a floor now. Do not weaken that test
+- `dcFindBridge` silently answered "no bridges" on every floor for a whole session, and a narrow
+sweep is exactly how that hid.
+
+The escape got slightly shorter on SERVERS (65 -> 55 cells, 90 s -> 77 s) and the heat tests still
+pass, which is the point of them being tests.
+
+**THE NUMBER TO WATCH.** The heat balance was measured against an empty building. On the optimal
+escape route, counting only sentries that ever get a sightline:
+
+| floor | route | sentries | that SEE you |
+|---|---|---|---|
+| OFFICES | 45 cells / 63 s | 30 | 9 |
+| SERVERS | 55 cells / 77 s | 30 | 4 |
+| PLANT | 77 cells / 107 s | 30 | 6 |
+
+**19 of 90 wake on a perfect run**, each one faster than he walks (`CHASE_SPD` 52 vs `WALK_SPD` 46)
+and good for ~3 hull every 3.5 s. The heat alone costs 36 on that route. These are his numbers and
+they stay, but if the escape reads as impossible rather than desperate, `FOES_AFTER` is the first
+dial, not the heat.
 
 ---
 

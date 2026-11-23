@@ -204,6 +204,69 @@ ok('the first-person sheet has a row per pose',
 ok('the last pose row is inside the sheet',
    E('foeRow(bakeFoeSheet(FOE_COL), FOE_RIG.POSES - 1, true) + bakeFoeSheet(FOE_COL).fh')
      <= E('bakeFoeSheet(FOE_COL).cv.height'));
+
+// THE SENTRY'S BAKE IS SPREAD TOO, one CELL at a time. This is a regression
+// guard with a date on it: the sheet used to be filled a POSE STRIP at a time -
+// 16 yaws, ~110 ms - with pose 0 baked eagerly on the frame the first sentry
+// came into sight and foeWarm feeding in one strip per frame the moment it
+// walked. That is six ~110 ms frames back to back, and on 2026-11-23 the user
+// reported it from play: "as soon as I saw a sentry, the screen froze for a
+// little bit", once, and never again. A whole sheet measures 643 ms; a cell is
+// ~7 ms. If anything here starts filling strips again, that freeze is back.
+head('the sentry sheet is filled a cell at a time, not a strip at a time');
+const freshSheet = `delete foeSheets[foeVoxName()]; const sp = bakeFoeSheet(FOE_COL);`;
+const nCells = `Array.from(sp.cell).filter(v => v).length`;
+ok('a fresh first-person sheet has NOTHING baked',
+   E(`(function(){ ${freshSheet} return ${nCells}; })()`) === 0);
+ok('the ledger is one byte per pose per yaw',
+   E('bakeFoeSheet(FOE_COL).cell.length') === E('FOE_RIG.POSES*FOE_RIG.YAWS'));
+ok('one cell on demand is ONE cell, not its whole row',
+   E(`(function(){ ${freshSheet} foeCellEnsure(sp, 3, 5);
+      return sp.cell[3*sp.n + 5] === 1 && ${nCells} === 1; })()`) === true);
+ok('asking twice does not bake twice',
+   E(`(function(){ const sp = bakeFoeSheet(FOE_COL);
+      foeCellEnsure(sp, 3, 5); foeCellEnsure(sp, 3, 5); return ${nCells}; })()`) === 1);
+// posedMesh used to be called once per STRIP, so cell granularity would have
+// re-posed the mesh for all 16 yaws of a pose had it not been cached.
+ok('posedMesh is cached per pose, not rebuilt for every yaw of it',
+   E(`(function(){ ${freshSheet}
+      foeCellEnsure(sp, 2, 0); const a = sp.pm[2];
+      foeCellEnsure(sp, 2, 1);
+      return !!a && a === sp.pm[2] && a !== sp.mesh; })()`) === true);
+ok('...and pose 0 is the mesh itself, so it costs nothing to pose',
+   E(`(function(){ ${freshSheet} foeCellEnsure(sp, 0, 0);
+      return sp.pm[0] === sp.mesh; })()`) === true);
+ok('foeWarm fills FOE_RIG.WARM cells a frame and no more',
+   E(`(function(){ ${freshSheet} clearFoeSheets(); foeWarm(); return ${nCells}; })()`)
+     === E('FOE_RIG.WARM'));
+// the pose policy, which is the old one: a sentry that never walks pays for
+// pose 0 alone, because standing still it still turns through every yaw of it.
+// foeWarm reads nothing off a sentry but `walk`, so the policy is driven here
+// by a stand-in pushed onto the list and popped again - no live sentry needed
+// and nothing left behind for the next section.
+const warmRun = (walk, frames) => `(function(){
+     ${freshSheet} clearFoeSheets();
+     const kept = foes.splice(0, foes.length);
+     foes.push({ walk:${walk} });
+     let n = 0;
+     while(n < ${frames} && ${nCells} < sp.cell.length){ foeWarm(); n++; }
+     foes.length = 0; for(const f of kept) foes.push(f);
+     let walked = 0;
+     for(let p = 1; p < sp.poses; p++)
+       for(let fr = 0; fr < sp.n; fr++) if(sp.cell[p*sp.n + fr]) walked++;
+     return [${nCells}, walked, n]; })()`;
+const stood = E(warmRun(false, 400));
+ok('a sentry standing still fills pose 0 and never pays for the stride',
+   stood[0] === E('FOE_RIG.YAWS') && stood[1] === 0, stood.join('/'));
+const walked = E(warmRun(true, 600));
+// not "inside a second": that was a claim about a budget of 2, and the budget is
+// a MEASURED number (config.js) that may be tuned again. The guarantee that must
+// hold whatever it is set to: walking fills the sheet COMPLETELY, and it costs
+// one frame per WARM cells and not one frame per cell.
+const cells = E('FOE_RIG.POSES*FOE_RIG.YAWS');
+ok('...and once one walks, the whole sheet fills, at WARM cells a frame',
+   walked[0] === cells && walked[2] === Math.ceil(cells/E('FOE_RIG.WARM')),
+   walked[0] + '/' + cells + ' cells in ' + walked[2] + ' frames at WARM=' + E('FOE_RIG.WARM'));
 E('clearFoes()');
 
 
@@ -1271,6 +1334,109 @@ ok('and it is not a Saints line - they never betrayed him',
 ok('the HUD switches to PLANTED', /PLANTED/.test(walkHud()));
 E('keys[DC.PLANT_KEY] = false');
 
+head('the plant has sentries in it, and med-kits');
+E('(function(){ dcq.floors = null; dcq.inside = null; dcq.planted = false; dcEnter(0); })()');
+ok('a floor comes peopled', E('dcq.inside.foes.length') === E('DC.FOES_BEFORE'));
+ok('...sparsely, while the worm is still in his hand',
+   E('DC.FOES_BEFORE') < E('DC.FOES_AFTER'),
+   E('DC.FOES_BEFORE') + ' before, ' + E('DC.FOES_AFTER') + ' after');
+ok('and carries med-kits', E('dcq.inside.meds.length') === E('DC.MEDS'));
+ok('nothing is standing inside a wall', E(`(function(){ const F = dcq.inside, M = F.M;
+     const on = p => { const c = dcCellAt(M, p.x, p.y); return dcOpen(M, c.x, c.y); };
+     return F.foes.every(on) && F.meds.every(on); })()`) === true);
+ok('and nothing is lurking ON a stairwell', E(`(function(){ const F = dcq.inside, M = F.M;
+     let min = 99;
+     for(const f of F.foes){ const c = dcCellAt(M, f.x, f.y);
+       for(const s of [M.start, M.core]) min = Math.min(min, Math.abs(c.x-s.x) + Math.abs(c.y-s.y)); }
+     return min >= DC.FOE_MIN_D; })()`) === true,
+   'an ambush you cannot see coming is not difficulty');
+ok('a floor\'s sentries are ITS sentries - they do not follow him upstairs', E(`(function(){
+     dcEnter(1); const n1 = foes.length; dcEnter(0);
+     return foes.length === n1 && foes.length === DC.FOES_BEFORE; })()`) === true);
+ok('and one he shot stays shot', E(`(function(){
+     dcEnter(1); dcq.inside.foes[0].dead = true; const live = foes.length;
+     dcEnter(0); dcEnter(1);
+     return dcq.inside.foes[0].dead === true && foes.length === DC.FOES_BEFORE - 1; })()`) === true);
+ok('they walk into maze walls, not city blocks', E(`(function(){
+     dcEnter(0); const M = dcq.inside.M;
+     for(const f of foes){ f.mad = true; f.walk = true; }
+     for(let i=0;i<180;i++) updateFoes(1/60);
+     return foes.every(f => { const c = dcCellAt(M, f.x, f.y); return dcOpen(M, c.x, c.y); }); })()`) === true,
+   'foeCollide has to branch on dcq.inside or they walk through everything');
+ok('the city stops spawning its own while he is in here', E(`(function(){
+     const n = foes.length; cityStep(1/60); return foes.length === n; })()`) === true);
+
+head('the med-kit is HIS, and it does not look like the car\'s');
+ok('walking onto one heals him', E(`(function(){
+     dcEnter(1); walker.hp = 10; const m = dcq.inside.meds.find(x => !x.taken);
+     walker.x = m.x; walker.y = m.y; dcItemsTick();
+     return walker.hp > 10 && m.taken === true; })()`) === true);
+ok('...by MED_HEAL of his own max, not the car\'s', E(`(function(){
+     dcEnter(2); walker.hp = 1; const m = dcq.inside.meds.find(x => !x.taken);
+     walker.x = m.x; walker.y = m.y; dcItemsTick();
+     return Math.abs(walker.hp - (1 + walkerMaxHp()*DC.MED_HEAL)) < 0.01; })()`) === true);
+ok('it does not come back', E(`(function(){
+     const m = dcq.inside.meds.find(x => x.taken);
+     walker.hp = 1; walker.x = m.x; walker.y = m.y; dcItemsTick();
+     return walker.hp === 1; })()`) === true,
+   'the floor holds what it holds, so spending one is a decision');
+ok('and a full-hull walker leaves it where it is', E(`(function(){
+     const m = dcq.inside.meds.find(x => !x.taken);
+     if(!m) return true;
+     walker.hp = walkerMaxHp(); walker.x = m.x; walker.y = m.y; dcItemsTick();
+     return m.taken === false; })()`) === true);
+ok('it draws as its own thing, not a green square', E(`(function(){
+     dcEnter(0); const m = dcq.inside.meds[0];
+     walker.x = m.x - 120; walker.y = m.y; walker.a = 0;
+     const bb = gatherBillboards(walker.x, walker.y, walker.a);
+     return bb.some(b => b.kind === 'med') && DC.MED_COL !== ITEMS.health.col; })()`) === true);
+
+head('the heat starts when the worm does, and it eats hull');
+ok('the clock starts AT the plant, not before it', E(`(function(){
+     dcq.planted = false; dcq.heat = 999;
+     const before = dcTemp(0);                       // cold while the worm is in his hand
+     dcPlanted();
+     return before === DC.HEAT_AMBIENT && dcq.heat === 0 && dcq.planted === true; })()`) === true);
+ok('and it runs whether he is standing still or not', E(`(function(){
+     const h = dcq.heat; for(let i=0;i<60;i++) dcHeatTick(1/60); return dcq.heat > h + 0.9; })()`) === true);
+ok('it drains hull once past HEAT_HURT, with no hit-flash and no grace window',
+   E(`(function(){ const dev = devMode; devMode = false;
+      dcEnter(0); dcq.heat = 100000; walker.hp = walkerMaxHp(); walkHurtT = 0;
+      const hp0 = walker.hp;
+      for(let i=0;i<60;i++) dcHeatTick(1/60);
+      const lost = hp0 - walker.hp, flash = walkHurtT;
+      devMode = dev; walker.hp = walkerMaxHp();
+      return lost > DC.HEAT_DPS*0.8 && lost < DC.HEAT_DPS*1.2 && flash === 0; })()`) === true,
+   'a bolt flashes and grants 0.5 s of grace; an oven does neither');
+ok('it cannot kill him in dev mode', E(`(function(){
+      const dev = devMode; devMode = true; dcq.heat = 100000; walker.hp = 10;
+      for(let i=0;i<120;i++) dcHeatTick(1/60);
+      const hp = walker.hp; devMode = dev; walker.hp = walkerMaxHp(); return hp === 10; })()`) === true);
+ok('the repair rig refuses to work in the heat', E(`(function(){
+      const dev = devMode; devMode = false;
+      const keep = walkUp.repair; walkUp.repair = 3;
+      dcq.heat = 100000; walker.hp = 20; keys[WALK_REPAIR_KEY] = true;
+      for(let i=0;i<60;i++) updateWalker(1/60);
+      const hot = walker.hp <= 20 && /TOO HOT/.test(walkMsg);
+      keys[WALK_REPAIR_KEY] = false; walkUp.repair = keep; devMode = dev;
+      return hot; })()`) === true);
+ok('...and works again once it is cool', E(`(function(){
+      const dev = devMode; devMode = false;
+      const keep = walkUp.repair; walkUp.repair = 3;
+      dcq.heat = 0; walker.hp = 20; keys[WALK_REPAIR_KEY] = true;
+      for(let i=0;i<60;i++) updateWalker(1/60);
+      const healed = walker.hp > 20;
+      keys[WALK_REPAIR_KEY] = false; walkUp.repair = keep; devMode = dev;
+      walker.hp = walkerMaxHp(); return healed; })()`) === true);
+ok('the HUD shows the temperature, and only once the worm is in', E(`(function(){
+      const o = [], f = ctx.fillText; ctx.fillText = s => o.push(String(s));
+      dcq.heat = 100000; drawWalkHUD();
+      const hot = o.some(s => /\u00b0C/.test(s)) && o.some(s => /COOKING/.test(s));
+      o.length = 0; dcq.planted = false; drawWalkHUD(); dcq.planted = true;
+      const cold = !o.some(s => /\u00b0C/.test(s));
+      ctx.fillText = f; return hot && cold; })()`) === true);
+E('dcq.heat = 0');
+
 head('...and it cannot be done by accident');
 E(`(function(){ dcq.planted = false; dcq.plant = 3; keys[DC.PLANT_KEY] = false; })()`);
 frame(60);
@@ -1304,8 +1470,692 @@ ok('skipToMaze lands on the floor it is asked for', E(`(function(){
      return true; })()`) === true);
 ok('and clamps a floor that does not exist', E(`(function(){
      skipToMaze(9); return dcq.inside.floor <= DC.FLOORS.length - 1; })()`) === true);
-E(`(function(){ const M = dcq.inside.M, p = dcWorld(M, M.start.x, M.start.y);
-     walker.x = p.x; walker.y = p.y; onPress("KeyE"); onFoot = false; })()`);
+
+// ---------------------------------------------------------------------------
+// SENTRIES IN THE PLANT. His report was "they don't attack": in the city a
+// sentry ignores you until you shoot it, which inside a building you broke into
+// reads as an empty building. In here they hunt on SIGHT - and sight means the
+// maze's own walls, so the corner you turned is cover.
+head('the plant hunts you');
+// A FRESH FLOOR. dcq.floors caches a floor for the whole run, so by this point in
+// the suite floor 0 has been entered, planted on and alarmed; asking it how many
+// sentries a floor STARTS with would be asking the wrong floor.
+E('dcq.planted = false; dcq.escaped = false; dcq.floors = {}');
+E('skipToMaze(0)');
+ok('a floor is peopled with FOES_BEFORE while the worm is in his hand',
+   E('dcq.inside.foes.length') === E('DC.FOES_BEFORE'),
+   E('dcq.inside.foes.length') + ' of ' + E('DC.FOES_BEFORE'));
+ok('...and they are all flagged dc, which is what switches the AI over',
+   E('dcq.inside.foes.every(f => f.dc === true)') === true);
+// PLACEMENT, read before anything has walked anywhere - a sentry that chases him
+// onto the stairs is fine, one that spawns there is an ambush you cannot see.
+ok('none of them is PLACED on a stairwell, on any floor', E(`(function(){
+     for(let i = 0; i < DC.FLOORS.length; i++){
+       const F = dcFloorState(i), M = F.M;
+       for(const f of F.foes){
+         const c = dcCellAt(M, f.x, f.y);
+         for(const s of [M.start, M.core])
+           if(Math.abs(c.x - s.x) + Math.abs(c.y - s.y) < DC.FOE_MIN_D) return i;
+       }
+     }
+     return true; })()`) === true);
+ok('...nor after the alarm tops every floor up', E(`(function(){
+     const keep = dcq.planted;
+     dcq.planted = true; dcAlarm(); dcq.planted = keep;
+     for(const k in dcq.floors){
+       const F = dcq.floors[k], M = F.M;
+       for(const f of F.foes){
+         const c = dcCellAt(M, f.x, f.y);
+         for(const s of [M.start, M.core])
+           if(Math.abs(c.x - s.x) + Math.abs(c.y - s.y) < DC.FOE_MIN_D) return +k;
+       }
+     }
+     return true; })()`) === true);
+E('dcq.floors = {}'); E('skipToMaze(0)');       // ...and back to a quiet floor 0
+// put him where one of them can see him and let it run. No shot fired: this is
+// the thing that was broken.
+const woke = E(`JSON.stringify((function(){
+  const M = dcq.inside.M, f = foes[0];
+  let spot = null;
+  for(const [x, y] of dcCells(M)){
+    const w = dcWorld(M, x, y), d = Math.hypot(w.x - f.x, w.y - f.y);
+    if(d > 90 && d < 240 && dcClear(M, f.x, f.y, w.x, w.y)){ spot = w; break; }
+  }
+  if(!spot) return { err:'no sightline on this floor' };
+  for(const c of foes){ c.mad = false; c.loseT = 0; }
+  walker.x = spot.x; walker.y = spot.y;
+  const d0 = Math.hypot(walker.x - f.x, walker.y - f.y);
+  for(let i = 0; i < 180; i++) updateFoes(1/60);
+  return { d0, d1:Math.hypot(walker.x - f.x, walker.y - f.y), mad:!!f.mad };
+})())`);
+const W = JSON.parse(woke);
+ok('it comes for you unprovoked, down a sightline', W.mad === true, W.err || '');
+ok('...and it ARRIVES: the floor-s own flow field, not the city street BFS',
+   W.d1 < W.d0 - 40, (W.d0 || 0).toFixed(0) + ' -> ' + (W.d1 || 0).toFixed(0));
+ok('a wall between you is cover: that one never wakes', E(`(function(){
+     const M = dcq.inside.M;
+     for(const c of foes){ c.mad = false; c.loseT = 0; }
+     let f = null, spot = null;
+     for(const c of foes){
+       for(const [x, y] of dcCells(M)){
+         const w = dcWorld(M, x, y), d = Math.hypot(w.x - c.x, w.y - c.y);
+         if(d > 70 && d < 200 && !dcClear(M, c.x, c.y, w.x, w.y)){ f = c; spot = w; break; }
+       }
+       if(f) break;
+     }
+     if(!f) return 'no blocked pair';
+     walker.x = spot.x; walker.y = spot.y;
+     for(let i = 0; i < 90; i++) updateFoes(1/60);
+     return f.mad === false; })()`) === true);
+ok('and a bolt dies on a partition, so cover works both ways', E(`(function(){
+     const M = dcq.inside.M;
+     // a segment that crosses a wall must be blocked, one along a corridor must not
+     let blocked = false, clear = false;
+     for(let y = 1; y < M.rows - 1 && !(blocked && clear); y++)
+       for(let x = 1; x < M.cols - 1; x++){
+         if(!dcOpen(M, x, y)) continue;
+         const a = dcWorld(M, x, y);
+         for(const d of DC_DIRS){
+           if(!dcOpen(M, x + d.dx, y + d.dy)) continue;
+           const b = dcWorld(M, x + d.dx, y + d.dy);
+           if(M.grid[y][x].walls[d.wall]) blocked = blocked || !dcClear(M, a.x, a.y, b.x, b.y);
+           else clear = clear || dcClear(M, a.x, a.y, b.x, b.y);
+         }
+       }
+     return blocked && clear; })()`) === true);
+ok('the alarm trebles a floor again', E(`(function(){
+     dcq.planted = true; dcAlarm();
+     const n = dcq.inside.foes.filter(f => !f.dead).length;
+     return n === DC.FOES_AFTER; })()`) === true,
+   'wanted ' + E('DC.FOES_AFTER'));
+ok('...and that many actually FIT, which FOE_SPREAD is for', E(`(function(){
+     for(let i = 0; i < DC.FLOORS.length; i++){
+       const M = dcGenerate(i), rng = cityRng(hash3(i + 5, 7, DC.SEED)*4294967296);
+       if(dcPlaces(M, DC.FOES_AFTER, DC.FOE_MIN_D, rng, [M.start, M.core], DC.FOE_SPREAD).length
+          !== DC.FOES_AFTER) return i;
+     }
+     return true; })()`) === true);
+
+// ---------------------------------------------------------------------------
+// THE PICKET ON THE SQUARE, and what happens when he gets out.
+head('the square, and the way out');
+const pick = JSON.parse(E(`JSON.stringify((function(){
+  const S = questSites.data, D = questData();
+  const p = foeChunkPlan(S.k, S.side).filter(q => /:dg/.test(q.key));
+  return p.map(q => ({ guard:!!q.guard, out:(q.x - D.main.x)*D.main.nx, lat:q.y - D.main.y,
+                       faces:Math.abs(angDiff(q.a, Math.atan2(0, D.main.nx))), ground:cityGround(q.x, q.y) }));
+})())`));
+ok('five of them stand on the plaza', pick.length === E('QUEST.DATA_GUARDS'), pick.length + '');
+ok('...as GUARDS, so walking onto the square is the mistake', pick.every(p => p.guard));
+ok('...in formation: a line of three, two further out',
+   pick.filter(p => Math.abs(p.out - E('QUEST.DATA_GUARD_D1')) < 1).length === 3 &&
+   pick.filter(p => Math.abs(p.out - E('QUEST.DATA_GUARD_D2')) < 1).length === 2);
+ok('...all in FRONT of the doors, never inside the slab', pick.every(p => p.out > 0));
+ok('...on pavement', pick.every(p => p.ground === 2));
+ok('...and all facing out across it', pick.every(p => p.faces < 1e-6));
+ok('no two of them overlap', (() => {
+     for(let i = 0; i < pick.length; i++) for(let j = i + 1; j < pick.length; j++){
+       const dx = pick[i].out - pick[j].out, dy = pick[i].lat - pick[j].lat;
+       if(Math.hypot(dx, dy) < E('FOE_POP.GAP')) return false;
+     }
+     return true; })() === true);
+// THE TWO EMPLACEMENTS, his ask: turrets on the FRONT of the building, the
+// plaza side - not the service door round the back, which is the way he goes in.
+const emp = JSON.parse(E(`JSON.stringify((function(){
+  const S = questSites.data, D = questData();
+  const p = foeChunkPlan(S.k, S.side).filter(q => /:dt/.test(q.key));
+  return p.map(q => ({ kind:q.turret, out:(q.x - D.main.x)*D.main.nx, lat:q.y - D.main.y,
+                       faces:Math.abs(angDiff(q.a, Math.atan2(0, D.main.nx))),
+                       ground:cityGround(q.x, q.y),
+                       toBack:Math.round(Math.hypot(q.x - D.back.x, q.y - D.back.y)) }));
+})())`));
+ok('two turrets stand on the square with them', emp.length === E('QUEST.DATA_TURRETS'),
+   emp.length + '');
+ok('...one of EACH kind, so both read from up there',
+   emp.length === 2 && emp[0].kind !== emp[1].kind && emp.every(e => e.kind === 1 || e.kind === 2),
+   emp.map(e => e.kind).join(' and '));
+ok('...flanking the doors, symmetrically, wider than the picket',
+   emp.every(e => Math.abs(Math.abs(e.lat) - E('QUEST.DATA_TURRET_S')) < 1)
+   && Math.sign(emp[0].lat) === -Math.sign(emp[1].lat)
+   && E('QUEST.DATA_TURRET_S') > E('QUEST.DATA_GUARD_S'),
+   emp.map(e => e.lat).join(' / '));
+ok('...IN FRONT of the doors, never inside the slab', emp.every(e => e.out > 0),
+   emp.map(e => e.out).join(' / '));
+// at 30 they were flush with the wall and the axonometric pane drew the building
+// over them: 62 px of one survived and none of the other. This is why.
+ok('...and clear of the wall, or the top-down view buries them behind the slab',
+   emp.every(e => e.out >= E('QUEST.DATA_GUARD_D1')),
+   'out ' + emp.map(e => e.out).join(' / ') + ', the line of three is at ' + E('QUEST.DATA_GUARD_D1'));
+ok('...on pavement', emp.every(e => e.ground === 2), emp.map(e => e.ground).join('/'));
+ok('...facing out across the square, like everything else on this side',
+   emp.every(e => e.faces < 1e-6));
+// The service door is 181 units from the nearer emplacement, well inside a
+// rack's 540 reach, so DISTANCE is not what keeps his way in quiet - the
+// BUILDING is. turretThink tests cityClear out here exactly as a sentry's gun
+// does, so the corner of the slab is cover.
+ok('...and they cannot see the SERVICE door, which is his way in', E(`(function(){
+     const D = questData(), S = questSites.data;
+     return foeChunkPlan(S.k, S.side).filter(q => /:dt/.test(q.key))
+       .every(q => !cityClear(q.x, q.y, D.bx, D.by)); })()`) === true,
+   'nearest is ' + Math.min(...emp.map(e => e.toBack)) + ' units from it');
+ok('no emplacement overlaps a guard or the other one', (() => {
+     const all = pick.concat(emp);
+     for(let i = 0; i < all.length; i++) for(let j = i + 1; j < all.length; j++){
+       const dx = all[i].out - all[j].out, dy = all[i].lat - all[j].lat;
+       if(Math.hypot(dx, dy) < E('FOE_POP.GAP')) return false;
+     }
+     return true; })() === true);
+// AND THEY HAVE TO REACH THE WORLD. spawnFoe pushes itself onto `foes` and
+// spawnTurret does not - a datacenter turret is born into its floor's list and
+// dcEnter puts it in the world later - so the street spawner has to push by hand.
+// Without that the keys went into foeLive and the square stayed empty, with
+// nothing thrown and nothing logged. That is what this one is for.
+const up = JSON.parse(E(`JSON.stringify((function(){
+  const D = questData(), c = cars[0];
+  const k0 = { x:c.x, y:c.y, foot:onFoot };
+  c.x = D.main.x + D.main.nx*210; c.y = D.main.y; c.vx = 0; c.vy = 0; onFoot = false;
+  for(let i = 0; i < 120; i++) citySentries(1/60);
+  const t = foes.filter(f => f.turret);
+  const out = t.map(f => ({ kind:f.turret, rise:f.rise, hidden:!!f.hidden, dc:!!f.dc,
+                            dead:!!f.dead, key:!!f.key }));
+  c.x = k0.x; c.y = k0.y; onFoot = k0.foot;
+  return out; })())`));
+ok('the spawner actually puts them in the world', up.length === E('QUEST.DATA_TURRETS'),
+   up.length + ' of ' + E('QUEST.DATA_TURRETS') + ' reached `foes`');
+ok('...already UP, because a trap door is a datacenter trick',
+   up.every(u => u.rise === 1 && !u.hidden));
+ok('...and NOT datacenter bodies, so they never read the maze\'s walls out here',
+   up.every(u => u.dc === false));
+ok('...keyed, so the city drops and remembers them like any other body',
+   up.every(u => u.key));
+
+const esc = JSON.parse(E(`JSON.stringify((function(){
+  const cash0 = cash;
+  dcq.planted = true; dcq.escaped = false;
+  dcLeave();
+  const D = questData();
+  walker.x = D.bx; walker.y = D.by; onFoot = true; dataTick();
+  const back = { at:dcq.atDoor, used:dataEnter(), inside:!!dcq.inside };
+  walker.x = D.x;  walker.y = D.y;  dataTick();
+  const main = { at:dcq.atDoor, used:dataEnter(), inside:!!dcq.inside };
+  return { escaped:!!dcq.escaped, paid:cash - cash0,
+           worm:radio.q.filter(l => l.who === 'WORM').length,
+           saints:radio.q.filter(l => l.who === 'SAINTS').length,
+           sealed:[doorSealed(D.main), doorSealed(D.back), doorSealed(questSaints().door)],
+           back, main };
+})())`));
+ok('walking out with it planted ends the quest', esc.escaped === true);
+ok('...and pays for it', esc.paid === E('QUEST.DATA_CASH'), esc.paid + '');
+ok('...and the WORM has the last word', esc.worm >= 5 && esc.saints >= 1,
+   esc.worm + ' worm / ' + esc.saints + ' saints');
+ok('then the building is shut: both doors', esc.sealed[0] === true && esc.sealed[1] === true);
+ok('...but NOT the shop, which he still needs', esc.sealed[2] === false);
+ok('the service door no longer lets him in', esc.back.at === 'back' && esc.back.inside === false);
+ok('...nor the main one', esc.main.at === 'main' && esc.main.inside === false);
+ok('...and E is still consumed, so it answers instead of doing nothing',
+   esc.back.used === true && esc.main.used === true);
+ok('a checkpoint remembers it is over', E(`(function(){
+     const keep = { sites:questSites, done:true, worm:true, plantDone:true };
+     const q0 = dcq, s0 = questSites, d0 = quest.done;
+     questStart(keep);
+     const over = dcq.escaped === true && dcq.planted === true;
+     dcq = q0; questSites = s0; quest.done = d0; questForgetCity();
+     return over; })()`) === true);
+E('dcq.escaped = false; dcq.planted = false');
+
+// ---------------------------------------------------------------------------
+// THE TRAP DOORS. A turret exists from the moment a floor is generated, shut
+// under a lid, so most of what is worth testing here happens BEFORE anything is
+// visible: that the lids are placed, that nothing else is standing on one, and
+// that the thing underneath is out of the world until the worm says otherwise.
+// ---------------------------------------------------------------------------
+head('the trap doors in the floor');
+E('dcq.planted = false; dcq.escaped = false; dcq.floors = {}');
+E('skipToMaze(0)');
+ok('a floor gets DC.TURRETS trap doors',
+   E('dcq.inside.turrets.length') === E('DC.TURRETS'),
+   E('dcq.inside.turrets.length') + ' of ' + E('DC.TURRETS'));
+ok('...and every one of them is marked SHUT in the floor\'s hatch map', E(`(function(){
+     const F = dcq.inside, M = F.M;
+     return F.turrets.every(t => F.hatch[t.cell.y*M.cols + t.cell.x] === 1); })()`) === true);
+ok('the hatch map holds nothing else: one mark per turret', E(`(function(){
+     const F = dcq.inside;
+     let n = 0; for(let i = 0; i < F.hatch.length; i++) if(F.hatch[i]) n++;
+     return n; })()`) === E('DC.TURRETS'));
+ok('every turret is hidden before the worm goes in',
+   E('dcq.inside.turrets.every(t => t.hidden === true)') === true);
+ok('...so not one of them is in the world yet', E('foes.some(f => f.turret)') === false);
+ok('both kinds are used across the three floors', E(`(function(){
+     const seen = {};
+     for(let i = 0; i < DC.FLOORS.length; i++)
+       for(const t of dcFloorState(i).turrets) seen[t.turret] = 1;
+     return Object.keys(seen).sort().join(','); })()`) === '1,2');
+// PLACEMENT, on every floor, before anything has moved. A turret cannot step
+// aside, so where it is put is the whole of its fairness.
+ok('none is placed on a stairwell, on any floor', E(`(function(){
+     for(let i = 0; i < DC.FLOORS.length; i++){
+       const F = dcFloorState(i);
+       for(const t of F.turrets) for(const s of [F.M.start, F.M.core])
+         if(Math.abs(t.cell.x - s.x) + Math.abs(t.cell.y - s.y) < DC.TURRET_MIN_D) return i;
+     }
+     return true; })()`) === true);
+ok('...and none on the unit itself, which is the one square he must be able to stand on',
+   E(`(function(){
+     const F = dcFloorState(DC.FLOORS.length - 1), c = F.M.core;
+     for(const t of F.turrets)
+       if(Math.abs(t.cell.x - c.x) + Math.abs(t.cell.y - c.y) <= DC.TURRET_CORE_D) return false;
+     return true; })()`) === true);
+ok('no two of them share a corridor cell', E(`(function(){
+     for(let i = 0; i < DC.FLOORS.length; i++){
+       const T = dcFloorState(i).turrets;
+       for(let a = 0; a < T.length; a++) for(let b = a + 1; b < T.length; b++)
+         if(Math.abs(T[a].cell.x - T[b].cell.x) + Math.abs(T[a].cell.y - T[b].cell.y) < DC.TURRET_SPREAD)
+           return i;
+     }
+     return true; })()`) === true);
+ok('no sentry is standing on a lid', E(`(function(){
+     for(let i = 0; i < DC.FLOORS.length; i++){
+       const F = dcFloorState(i), M = F.M;
+       for(const f of F.foes){
+         const c = dcCellAt(M, f.x, f.y);
+         if(F.hatch[c.y*M.cols + c.x]) return i;
+       }
+     }
+     return true; })()`) === true);
+ok('...and no med-kit is sitting in one', E(`(function(){
+     for(let i = 0; i < DC.FLOORS.length; i++){
+       const F = dcFloorState(i), M = F.M;
+       for(const m of F.meds){
+         const c = dcCellAt(M, m.x, m.y);
+         if(F.hatch[c.y*M.cols + c.x]) return i;
+       }
+     }
+     return true; })()`) === true);
+// THE LID AS A THING YOU SEE. dcBackground asks dcHatchAt per sampled column per
+// row; this is that function answering about a cell it is standing on.
+ok('dcHatchAt reads a shut lid at the middle of its cell', E(`(function(){
+     const F = dcq.inside, M = F.M, t = F.turrets[0], w = dcWorld(M, t.cell.x, t.cell.y);
+     return dcHatchAt(M, F.hatch, w.x, w.y); })()`) > 0);
+ok('...a rim near the edge of it', E(`(function(){
+     const F = dcq.inside, M = F.M, t = F.turrets[0], w = dcWorld(M, t.cell.x, t.cell.y);
+     return dcHatchAt(M, F.hatch, w.x + DC.HATCH_R - DC.HATCH_RIM*0.5, w.y + 6); })()`) === 2);
+ok('...and bare floor past it', E(`(function(){
+     const F = dcq.inside, M = F.M, t = F.turrets[0], w = dcWorld(M, t.cell.x, t.cell.y);
+     return dcHatchAt(M, F.hatch, w.x + DC.HATCH_R + 2, w.y); })()`) === 0);
+ok('a lid is narrower than the corridor it is set into', E('DC.HATCH_R*2') < E('DC.CELL'));
+
+head('the worm opens the floor');
+const upN = E('(function(){ const n = dcRelease(); return n; })()');
+ok('dcRelease raises every hidden turret on every built floor', upN > 0,
+   upN + ' raised');
+ok('...and every hatch on this floor now reads OPEN', E(`(function(){
+     const F = dcq.inside, M = F.M;
+     return F.turrets.every(t => F.hatch[t.cell.y*M.cols + t.cell.x] === 2); })()`) === true);
+ok('...the turrets on the floor he is standing on join the world now',
+   E('foes.filter(f => f.turret).length') === E('dcq.inside.turrets.length'),
+   E('foes.filter(f => f.turret).length') + ' of ' + E('dcq.inside.turrets.length'));
+ok('a second release is a no-op: nothing comes up twice', E('dcRelease()') === 0);
+// A FLOOR BUILT AFTER THE PLANT. dcRelease cannot reach a floor that does not
+// exist, so the floor has to be born released - the same split dcPopulate makes
+// for FOES_AFTER, and the bug if it is missed is a silent floor of shut lids.
+ok('a floor generated after the plant is born with its turrets already up', E(`(function(){
+     dcq.planted = true;
+     delete dcq.floors[2];
+     const F = dcFloorState(2);
+     return F.turrets.length > 0 && F.turrets.every(t => t.hidden === false); })()`) === true);
+
+head('a turret comes up, and then it does not move');
+E('dcq.floors = {}; dcq.planted = false; skipToMaze(0); dcRelease()');
+const rise0 = E('foes.find(f => f.turret).rise');
+frame(4);
+ok('it starts in its hole and climbs out of it', rise0 < 1 && E('foes.find(f => f.turret).rise') > rise0,
+   rise0 + ' -> ' + E('foes.find(f => f.turret).rise'));
+// HALF OUT OF THE FLOOR IS NOT A TARGET. Three paths read `rise` for this -
+// the bolt collision, the pistol and foeBlock - and a turret you can kill
+// before it clears the lid makes the whole rise cosmetic.
+ok('...and a round passes straight through one that is still in its hole', E(`(function(){
+     const t = foes.find(f => f.turret);
+     t.rise = 0.4; t.dead = false; t.hp = 999;
+     shots.length = 0;
+     shots.push({ kind:'cannon', x:t.x - 20, y:t.y, z:10, vx:600, vy:0, angle:0,
+                  life:1, owner:0, dmg:50, dmgWalk:5 });
+     for(let i = 0; i < 8; i++) updateShots(0.016);
+     const hp = t.hp; shots.length = 0; t.rise = 1;
+     return hp; })()`) === 999);
+ok('...and you cannot stand on top of one either way, but you CAN before it is up',
+   E(`(function(){
+     const t = foes.find(f => f.turret);
+     t.rise = 0.4;
+     const p = { x:t.x + 1, y:t.y };
+     foeBlock(p);
+     const through = Math.hypot(p.x - t.x, p.y - t.y) < 2;   // still inside it: no push
+     t.rise = 1;
+     const q = { x:t.x + 1, y:t.y };
+     foeBlock(q);
+     return through && Math.hypot(q.x - t.x, q.y - t.y) > 2; })()`) === true);
+frame(Math.ceil(E('TURRET.RISE')*60) + 20);
+ok('the rise tops out at 1 and stays there',
+   E('foes.filter(f => f.turret).every(t => t.rise === 1)') === true);
+ok('a turret never WALKS, whatever else it is doing',
+   E('foes.filter(f => f.turret).every(t => t.walk === false)') === true);
+const held = E(`JSON.stringify((function(){
+  const t = foes.find(f => f.turret);
+  return { x:t.x, y:t.y };
+})())`);
+// put him right next to one and let it run: it may fire, it may traverse, it
+// must not travel.
+E(`(function(){ const t = foes.find(f => f.turret); walker.x = t.x + 40; walker.y = t.y; })()`);
+frame(240);
+ok('...and it is still on its own hatch after four seconds of being shot at',
+   E(`JSON.stringify((function(){ const t = foes.find(f => f.turret); return { x:t.x, y:t.y }; })())`) === held,
+   held + ' -> ' + E(`JSON.stringify((function(){ const t = foes.find(f => f.turret); return { x:t.x, y:t.y }; })())`));
+ok('you cannot walk through one', E(`(function(){
+     const t = foes.find(f => f.turret);
+     const p = { x:t.x + 1, y:t.y + 1 };
+     foeBlock(p);
+     return Math.hypot(p.x - t.x, p.y - t.y) >= (t.r || FOE.R) + WALK_R - 1e-6; })()`) === true);
+ok('...and it is wider than a sentry, because the model is',
+   E('TURRET.KINDS[2].r') > E('FOE.R'));
+
+head('the two weapons');
+ok('the energy gun is FASTER than a sentry bolt', E('TURRET.KINDS[1].shot.spd') > E('FOE_GUN.SPD'),
+   E('TURRET.KINDS[1].shot.spd') + ' vs ' + E('FOE_GUN.SPD'));
+ok('...and SMALLER on screen', E('TURRET.KINDS[1].shot.r') < 3.2,
+   E('TURRET.KINDS[1].shot.r') + ' vs the bolt\'s 3.2');
+ok('the missile rack hurts far more than either', E('TURRET.KINDS[2].shot.dmgWalk') > E('FOE_GUN.DMG_WALK')
+   && E('TURRET.KINDS[2].shot.dmgWalk') > E('TURRET.KINDS[1].shot.dmgWalk'));
+ok('...and it is the one that is paid for with a longer tell',
+   E('TURRET.KINDS[2].windup') > E('TURRET.KINDS[1].windup')
+   && E('TURRET.KINDS[2].windup') > E('FOE_GUN.WINDUP'));
+// both guns, fired by hand, with the target in the open in front of them
+const fired = E(`JSON.stringify((function(){
+  const out = {};
+  for(const kind of [1, 2]){
+    shots.length = 0;
+    const t = foes.find(f => f.turret && f.turret === kind) || foes.find(f => f.turret);
+    t.turret = kind; t.rise = 1; t.charge = 0; t.gunT = 0;
+    walker.x = t.x + 60; walker.y = t.y;
+    t.a = 0;
+    const T = { x:walker.x, y:walker.y };
+    turretGun(t, 0.016, T, 60, true);              // opens the windup
+    let n = 0;
+    while(shots.length === 0 && n++ < 400) turretGun(t, 0.016, T, 60, true);
+    const s = shots[0] || null;
+    out[kind] = s ? { kind:s.kind, foe:!!s.foe, spd:Math.round(Math.hypot(s.vx, s.vy)),
+                      dmgWalk:s.dmgWalk, r:s.r || null } : null;
+  }
+  shots.length = 0;
+  return out; })())`);
+const F2 = JSON.parse(fired);
+ok('turret 1 fires a zap', F2['1'] && F2['1'].kind === 'zap', JSON.stringify(F2['1']));
+ok('...at TURRET.KINDS[1].shot.spd', F2['1'] && F2['1'].spd === E('TURRET.KINDS[1].shot.spd'));
+ok('turret 2 fires a missile', F2['2'] && F2['2'].kind === 'missile', JSON.stringify(F2['2']));
+ok('both are flagged foe, so they pass through the hunters and come for you',
+   F2['1'] && F2['2'] && F2['1'].foe === true && F2['2'].foe === true);
+// WHERE THE SHOT LEAVES THE MODEL. The user reported (2026-11-23) that the
+// energy bolt left from above the barrel rather than out of its tip, and the
+// cause was a flat "8 units forward" when turret-01's barrel tip is 22.5 units
+// out: a muzzle BEHIND the real one is further from the player than the real
+// one, and a point below eye level climbs toward the horizon with distance, so
+// it read as higher. These tie TURRET.KINDS[n].muzzle to the CARVE itself, by
+// role, so that re-carving the model at another resolution - or swapping which
+// part is `lamp` - fails here instead of quietly moving the muzzle again.
+head('the shot leaves the part of the model you can see');
+// every vertex of one role, straight out of the shipped carve
+const roleBox = (vox, role) => E(`(function(){
+  const d = VOXTURRETS['${vox}'], out = { x:[1e9,-1e9], y:[1e9,-1e9], z:[1e9,-1e9] }, pts = [];
+  for(let i = 0; i < d.f.length; i += 13){
+    if(d.roles[d.f[i]] !== '${role}') continue;
+    for(let k = 0; k < 4; k++){ const o = i + 1 + k*3;
+      pts.push([0,1,2].map(j => d.lo[j] + d.f[o+j]*d.vox)); } }
+  for(const p of pts){ const ax = ['x','y','z'];
+    for(let j = 0; j < 3; j++){ const b = out[ax[j]];
+      if(p[j] < b[0]) b[0] = p[j]; if(p[j] > b[1]) b[1] = p[j]; } }
+  // the TIP: every vertex within a unit of the furthest-forward one
+  const tipX = out.x[1], tip = pts.filter(p => p[0] >= tipX - 1);
+  out.tipZ = [Math.min(...tip.map(p => p[2])), Math.max(...tip.map(p => p[2]))];
+  out.tipAbsY = [Math.min(...tip.map(p => Math.abs(p[1]))), Math.max(...tip.map(p => Math.abs(p[1])))];
+  out.n = pts.length;
+  return JSON.stringify(out); })()`);
+const barrel = JSON.parse(roleBox(E('TURRET.KINDS[1].vox'), 'lamp'));
+const M1 = E('JSON.stringify(TURRET.KINDS[1].muzzle)') && JSON.parse(E('JSON.stringify(TURRET.KINDS[1].muzzle)'));
+ok('turret 1: the barrel is the `lamp` role and it is the furthest-forward part',
+   barrel.n > 0 && barrel.x[1] > 18, 'tip at x = ' + barrel.x[1].toFixed(1));
+ok('...and the muzzle sits AT that tip, not inside the model',
+   Math.abs(M1.fwd - barrel.x[1]) <= 1, 'muzzle fwd ' + M1.fwd + ' vs tip ' + barrel.x[1].toFixed(1));
+ok('...at the height of the bore, between the tip\'s top and bottom',
+   M1.z >= barrel.tipZ[0] && M1.z <= barrel.tipZ[1],
+   'muzzle z ' + M1.z + ' in [' + barrel.tipZ.map(v => v.toFixed(1)).join(', ') + ']');
+ok('...and on the centreline, because turret 1 has one barrel', M1.side === 0);
+const rack = JSON.parse(roleBox(E('TURRET.KINDS[2].vox'), 'tail'));
+const M2 = JSON.parse(E('JSON.stringify(TURRET.KINDS[2].muzzle)'));
+ok('turret 2: the missiles are the `tail` role, in two clusters off the centreline',
+   rack.n > 0 && rack.tipAbsY[0] > 4, '|y| from ' + rack.tipAbsY[0].toFixed(1) + ' to ' + rack.tipAbsY[1].toFixed(1));
+ok('...and the muzzle is OUT ON AN ARM, not up the middle',
+   M2.side >= rack.tipAbsY[0] && M2.side <= rack.tipAbsY[1],
+   'side ' + M2.side + ' in [' + rack.tipAbsY.map(v => v.toFixed(1)).join(', ') + ']');
+ok('...at the height of the missiles themselves',
+   M2.z >= rack.tipZ[0] && M2.z <= rack.tipZ[1],
+   'muzzle z ' + M2.z + ' in [' + rack.tipZ.map(v => v.toFixed(1)).join(', ') + ']');
+ok('...and no further forward than the missiles reach',
+   M2.fwd <= rack.x[1] + 1, 'fwd ' + M2.fwd + ' vs ' + rack.x[1].toFixed(1));
+// and the shot is actually BORN there, which is the thing the user sees
+const born = JSON.parse(E(`JSON.stringify((function(){
+  const out = {};
+  for(const kind of [1, 2]){
+    const t = foes.find(f => f.turret) ; t.turret = kind; t.rise = 1; t.a = 0;
+    t.x = 1000; t.y = 1000; t.side = 0;
+    walker.x = t.x + 200; walker.y = t.y;
+    const T = { x:walker.x, y:walker.y };
+    const fire = () => { shots.length = 0; t.charge = 0; t.gunT = 0;
+      let n = 0; while(shots.length === 0 && n++ < 500) turretGun(t, 0.016, T, 200, true);
+      return shots[0]; };
+    const a = fire(), b = fire();
+    out[kind] = { outA:+Math.hypot(a.x - t.x, a.y - t.y).toFixed(2), zA:a.z,
+                  outB:+Math.hypot(b.x - t.x, b.y - t.y).toFixed(2),
+                  apart:+Math.hypot(a.x - b.x, a.y - b.y).toFixed(2) };
+  }
+  shots.length = 0;
+  return out; })())`));
+ok('turret 1 is born at the barrel tip', Math.abs(born['1'].outA - M1.fwd) < 0.05
+   && born['1'].zA === M1.z, born['1'].outA + ' units out, z ' + born['1'].zA);
+ok('...and every round comes from the same place, it has one barrel',
+   born['1'].apart < 0.01, born['1'].apart + ' apart');
+const want2 = Math.hypot(M2.fwd, M2.side);
+ok('turret 2 is born out on an arm', Math.abs(born['2'].outA - want2) < 0.05,
+   born['2'].outA + ' units out, wanted ' + want2.toFixed(2));
+ok('...and CONSECUTIVE rounds come off opposite arms',
+   Math.abs(born['2'].apart - 2*M2.side) < 0.05,
+   born['2'].apart + ' apart, wanted ' + (2*M2.side).toFixed(1));
+
+// THE TELL AND THE SHOT MUST LEAVE THE SAME ARM. He reported (2026-11-23) that
+// the rack "starts shooting with the left arms but shoots with the right", and
+// that it was stuck on one arm before that. Cause: the arm lived in `f.side`,
+// which for a SENTRY means "lean off to one side, you are wedged" (-1/0/+1) and
+// is written by foeStuck for every foe, every frame. The tell and the shot are
+// computed up to a windup apart, so a write in between split them.
+head('the missile rack and its two arms');
+ok('a turret is left out of the wedged-on-a-corner logic', E(`(function(){
+     const t = foes.find(f => f.turret) || null;
+     if(!t) return 'no turret';
+     t.arm = 1; t.side = 7; t.mad = false; t.stuckT = 1e9;
+     foeStuck(1/60);
+     return t.arm === 1 && t.side === 7; })()`) === true);
+ok('...so nothing outside the gun can touch which arm is next', E(`(function(){
+     const t = foes.find(f => f.turret);
+     t.arm = 1; t.mad = true; t.stuckT = 1e9; t.lastX = t.x; t.lastY = t.y;
+     for(let i = 0; i < 120; i++){ foeStuck(1/60); foeSeparate(); }
+     return t.arm; })()`) === 1);
+// The real thing, and the exact sequence he saw: run a whole windup frame by
+// frame with foeStuck and foeSeparate running too, and have the turret become
+// ANGRY partway through - which is what a turret being shot at does. That is the
+// transition that split the tell from the shot: foeStuck's two branches write
+// `side` differently (zero it while calm, latch a random +/-1 once angry), so
+// the smoke left the arm it was calm about and the missile left the other.
+// Compare where the TELL came from with where the MISSILE was born.
+const armRun = E(`JSON.stringify((function(){
+  const t = foes.find(f => f.turret);
+  t.turret = 2; t.rise = 1; t.a = 0; t.x = 1000; t.y = 1000;
+  t.arm = 0; t.mad = false; t.stuckT = 1e9; t.dead = false;
+  walker.x = t.x + 200; walker.y = t.y;
+  const T = { x:walker.x, y:walker.y };
+  const K = TURRET.KINDS[2], out = [];
+  // two shots back to back, so alternation is visible
+  for(let shot = 0; shot < 2; shot++){
+    shots.length = 0; t.charge = 0; t.gunT = 0;
+    const tell = [];
+    let n = 0;
+    while(shots.length === 0 && n++ < 500){
+      const before = fx.length;
+      turretGun(t, 0.016, T, 200, true);
+      // whatever the tell threw off this frame, on the arm side
+      for(let i = before; i < fx.length; i++) tell.push(fx[i].y - t.y);
+      // it takes a round from you HALFWAY THROUGH the windup
+      if(n === 20){ t.mad = true; t.stuckT = 1e9; t.lastX = t.x; t.lastY = t.y; }
+      foeSeparate(); foeStuck(0.016);
+    }
+    const s = shots[0];
+    out.push({ left: tell.filter(v => v < -6).length,     // smoke on one arm
+               right: tell.filter(v => v > 6).length,     // ...and on the other
+               shotSide: Math.sign(+(s.y - t.y).toFixed(3)),
+               off: +(s.y - t.y).toFixed(2) });
+  }
+  shots.length = 0; fx.length = 0;
+  return out; })())`);
+const AR = JSON.parse(armRun);
+// UNANIMOUS, not on balance: every puff of smoke in the windup has to come off
+// the arm the missile then leaves, so one of these two counts must be zero.
+const armSplit = r => (r.left && r.right) ? r.left + ' puffs on one arm and ' + r.right
+                        + ' on the other' : 'all ' + (r.left + r.right) + ' on one arm';
+ok('the smoke and the missile leave the SAME arm, every puff of it',
+   AR[0].left + AR[0].right > 0 && (AR[0].left === 0) !== (AR[0].right === 0)
+   && AR[0].shotSide === (AR[0].right ? 1 : -1),
+   armSplit(AR[0]) + ', missile at ' + AR[0].off);
+ok('...on the next shot too, which is the other arm',
+   AR[1].left + AR[1].right > 0 && (AR[1].left === 0) !== (AR[1].right === 0)
+   && AR[1].shotSide === (AR[1].right ? 1 : -1),
+   armSplit(AR[1]) + ', missile at ' + AR[1].off);
+ok('...and the two shots really did come off opposite arms',
+   AR[0].shotSide === -AR[1].shotSide,
+   AR[0].off + ' then ' + AR[1].off);
+
+ok('a turret will not fire with a wall in the way', E(`(function(){
+     shots.length = 0;
+     const t = foes.find(f => f.turret);
+     t.rise = 1; t.charge = 0; t.gunT = 0;
+     for(let i = 0; i < 400; i++) turretGun(t, 0.016, { x:t.x + 60, y:t.y }, 60, false);
+     const n = shots.length; shots.length = 0; return n; })()`) === 0);
+ok('...nor past its own range', E(`(function(){
+     shots.length = 0;
+     const t = foes.find(f => f.turret);
+     t.rise = 1; t.charge = 0; t.gunT = 0;
+     const far = TURRET.KINDS[t.turret].range + 50;
+     for(let i = 0; i < 400; i++) turretGun(t, 0.016, { x:t.x + far, y:t.y }, far, true);
+     const n = shots.length; shots.length = 0; return n; })()`) === 0);
+// THE MISSILE COMES FOR YOU. In here there is no car to home on at all, so if
+// the foe branch is missing it flies straight past and the rack is harmless.
+ok('a turret missile homes on the WALKER', E(`(function(){
+     shots.length = 0;
+     const t = foes.find(f => f.turret);
+     walker.x = t.x + 300; walker.y = t.y + 120;
+     shots.push({ kind:'missile', foe:true, turret:true, x:t.x, y:t.y, z:20,
+       vx:150, vy:0, angle:0, life:9, owner:-2, dmg:34, dmgWalk:16, blast:70, smoke:0 });
+     const a0 = shots[0].angle;
+     for(let i = 0; i < 20 && shots.length; i++) updateShots(0.016);
+     const a1 = shots.length ? shots[0].angle : a0 + 1;   // gone = it got somewhere
+     shots.length = 0;
+     return a1 !== a0; })()`) === true);
+// ...and the blast reaches him, which NO other explosion in the game does.
+ok('its blast takes hull off the walker', E(`(function(){
+     const hp0 = walker.hp = walker.maxHp || WALK_HP;
+     walkHurtT = 0; walkGraceT = 0; devMode = false;
+     explode(walker.x + 10, walker.y, 1, -2, 34, 70, { z:0, floor:0, walker:16 });
+     return hp0 - walker.hp; })()`) > 0);
+ok('...but an ordinary city blast still does not', E(`(function(){
+     walkHurtT = 0; walkGraceT = 0;
+     const hp0 = walker.hp = walker.maxHp || WALK_HP;
+     explode(walker.x + 10, walker.y, 1, -2, 40, 72);        // a mine's own call
+     return hp0 - walker.hp; })()`) === 0);
+
+head('shooting one back');
+ok('a turret has more hull than a sentry', E('TURRET.KINDS[1].hp') > E('FOE.HP'));
+ok('the pistol can reach the top of the tall one',
+   E('TURRET.KINDS[2].h') <= E('WALK_EYE') + 20 && E('TURRET.KINDS[2].h') > E('FOE.H'));
+ok('killing one takes it out of the fight', E(`(function(){
+     const t = foes.find(f => f.turret && !f.dead);
+     foeDamage(t, t.hp + 10, 0);
+     return t.dead === true; })()`) === true);
+ok('...and a dead one does not keep its lid shut on the map',
+   E('dcq.inside.turrets.some(t => t.dead)') === true);
+// THE SHEET. One bake per KIND, not per turret - eleven of them on a floor must
+// not be eleven bakes - and it must not go through the walk rig.
+ok('a turret sheet bakes', E('!!bakeTurretSheet(1)') === true);
+ok('...with TURRET.YAWS frames and ONE row', E('bakeTurretSheet(1).n') === E('TURRET.YAWS')
+   && E('bakeTurretSheet(1).poses') === 1);
+ok('...and the rig switched off, so posedMesh never splits a gun mount at the hip',
+   E('bakeTurretSheet(1).rig') === false);
+ok('the same kind asked twice is the same sheet', E('bakeTurretSheet(1) === bakeTurretSheet(1)') === true);
+ok('the two kinds are two sheets', E('bakeTurretSheet(1) !== bakeTurretSheet(2)') === true);
+ok('the sentry still bakes with its rig ON', E('bakeFoeSheet(FOE_COL).rig') === true);
+// THE BAKE IS SPREAD. "It is prerendered so the faces are free" is true of the
+// DRAWING and not of the bake: 32 yaws of turret-02 in one go measured at ~400 ms,
+// which is a quarter-second freeze on the frame a missile rack first comes into
+// view - and that is a floor that has just opened eleven hatches.
+ok('a fresh sheet has nothing baked yet', E(`(function(){
+     clearTurretSheets();
+     const sp = bakeTurretSheet(2);
+     return Array.from(sp.cell).filter(v => v).length; })()`) === 0);
+ok('...and its sheet is one pose, so a cell IS a yaw',
+   E('bakeTurretSheet(2).poses') === 1 &&
+   E('bakeTurretSheet(2).cell.length') === E('TURRET.YAWS'));
+ok('one yaw can be had on demand', E(`(function(){
+     const sp = bakeTurretSheet(2);
+     foeCellEnsure(sp, 0, 7);
+     return sp.cell[7] === 1 && Array.from(sp.cell).filter(v => v).length === 1; })()`) === true);
+ok('turretWarm fills TURRET.WARM a frame and no more', E(`(function(){
+     clearTurretSheets();
+     const sp = bakeTurretSheet(1);
+     turretWarm();
+     return Array.from(sp.cell).filter(v => v).length; })()`) === E('TURRET.WARM'));
+ok('...and both sheets are full inside the rise', E(`(function(){
+     clearTurretSheets(); bakeTurretSheet(1); bakeTurretSheet(2);
+     const frames = Math.ceil(TURRET.RISE*60);
+     for(let i = 0; i < frames; i++) turretWarm();
+     let left = 0;
+     for(const k in turretSheets) left += Array.from(turretSheets[k].cell).filter(v => !v).length;
+     return left; })()`) === 0);
+ok('the sentry filler cannot reach a turret sheet', E(`(function(){
+     clearTurretSheets(); bakeTurretSheet(1); bakeTurretSheet(2);
+     const k0 = foes.map(f => f.walk); for(const f of foes) f.walk = true;
+     for(let i = 0; i < 200; i++) foeWarm();
+     foes.forEach((f, i) => f.walk = k0[i]);
+     let n = 0;
+     for(const k in turretSheets) n += Array.from(turretSheets[k].cell).filter(v => v).length;
+     return n; })()`) === 0);
+ok('dcRelease starts the sheets itself, so the rise is the cover they fill under',
+   E(`(function(){
+     clearTurretSheets();
+     dcq.floors = {}; dcq.planted = false; skipToMaze(0);
+     dcRelease();
+     return Object.keys(turretSheets).length; })()`) === 2);
+// and the whole view draws with turrets standing in it
+E('dcq.floors = {}; dcq.planted = false; skipToMaze(0); dcRelease()');
+frame(120);
+ok('the first-person view draws a floor with turrets on it without throwing',
+   (() => { try { E('drawWalkView()'); return true; } catch(e){ return String(e); } })() === true);
+// dcLabAll forces every cell to count as seen, so the lid loop actually runs
+// instead of being skipped by the fog of war on a floor nobody has walked
+ok('...and the floor map draws the lids without throwing', (() => {
+     try { E('dcLabAll = true'); E('dcMinimap()'); E('dcLabAll = false'); return true; }
+     catch(e){ E('dcLabAll = false'); return String(e); } })() === true);
+ok('...with a mark for every lid he can see', E(`(function(){
+     const F = dcq.inside;
+     return F.turrets.filter(t => t.cell).length; })()`) === E('DC.TURRETS'));
+E('dcq.planted = false; dcq.escaped = false; dcq.floors = {}');
+
+E(`(function(){ skipToMaze(0); const M = dcq.inside.M, p = dcWorld(M, M.start.x, M.start.y);
+     walker.x = p.x; walker.y = p.y; onPress("KeyE"); onFoot = false; })()`)
+;
 
 head('losing window focus pauses the run');
 E('stage = "run"'); E('startMatch(1)'); frame(2);

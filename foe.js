@@ -107,7 +107,7 @@ function foeCycleRender(){ FOE_RENDER = FOE_RENDER === 'vox' ? 'image' : 'vox'; 
 // to flat grey and the whole sentry washes out. A cooler, darker base keeps the
 // highlight bluish and leaves the amber visor the only warm thing on the model.
 const FOE_COL = '#a8b6d4';
-const FOE_LIFT = 1.9;             // first person's lift (see foeSheetEnsure)
+const FOE_LIFT = 1.9;             // first person's lift (see foeCellEnsure)
 const FOE_LIFT_2D = 1.4;          // the driving view needs less (see bakeFoe2D)
 // how far the hit flash brightens a sentry in the PIXEL panes. Zero in ASCII,
 // where brightness is what picks the glyph - see hitFrame in index.html.
@@ -138,37 +138,64 @@ function foeMesh(want){
 // A sheet is 32 yaws x POSES poses x 2 rows (normal, white flash). Laid out with
 // the yaws across and the poses down, so one pose is one strip of rows.
 //
-// Poses are baked ONE AT A TIME, the first time something actually shows that
-// pose. All six at once is ~384 rasterCar calls per view, which is a visible
-// freeze the first time a sentry comes into sight - and a sentry standing still
-// only ever needs pose 0, so most of that work is for a walk that may never
-// happen. foeSheetEnsure fills a strip on demand.
-function foeSheetEnsure(sp, p){
-  if(!sp || sp.done[p]) return;
-  sp.done[p] = true;
-  const pm = posedMesh(sp.mesh, p);
-  const g = sp.cv.getContext('2d');
-  const scratch = document.createElement('canvas');
-  scratch.width = sp.fw*SS; scratch.height = sp.fh*SS;
-  const sctx = scratch.getContext('2d');
-  g.filter = 'brightness(' + sp.lift + ')';
-  for(let f = 0; f < sp.n; f++){
-    sctx.putImageData(rasterCar(sctx, pm, f/sp.n*Math.PI*2, sp.col, false,
-                                sp.fw, sp.fh, sp.ax, sp.ay, sp.ky, sp.kz, sp.vsc), 0, 0);
-    g.drawImage(scratch, 0, 0, scratch.width, scratch.height,
-                f*sp.fw, p*sp.fh, sp.fw, sp.fh);
+// Baked ONE CELL AT A TIME - one pose at one yaw - the first time something
+// actually shows that cell, and never a whole strip.
+//
+// MEASURED, and this is the whole reason it works this way. A sentry's sheet is
+// 6 poses x 16 yaws and costs 643 ms to fill; a STRIP (one pose, every yaw) is
+// ~110 ms. Filling strips put one of those on the very frame a sentry came into
+// sight and then five more on consecutive frames as it started walking, because
+// foeWarm fed them in one at a time: half a second of screen updating at 9 fps,
+// once per sheet. That is not a theory - the user hit it and called it a freeze.
+// One CELL is ~7 ms for the sentry and ~13 ms for turret-02's 7478 faces, a long
+// frame rather than a freeze, and the fillers do the rest in the background.
+// A sentry that never walks still pays for pose 0 alone.
+//
+// This is the ONE bake path: the sentry's two sheets and both turret kinds all
+// come through here. Nothing else may write to a sheet, or the ledger lies.
+let foeScratch = null;
+function foeCellEnsure(sp, p, fr){
+  if(!sp) return;
+  const i = p*sp.n + fr;
+  // the index must be REAL. A NaN defeats a typed array silently - the write is
+  // swallowed, the read comes back undefined - and the sheet then re-bakes every
+  // sprite on every frame: ~200 ms a frame, forever, with nothing on screen to
+  // show for it. Found exactly that way, by a harness that called rcSprites()
+  // without its camera arguments and handed every billboard a NaN yaw.
+  if(!(i >= 0 && i < sp.cell.length)) return;
+  if(sp.cell[i]) return;
+  sp.cell[i] = 1; sp.left--;
+  // posedMesh is per POSE, so it is CACHED: at cell granularity it would
+  // otherwise be rebuilt for all 16 yaws of the same pose.
+  // `rig:false` is a TURRET: it has no legs, and posedMesh would split it at
+  // FOE_RIG.HIP_Z (11 units, measured off the sentry) and swing the bottom half
+  // of a gun emplacement like a pair of thighs.
+  const pm = sp.pm[p] || (sp.pm[p] = sp.rig === false ? sp.mesh : posedMesh(sp.mesh, p));
+  // one scratch canvas for every sheet, resized when it has to be. A fresh
+  // canvas was affordable once per strip and is not once per cell.
+  if(!foeScratch) foeScratch = document.createElement('canvas');
+  if(foeScratch.width !== sp.fw*SS || foeScratch.height !== sp.fh*SS){
+    foeScratch.width = sp.fw*SS; foeScratch.height = sp.fh*SS;
   }
+  const sctx = foeScratch.getContext('2d');
+  const g = sp.cv.getContext('2d');
+  g.filter = 'brightness(' + sp.lift + ')';
+  sctx.putImageData(rasterCar(sctx, pm, fr/sp.n*Math.PI*2, sp.col, false,
+                              sp.fw, sp.fh, sp.ax, sp.ay, sp.ky, sp.kz, sp.vsc), 0, 0);
+  g.drawImage(foeScratch, 0, 0, foeScratch.width, foeScratch.height,
+              fr*sp.fw, p*sp.fh, sp.fw, sp.fh);
   g.filter = 'none';
 }
 // everything the two cameras share: the mesh's own size decides the frame
-function foeSheetNew(mesh, col, ky, kz, vsc, lift){
+function foeSheetNew(mesh, col, ky, kz, vsc, lift, opt){
+  opt = opt || {};
   let R = 0, zmax = 0;
   for(const f of mesh) for(const p of f.v){
     const r = Math.hypot(p[0], p[1]);
     if(r > R) R = r;
     if(p[2] > zmax) zmax = p[2];
   }
-  const n = FOE_RIG.YAWS, P = FOE_RIG.POSES;
+  const n = opt.n || FOE_RIG.YAWS, P = opt.poses || FOE_RIG.POSES;
   // The margin is in WORLD units, not sheet pixels. It used to be a flat +2, which
   // was invisible while vsc was always 1 - but the billboard divides sp.vsc back
   // out when it draws, so a flat margin shrinks with vsc and the sentry creeps up
@@ -179,9 +206,14 @@ function foeSheetNew(mesh, col, ky, kz, vsc, lift){
   const cv = document.createElement('canvas');
   cv.width = fw*n; cv.height = fh*P;
   return { cv, n, fw, fh, poses:P, mesh, col, ky, kz, vsc, lift,
+           rig: opt.rig !== false,
            ax: fw/2,
            ay: fh - vsc - R*ky*vsc,       // model z=0 (the feet) near the bottom
-           done: new Array(P).fill(false) };
+           pm: new Array(P),               // posedMesh per pose, built on demand
+           cell: new Uint8Array(P*n),      // the bake ledger: one byte per (pose, yaw)
+           left: P*n };                    // ...and its count, so a FULL sheet
+                                           // costs the fillers one compare a frame
+                                           // instead of a scan of the ledger
 }
 
 const foeSheets = Object.create(null);
@@ -197,8 +229,10 @@ function bakeFoeSheet(col, want){
   // the whole sentry bakes at the flat 0.44 ambient. The lift puts it back.
   // vsc=1, so one sheet pixel is one world unit and the billboard scales by
   // distance alone.
+  // NOTHING is baked here. This used to fill pose 0 - 16 yaws, ~110 ms - on the
+  // frame the first sentry came into sight, which is the worst frame in the game
+  // to spend it on. The draw path pulls the one cell it needs, foeWarm the rest.
   const sp = foeSheetNew(MODELS[mi], col, KY_FPS, KZ_FPS, FOE_VSC, FOE_LIFT);
-  foeSheetEnsure(sp, 0);
   return (foeSheets[k] = sp);
 }
 
@@ -210,8 +244,10 @@ function bakeFoeSheet(col, want){
 // S like the cars' sheets, so it is dropped and redone by the same rescale that
 // clears CAR2D.
 const foeSheets2D = Object.create(null);
+const turretSheets2D = Object.create(null);
 function clearFoeSheets(){
   for(const k in foeSheets2D) delete foeSheets2D[k];
+  for(const k in turretSheets2D) delete turretSheets2D[k];
 }
 function bakeFoe2D(col, want){
   const k = foeVoxName(want);
@@ -232,12 +268,51 @@ function bakeFoe2D(col, want){
   let sp;
   try { sp = foeSheetNew(MODELS[mi], col, KY, KZ, S, FOE_LIFT_2D); sp.S = S; }
   finally { S = S0; }
-  foeSheetEnsure(sp, 0);
   return (foeSheets2D[k] = sp);
+}
+
+// The same bake for the driving pane. A turret may NOT go through bakeFoe2D:
+// that one is keyed by foeVoxName and rigged, so it would hand a gun emplacement
+// to posedMesh and swing its base like a pair of thighs. One row, no rig, and
+// TURRET.YAWS directions rather than the sentry's 16 - it is a bigger silhouette
+// and it turns on the spot, which is all you see of it from up here.
+function bakeTurret2D(kind){
+  const k = turretVoxName(kind);
+  if(!k) return null;
+  const hit = turretSheets2D[k];
+  if(hit && hit.S === PX*homeZoom()) return hit;
+  const mi = turretMesh(kind);
+  if(mi < 0) return null;
+  const S0 = S; S = PX*homeZoom();        // pinned to the cars' zoom, as bakeFoe2D is
+  let sp;
+  try {
+    sp = foeSheetNew(MODELS[mi], TURRET.KINDS[kind].col, KY, KZ, S, FOE_LIFT_2D,
+                     { n:TURRET.YAWS, poses:1, rig:false });
+    sp.S = S;
+  } finally { S = S0; }
+  return (turretSheets2D[k] = sp);
+}
+// A TURRET from above. No pose and no walk - it has one row - and no rise either:
+// the lid is a datacenter trick and the only turrets the driving pane can see are
+// the emplacements out on the square, which are up from the moment they spawn.
+function drawTurret2D(f){
+  const sp = bakeTurret2D(f.turret);
+  if(!sp) return;
+  const zk = S/sp.S;                             // 1 except while the zoom eases
+  const p = toScreen(f.x, f.y, 0);
+  const TAU = Math.PI*2;
+  const a = (((f.a || 0) % TAU) + TAU) % TAU;
+  const fr = Math.round(a/TAU*sp.n) % sp.n;
+  foeCellEnsure(sp, 0, fr);
+  const dx = Math.round(p.x - sp.ax*zk), dy = Math.round(p.y - sp.ay*zk);
+  const w = Math.round(sp.fw*zk), h = Math.round(sp.fh*zk);
+  if(f.hurtFlash > 0) ctx.drawImage(hitFrame(sp, fr, 0, FOE_HIT_LIFT), 0, 0, sp.fw, sp.fh, dx, dy, w, h);
+  else                ctx.drawImage(sp.cv, fr*sp.fw, 0, sp.fw, sp.fh, dx, dy, w, h);
 }
 
 function drawFoe2D(f){
   if(f.dead) return;
+  if(f.turret){ drawTurret2D(f); return; }
   const sp = bakeFoe2D(FOE_COL, f.vox);
   if(!sp) return;
   const zk = S/sp.S;                             // 1 except while the zoom eases
@@ -246,7 +321,7 @@ function drawFoe2D(f){
   const a = (((f.a || 0) % TAU) + TAU) % TAU;
   const fr = Math.round(a/TAU*sp.n) % sp.n;
   const pose = foePose(f);
-  foeSheetEnsure(sp, pose);
+  foeCellEnsure(sp, pose, fr);
   const row = foeRow(sp, pose, false);
   const dx = Math.round(p.x - sp.ax*zk), dy = Math.round(p.y - sp.ay*zk);
   const w = Math.round(sp.fw*zk), h = Math.round(sp.fh*zk);
@@ -327,19 +402,33 @@ function foeRow(sp, pose, flash){ return pose*sp.fh; }
 // `walk` is the one flag that means "stepping". The AI owns it while a sentry is
 // provoked; while a sentry is ignoring you it is left alone, which is what keeps
 // the Y key (set every sentry marching, to look at the rig) working.
-// Bake ONE not-yet-baked pose strip per frame, as soon as anything is walking.
-// Without this a strip is baked at the moment its pose is first shown, which is
-// in the middle of the walk - the worst possible time, and six times over. This
-// moves the same work to the frames right after a sentry starts moving, where a
-// burst is far less noticeable, and leaves a sentry that never walks paying for
-// pose 0 alone.
+// Fill FOE_RIG.WARM cells a frame in the background, so that the cell the draw
+// path asks for has nearly always been paid for already.
+//
+// The POSE policy is the old one and is deliberate: pose 0 is filled whatever
+// happens, because a sentry standing still still TURNS and so still works
+// through every yaw of it, while the five walk poses are only filled once
+// something is actually walking - a sentry that never takes a step never pays
+// for the stride. What changed is the granularity: cells, not strips, because a
+// strip a frame IS the freeze the user saw (see foeCellEnsure).
+//
+// One sheet a frame: the first with anything left takes the whole budget, so the
+// first-person sheet and the driving sheet never charge for the same frame.
 function foeWarm(){
-  if(!foes.some(f => f.walk)) return;
   const k = foeVoxName();
-  for(const sp of [foeSheets[k], foeSheets2D[k]]){
-    if(!sp) continue;
-    const p = sp.done.indexOf(false);
-    if(p >= 0){ foeSheetEnsure(sp, p); return; }   // one strip a frame, no more
+  const a = foeSheets[k], b = foeSheets2D[k];
+  // the common case by far: both sheets full, nothing to do, and no reason to
+  // walk the ledgers or the foe list to find that out.
+  if(!(a && a.left) && !(b && b.left)) return;
+  const walking = foes.some(f => f.walk);
+  for(const sp of [a, b]){
+    if(!sp || !sp.left) continue;
+    const poses = walking ? sp.poses : 1;
+    let budget = FOE_RIG.WARM;
+    for(let p = 0; p < poses && budget > 0; p++)
+      for(let fr = 0; fr < sp.n && budget > 0; fr++)
+        if(!sp.cell[p*sp.n + fr]){ foeCellEnsure(sp, p, fr); budget--; }
+    if(budget < FOE_RIG.WARM) return;
   }
 }
 
@@ -403,6 +492,9 @@ function foeDie(f, ownerId){
 // for the player: it should walk round the thing rather than through it. A car
 // that is MOVING catches one instead (foeRam).
 function foeCollide(f){
+  // inside the datacenter the city does not exist: the floor's own walls are the
+  // whole world, and the parked car is outside it (maze.js, dcPushOut).
+  if(typeof dcq !== 'undefined' && dcq && dcq.inside){ dcPushOut(dcq.inside.M, f, FOE.R); return; }
   for(const c of cityChunks(f.y - FOE.R, f.y + FOE.R, f.x < 0 ? -1 : 1))
     for(const b of c.cores) circleBox(f, b.x0, b.y0, b.x1, b.y1, FOE.R, false);
   const c = cars[0];
@@ -422,7 +514,10 @@ function foeCollide(f){
 // reason not to run an O(n^2) pass over every sentry in the city.
 function foeSeparate(){
   if(foeMadN < 2) return;
-  const m = foes.filter(f => f.mad && !f.dead), R = FOE.R*2;
+  // `!f.turret`: a turret is BOLTED INTO THE FLOOR over a hatch it has to stay on
+  // top of, and the only thing that ever makes one `mad` is the player shooting
+  // it - at which point this would quietly walk it off its own hole.
+  const m = foes.filter(f => f.mad && !f.dead && !f.turret), R = FOE.R*2;
   for(let i = 0; i < m.length; i++) for(let j = i + 1; j < m.length; j++){
     const a = m[i], b = m[j];
     let dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
@@ -440,9 +535,12 @@ function foeSeparate(){
 // A sentry does not hurt you by touching you - it has no weapon, by decision.
 // It simply will not let you through, which is the whole of the threat.
 function foeBlock(p){
-  const R = FOE.R + WALK_R;
   for(const f of foes){
     if(f.dead) continue;
+    // `f.r` is the TURRET's own footprint - 16 for the missile rack, whose base
+    // ring really is that wide. A flat FOE.R let you stand inside one.
+    if(f.turret && f.rise < 1) continue;         // still coming up: not there yet
+    const R = (f.r || FOE.R) + WALK_R;
     const dx = p.x - f.x, dy = p.y - f.y;
     if(dx > R || dx < -R || dy > R || dy < -R) continue;
     const d = Math.hypot(dx, dy);
@@ -486,14 +584,34 @@ function foeRam(){
 // is built with CAR clearances; the only cost of borrowing it is that a sentry
 // keeps to the roadway, and a pedestrian variant is a later nicety.
 function foeThink(f, dt){
+  // A TURRET IS NOT A WALKER. Everything below this line is about where to put
+  // its feet next - the flow field, the stuck check, the give-up radius - and a
+  // thing bolted into the floor has no use for any of it. It gets its own brain
+  // and comes straight back out.
+  if(f.turret){ turretThink(f, dt); return; }
   // QUEST 1's bunker guards don't wait to be shot: get close and they come
   if(f.guard && !f.mad && typeof cityTarget === 'function'){
     const T0 = cityTarget();
     if(Math.hypot(T0.x - f.x, T0.y - f.y) < QUEST.GUARD_AGGRO){ f.mad = true; f.loseT = 0; }
   }
+  // A DATACENTER SENTRY doesn't wait to be shot either, and it doesn't need you
+  // close - it needs to SEE you. dcClear walks the maze's own walls between the
+  // two of you, so the corner you just turned is cover and the one grinding
+  // around in the next corridor is deaf. A plain radius would wake the whole
+  // floor at once through the partitions, which is the opposite of a labyrinth.
+  const dcM = (f.dc && typeof dcq !== 'undefined' && dcq && dcq.inside) ? dcq.inside.M : null;
+  if(dcM && !f.mad){
+    const T0 = cityTarget();
+    if(Math.hypot(T0.x - f.x, T0.y - f.y) < DC.FOE_AGGRO && dcClear(dcM, f.x, f.y, T0.x, T0.y)){
+      f.mad = true; f.loseT = 0;
+      if(typeof Snd !== 'undefined' && Snd.voice) Snd.voice(430, 0.12, 'square', 0.03, 230);   // it has you
+    }
+  }
   if(!f.mad) return;              // ignoring you: whatever `walk` is, it is not the AI's
   const T = cityTarget();
   const dx = T.x - f.x, dy = T.y - f.y, dist = Math.hypot(dx, dy);
+  // the floor's shared BFS, built once a cell he moves - see dcHunt
+  const field = dcM && typeof dcHunt === 'function' ? dcHunt() : null;
   // ...and when they reach you, they hit: you on foot, or whatever you drive
   if(f.guard){
     f.hitT = Math.max(0, (f.hitT || 0) - dt);
@@ -505,7 +623,13 @@ function foeThink(f, dt){
       Snd.hit();
     }
   }
-  if(dist > (f.guard ? QUEST.GUARD_GIVE_UP : FOE_AI.GIVE_UP)){
+  // Losing you: out here that is the straight line, but inside the maze a wall
+  // is not distance - 200 units away through three partitions is a long walk, so
+  // in here it gives up on the FLOW distance instead.
+  const fd = dcM && field ? dcFlowDist(dcM, field, f.x, f.y) : -1;
+  const lost = dcM && field ? (fd < 0 || fd > DC.FOE_FORGET)
+                            : dist > (f.guard ? QUEST.GUARD_GIVE_UP : FOE_AI.GIVE_UP);
+  if(lost){
     f.loseT += dt;
     if(f.loseT > FOE_AI.LOSE_T){ f.mad = false; f.loseT = 0; f.walk = false; f.side = 0;
       if(f.route) f.rejoin = true;        // a mover goes back to its round
@@ -520,8 +644,13 @@ function foeThink(f, dt){
   // the Z key in a lab or on a straight leg, and cityClear would otherwise reach
   // into cityGround, which happily generates city chunks at any y once
   // cityLimitY is Infinity.
+  // Inside the datacenter the city's flow field is the wrong map entirely (it is
+  // a BFS of STREETS, and `street` stays true in here), so the floor's own field
+  // takes precedence. Without it a sentry aims straight through the partition and
+  // grinds along it for ever, one corridor from you.
   const inCity = typeof street !== 'undefined' && street;
-  const aim = (!inCity || (dist < FOE_AI.NEAR && cityClear(f.x, f.y, T.x, T.y))) ? T
+  const aim = dcM ? ((field && dcFlowNext(dcM, field, f.x, f.y)) || T)
+            : (!inCity || (dist < FOE_AI.NEAR && cityClear(f.x, f.y, T.x, T.y))) ? T
             : (flowNext(f.x, f.y) || T);
   let want = Math.atan2(aim.y - f.y, aim.x - f.x);
   if(f.side) want += f.side*1.2;                  // wedged: shoulder past it
@@ -563,8 +692,15 @@ function foeGun(f, dt, T, dist){
   }
   f.gunT -= dt;
   if(f.gunT > 0 || dist > FOE_GUN.RANGE) return;
-  const inCity = typeof street !== 'undefined' && street;
-  if(inCity && typeof cityClear === 'function' && !cityClear(f.x, f.y, T.x, T.y)) return;   // no line, no shot
+  // No line, no shot - and inside the datacenter the line is the MAZE's walls,
+  // not the city's footprints. cityClear knows nothing about a corridor, so
+  // without this branch a woken sentry shoots you through four partitions.
+  if(f.dc && typeof dcq !== 'undefined' && dcq && dcq.inside){
+    if(!dcClear(dcq.inside.M, f.x, f.y, T.x, T.y)) return;
+  } else {
+    const inCity = typeof street !== 'undefined' && street;
+    if(inCity && typeof cityClear === 'function' && !cityClear(f.x, f.y, T.x, T.y)) return;
+  }
   f.charge = FOE_GUN.WINDUP; f.glowT = 0;
 }
 // Wedged on a corner the field routed it into, or shouldering the car: lean off
@@ -572,6 +708,10 @@ function foeGun(f, dt, T, dist){
 // jitter left and right against a wall - and straighten up once it is moving.
 function foeStuck(dt){
   for(const f of foes){
+    // A TURRET is bolted to the floor: it cannot be wedged on a corner, and
+    // `side` is not its field. Without this it was swept up here EVERY FRAME -
+    // see the `arm` note in spawnTurret for what that did.
+    if(f.turret) continue;
     if(f.dead || !f.mad){ f.stuckT = 0; f.side = 0; continue; }
     f.stuckT += dt;
     if(f.stuckT < FOE_AI.STUCK_T) continue;
@@ -583,6 +723,7 @@ function foeStuck(dt){
 
 function updateFoes(dt){
   foeWarm();
+  turretWarm();
   // The city's geometry only exists in the city; everywhere else (the straight
   // legs, the labs) a walking sentry just walks.
   const walled = typeof street !== 'undefined' && street;
@@ -724,6 +865,35 @@ function foeChunkPlan(k, side){
     foePlans.set(key, plan);
     return plan;
   }
+  // QUEST 2: THE PICKET ON THE SQUARE. Five guards in formation in front of the
+  // main doors, facing out across the plaza - a line of three on the doors and
+  // two standing further out. Unlike the bunker's ring this does NOT replace the
+  // chunk's own sentries: the datacenter's lot is one lot of several and the rest
+  // of the block should still be populated, so it falls through to the blocks.
+  //
+  // Facing OUT (a = the outward normal) is the whole read: five backs to a door
+  // is scenery, five faces watching the square is a reason to walk round the back.
+  if(ch.data && typeof QUEST !== 'undefined' && QUEST.DATA_GUARDS > 0){
+    const D = ch.data, ox = D.main.nx, cy = D.main.y;         // ox = -side: out across the plaza
+    const a = Math.atan2(0, ox);
+    const S = QUEST.DATA_GUARD_S;
+    // [depth, lateral] - the three abreast, then the two out front
+    const F = [ [QUEST.DATA_GUARD_D1, -S], [QUEST.DATA_GUARD_D1, 0], [QUEST.DATA_GUARD_D1, S],
+                [QUEST.DATA_GUARD_D2, -S*1.5], [QUEST.DATA_GUARD_D2, S*1.5] ];
+    for(let i = 0; i < Math.min(QUEST.DATA_GUARDS, F.length); i++){
+      const [d, t] = F[i];
+      plan.push({ key: key + ':dg' + i, x:D.main.x + ox*d, y:cy + t, a, ck:key, guard:true });
+    }
+    // ...and the two emplacements flanking the doors, inboard of the picket and
+    // wider than it. Same outward facing: the whole front of this building is
+    // pointed at the square. Alternating sides, so any count is symmetric.
+    const KN = QUEST.DATA_TURRET_KINDS || [1];
+    for(let i = 0; i < (QUEST.DATA_TURRETS || 0); i++){
+      const lat = (i % 2 ? 1 : -1)*QUEST.DATA_TURRET_S*(1 + Math.floor(i/2)*0.6);
+      plan.push({ key: key + ':dt' + i, x:D.main.x + ox*QUEST.DATA_TURRET_D, y:cy + lat,
+                  a, ck:key, turret: KN[i % KN.length] });
+    }
+  }
   ch.blocks.forEach((b, bi) => {
     // Box-Muller: two uniforms make one normal. Rounded and clamped at nought,
     // and that clamp is what empties most blocks - the curve's whole left half
@@ -768,8 +938,19 @@ function citySentries(){
     for(const p of foeChunkPlan(k, side)){
       if(foeLive.has(p.key) || foeKilled.has(p.key)) continue;
       if(Math.hypot(p.x - T.x, p.y - T.y) > FOE_POP.KEEP) continue;
-      const f = spawnFoe(p.x, p.y, p.a);
+      const f = p.turret ? spawnTurret(p.x, p.y, p.a, p.turret) : spawnFoe(p.x, p.y, p.a);
       f.key = p.key; f.ck = p.ck;
+      if(p.turret){
+        // spawnFoe PUSHES; spawnTurret only builds. That asymmetry is deliberate -
+        // a datacenter turret is born into its floor's F.turrets and dcEnter puts
+        // it in the world later, when you walk in - so out here it has to be put
+        // in the world by hand. Without this the key went into foeLive and the
+        // turret went nowhere: the square stayed empty and nothing complained.
+        foes.push(f);
+        // no lid out here: it is already up. And it is NOT a datacenter body, so
+        // it must not read the maze's walls for line of sight - see turretThink.
+        f.hidden = false; f.rise = 1; f.dc = false;
+      }
       if(p.guard){ f.guard = true; f.hitT = 0; }
       foeLive.add(p.key);
     }
@@ -1015,6 +1196,7 @@ function cityWalkersOff(){
 // One sprite, no turning frames, so it faces the camera from every angle - which
 // is why the prompt asked for a straight-on symmetrical pose.
 function drawFoeBillboard(f, sx, ground, scale, perp, camX, camY){
+  if(f.turret){ drawTurretBillboard(f, sx, ground, scale, perp, camX, camY); return; }
   const h = FOE.H*scale;
   if(h < 1) return;
   const fog0 = Math.min(0.78, perp/FOE.FADE);
@@ -1030,7 +1212,7 @@ function drawFoeBillboard(f, sx, ground, scale, perp, camX, camY){
       yaw = ((yaw % TAU) + TAU) % TAU;
       const fr = Math.round(yaw/TAU*sp.n) % sp.n;
       const pose = foePose(f);
-      foeSheetEnsure(sp, pose);
+      foeCellEnsure(sp, pose, fr);
       const row = foeRow(sp, pose, false);
       // sp.fw/ax/ay are in SHEET pixels, and the sheet is baked at sp.vsc pixels
       // per world unit - so the sheet's own scale divides straight back out and
@@ -1061,5 +1243,272 @@ function drawFoeBillboard(f, sx, ground, scale, perp, camX, camY){
   const w = h*(im.width/im.height);
   rcCtx.globalAlpha = 1 - fog0*0.55;
   rcCtx.drawImage(im, sx - w/2, ground - h, w, h);
+  rcCtx.globalAlpha = 1;
+}
+
+// =============================================================== THE TURRETS
+// The datacenter's emplacements (config.js 3c-ii). A turret is a FOE RECORD with
+// `turret` set to 1 or 2, which is what lets it reuse - unchanged - the bolt and
+// blast collision in updateShots, the splash in explode, foeDamage and the hit
+// flash, the pistol's second pass in fpsgun.js, the billboard list, and the
+// floor's ownership of its own bodies across the stairs. What it does NOT reuse
+// is anything about walking: foeThink hands it to turretThink on the first line
+// and foeSeparate skips it outright.
+//
+// It is also the first enemy in the game that EXISTS BEFORE IT CAN BE SEEN. The
+// hatches are placed when the floor is generated and the turrets with them, shut
+// and `hidden`, so that the lid you walk over on the way down is the same object
+// that comes up out of the floor behind you on the way back. See dcTurrets and
+// dcRelease in index.html.
+
+// ---- the models. Keyed like the sentry's, by VOXTURRETS name, so two carves of
+// the same turret can sit side by side and the recipe can be re-cut without
+// touching the game.
+const turretMeshIdx = Object.create(null);
+function turretVoxName(kind){
+  if(typeof VOXTURRETS === 'undefined' || !VOXTURRETS) return null;
+  const want = TURRET.KINDS[kind] && TURRET.KINDS[kind].vox;
+  if(want && VOXTURRETS[want]) return want;
+  // a missing carve falls back to whatever IS loaded rather than drawing nothing:
+  // the viewer and the game read the same files and the game must not go blind
+  // because a recipe was re-cut at another resolution.
+  return Object.keys(VOXTURRETS)[0] || null;
+}
+function turretMesh(kind){
+  const k = turretVoxName(kind);
+  if(!k) return -1;
+  if(k in turretMeshIdx) return turretMeshIdx[k];
+  return (turretMeshIdx[k] = MODELS.push(voxMesh(VOXTURRETS[k])) - 1);
+}
+
+// ---- the sheet. TURRET.YAWS yaws, ONE row, no rig. The sentry's sheet is
+// 16 yaws x 6 poses = 96 frames because it walks; a turret is 32 x 1 = 32, and
+// it gets the finer yaw step precisely BECAUSE it has nothing else to spend it
+// on - a traversing mount that pops between headings is the one artefact this
+// model can show. Baked once per KIND, not per turret, so eleven of them on a
+// floor cost one bake between them.
+//
+// BAKED ONE YAW AT A TIME, and this is not an optimisation. "It is all
+// prerendered, so the face count is free" is only true of the DRAWING: the bake
+// itself is real work, and baking turret-02's 32 yaws in one go measures at
+// ~400 ms - a quarter-second freeze, triggered the first frame a missile rack
+// comes into view, which is a floor that has just opened eleven hatches. The
+// sentry had exactly the same disease, and the cure is now shared: foeCellEnsure
+// fills ONE cell, and a turret's sheet is one pose, so for it a cell is a yaw.
+// dcRelease starts the sheets and the 1.2 s rise is the cover to fill them under.
+const turretSheets = Object.create(null);
+function bakeTurretSheet(kind){
+  const k = turretVoxName(kind);
+  if(!k) return null;
+  if(turretSheets[k] && turretSheets[k].vsc === FOE_VSC) return turretSheets[k];
+  const mi = turretMesh(kind);
+  if(mi < 0) return null;
+  const K = TURRET.KINDS[kind];
+  // the sentry's lift, for the sentry's reason: rasterCar's LIGHT has a negative
+  // y, so the faces a standing thing shows the camera get no diffuse at all.
+  const sp = foeSheetNew(MODELS[mi], K.col, KY_FPS, KZ_FPS, FOE_VSC, FOE_LIFT,
+                         { n:TURRET.YAWS, poses:1, rig:false });
+  // Nothing is baked yet, and the ledger is the shared `sp.cell`: one pose, so
+  // one row of TURRET.YAWS cells. The sentry's filler cannot reach this sheet
+  // because it only ever looks sheets up by foeVoxName().
+  return (turretSheets[k] = sp);
+}
+function clearTurretSheets(){ for(const k in turretSheets) delete turretSheets[k]; }
+
+// the background filler, run from updateFoes beside foeWarm. A few yaws a frame
+// and ONE sheet a frame, so a floor with both kinds on it fills in order rather
+// than paying for both at once. One cell is ~3 ms for turret-01 and ~13 ms for
+// turret-02: a long frame either way, and not a freeze.
+function turretWarm(){
+  // BOTH registries: the first-person sheets and the driving pane's. A 2D sheet
+  // only exists once something has actually drawn a turret from above - which
+  // means the emplacements on the square are in view - so warming it is never
+  // speculative, and leaving it cold would put its cells on the frames you drive
+  // past the building, which is the one place they are all needed at once.
+  for(const reg of [turretSheets, turretSheets2D])
+    for(const k in reg){
+      const sp = reg[k];
+      if(!sp.left) continue;
+      let budget = TURRET.WARM;
+      for(let fr = 0; fr < sp.n && budget > 0; fr++)
+        if(!sp.cell[fr]){ foeCellEnsure(sp, 0, fr); budget--; }
+      if(budget < TURRET.WARM) return;          // one sheet a frame, no more
+    }
+}
+
+// ---- making one. `hidden` is the shut hatch: it is a complete turret in every
+// other respect, it is simply not in the world's foe list yet.
+function spawnTurret(x, y, a, kind){
+  const K = TURRET.KINDS[kind] || TURRET.KINDS[1];
+  return { x, y, a:a || 0, hp:K.hp, dead:false, hurtFlash:0, vox:null,
+    turret:kind, hidden:true, rise:0, sawT:0,
+    // the per-body overrides the shared sentry numbers are read through
+    r:K.r, h:K.h, hitR:K.hitR, shotR:K.shotR,
+    mad:false, loseT:0, walk:false, phase:0,
+    dc:true, ck:null, key:null,
+    stuckT:0, lastX:x, lastY:y, side:0,
+    // WHICH ARM the next missile leaves, latched when the windup opens.
+    // NOT `side`, which is what it used to be, and that was a real bug he
+    // reported from play (2026-11-23): `side` already means "lean off to one
+    // side, you are wedged on a corner" for a sentry (-1/0/+1, foeThink +
+    // foeStuck), and foeStuck ran over every foe. A calm turret had `side`
+    // zeroed every frame, so it always fired the same arm; an angry one picked
+    // up a random +/-1 that stuck, so it locked onto the other; and when that
+    // landed mid-windup the smoke poured from one arm and the missile left the
+    // other. One field, two meanings, two owners. Turret 1 ignores it: one barrel.
+    arm:0 };
+}
+
+// ---- the brain, such as it is. Rise, then: track you while it can see you,
+// and fire. There is no state beyond that and there is not meant to be.
+function turretThink(f, dt){
+  f.walk = false;                                  // never, under any circumstances
+  if(f.rise < 1){
+    f.rise = Math.min(1, f.rise + dt/TURRET.RISE);
+    // coming up is not a free action. The rest timer is held at full until it is
+    // clear of the floor, so the thing cannot shoot you out of its own hole -
+    // the rise IS the warning that it is there.
+    f.gunT = TURRET.KINDS[f.turret].rest[0];
+    return;
+  }
+  const T = cityTarget();
+  const dist = Math.hypot(T.x - f.x, T.y - f.y);
+  // WHETHER IT CAN SEE YOU, and which walls decide that. Both branches are the
+  // sentry's own (foeGun), because a turret is a foe record and should not
+  // invent a second convention:
+  //   * in the datacenter the walls are the MAZE's partitions (dcClear), gated
+  //     on f.dc - the street is not a floor plan and must not be tested as one.
+  //   * out on the square they are the city's FOOTPRINTS (cityClear). Without
+  //     this an emplacement at the main doors could traverse the whole way round
+  //     and shoot through the building at someone at the SERVICE door, which is
+  //     the way in he actually uses - 181 units away, well inside its 540 reach.
+  const M = (f.dc && typeof dcq !== 'undefined' && dcq && dcq.inside) ? dcq.inside.M : null;
+  const inCity = typeof street !== 'undefined' && street;
+  const see = M ? dcClear(M, f.x, f.y, T.x, T.y)
+            : (inCity && typeof cityClear === 'function') ? cityClear(f.x, f.y, T.x, T.y)
+            : true;
+  // TRACK_LOST seconds of follow-through past losing sight of you. Without it a
+  // turret freezes mid-swing the instant you cross a doorframe, which reads as a
+  // bug; with it the mount keeps turning for a moment and then gives up, which
+  // reads as a mount. It does NOT let it track you blind - the timer only ever
+  // runs down, and it cannot fire without `see` anyway.
+  f.sawT = see ? TURRET.TRACK_LOST : Math.max(0, (f.sawT || 0) - dt);
+  if(f.sawT > 0){
+    const want = Math.atan2(T.y - f.y, T.x - f.x);
+    f.a += clamp(angDiff(f.a, want), -TURRET.TURN*dt, TURRET.TURN*dt);
+  }
+  turretGun(f, dt, T, dist, see);
+}
+
+// ---- the guns. FOE_GUN's shape - rest, then windup with a visible tell, then
+// one shot at where you are NOW - with the numbers and the projectile taken from
+// TURRET.KINDS. No lead on either: a shot you can see coming is one you can get
+// a wall between yourself and, and that is the only defence either of these has.
+function turretGun(f, dt, T, dist, see){
+  if(typeof shots === 'undefined') return;
+  const K = TURRET.KINDS[f.turret], W = K.shot;
+  if(f.gunT === undefined) f.gunT = K.rest[0]*Math.random();   // they don't all open up at once
+  // WHERE IT LEAVES THE MODEL. K.muzzle is a point on the carve, measured off it
+  // by role (config.js), not a guess: `fwd` along the barrel, `side` out to one
+  // arm, `z` the height. It used to be a flat 8 units forward at a hand-picked
+  // height, and on turret-01 the barrel tip is at 22.5 - so the bolt was born
+  // ~14 units BEHIND the muzzle, which is further from the player than the
+  // muzzle is. A point below eye level (WALK_EYE 16, muzzle 12.2) climbs toward
+  // the horizon as it gets further away, so it read as leaving ABOVE the barrel.
+  // That is what the user saw, and the fix is the real point, not a lower z.
+  const M = K.muzzle;
+  // `M.side` is a MAGNITUDE: f.arm picks which one, and +y of the model is the
+  // world's (-sin a, cos a). Which arm is which does not matter - they are
+  // mirror images - only that consecutive shots come off OPPOSITE ones, and that
+  // the TELL and the SHOT agree. Those are computed on different frames, up to
+  // K.windup (1.2 s) apart, which is why f.arm is latched when the windup opens
+  // and nothing else is allowed to write it.
+  const off = M.side ? (f.arm ? M.side : -M.side) : 0;
+  // hoisted: f.a cannot change inside one of these, and the tell calls mx()/my()
+  // 25 times a second per firing turret. Two trig calls a frame, not eight.
+  const ca = Math.cos(f.a), sa = Math.sin(f.a);
+  const mx = () => f.x + ca*M.fwd - sa*off;
+  const my = () => f.y + sa*M.fwd + ca*off;
+  if(f.charge > 0){
+    f.charge -= dt;
+    f.glowT = (f.glowT || 0) - dt;
+    if(f.glowT <= 0 && typeof particles === 'function'){
+      f.glowT = 0.04;
+      const k = 1 - f.charge/K.windup;
+      // the missile rack smokes where the energy gun sparks: same tell, and you
+      // can tell WHICH of the two has you from across a corridor by the colour.
+      if(W.kind === 'missile')
+        particles(mx(), my(), M.z, 1 + (k*2|0), { col:['#8a7c84', '#5a4e58', W.col], spd0:3, spd1:10 + 14*k,
+          size:2 + k, life0:0.2, life1:0.5, grav:-10, up0:0, up1:8 });
+      else
+        particles(mx(), my(), M.z, 1 + (k*2|0), { col:[W.col, W.glow], spd0:4, spd1:14 + 26*k,
+          size:1 + k, life0:0.05, life1:0.12, grav:0, up0:-4, up1:4 });
+    }
+    if(f.charge <= 0){
+      f.charge = 0;
+      f.gunT = K.rest[0] + Math.random()*(K.rest[1] - K.rest[0]);
+      const a = Math.atan2(T.y - my(), T.x - mx());
+      const s = { kind:W.kind, foe:true, turret:true, x:mx(), y:my(), z:M.z,
+        vx:Math.cos(a)*W.spd, vy:Math.sin(a)*W.spd, angle:a,
+        life:K.range/W.spd, owner:-2, dmg:W.dmgCar, dmgWalk:W.dmgWalk,
+        col:W.col, glow:W.glow, r:W.r, blast:W.blast || 0, smoke:0 };
+      shots.push(s);
+      if(typeof particles === 'function')
+        particles(mx(), my(), M.z, W.kind === 'missile' ? 10 : 6,
+          { col:[W.glow, '#ffffff', W.col], spd0:20, spd1:W.kind === 'missile' ? 110 : 70,
+            size:W.kind === 'missile' ? 2.5 : 1.5, life0:0.05, life1:0.18, grav:0 });
+      if(typeof Snd !== 'undefined' && Snd.voice){
+        if(W.kind === 'missile') Snd.voice(180, 0.42, 'sawtooth', 0.07, 90);     // a launch, not a zap
+        else                     Snd.voice(1500, 0.10, 'square', 0.04, 520);     // a crack
+      }
+    }
+    return;
+  }
+  f.gunT -= dt;
+  if(f.gunT > 0 || dist > K.range || !see) return;
+  // the next arm, latched HERE rather than at the shot, so the smoke pours out
+  // of the one the missile then leaves. Strict alternation and not a coin flip:
+  // a rack cycles its tubes, and a flip would fire the same arm twice now and
+  // again for no reason you could see on the model.
+  f.arm = f.arm ? 0 : 1;
+  f.charge = K.windup; f.glowT = 0;
+}
+
+// ---- drawing it, and the rise. There is no second model and no animation: the
+// sprite is CLIPPED to the part of it that has cleared the floor, so what comes
+// up out of the hatch first is whatever is at the top of the model - the barrel
+// on one, the missile arms on the other. The frame's bottom rows hold the base's
+// near face (KY_FPS tilts it into view), so the full frame is drawn once it is
+// up rather than the clipped path being used at k = 1 and losing them.
+function drawTurretBillboard(f, sx, ground, scale, perp, camX, camY){
+  const K = TURRET.KINDS[f.turret];
+  if(K.h*scale < 1) return;
+  const sp = bakeTurretSheet(f.turret);
+  if(!sp) return;
+  const fog0 = Math.min(0.78, perp/(TURRET.FADE || FOE.FADE));
+  // the car branch's frame formula, unchanged: the carve shares the cars' axes
+  const look = Math.atan2(f.y - camY, f.x - camX);
+  const TAU = Math.PI*2;
+  let yaw = (f.a || 0) - look - Math.PI/2;
+  yaw = ((yaw % TAU) + TAU) % TAU;
+  const fr = Math.round(yaw/TAU*sp.n) % sp.n;
+  foeCellEnsure(sp, 0, fr);                        // the one it needs, now; the rest in the background
+  const k = scale/sp.vsc;                          // the sheet's own scale divides back out
+  const dx = sx - sp.ax*k;
+  rcCtx.globalAlpha = 1 - fog0*0.55;
+  if(f.rise >= 1){
+    const dy = ground - sp.ay*k;
+    if(f.hurtFlash > 0) rcCtx.drawImage(hitFrame(sp, fr, 0, asciiMode ? 0 : FOE_HIT_LIFT),
+                                        0, 0, sp.fw, sp.fh, dx, dy, sp.fw*k, sp.fh*k);
+    else                rcCtx.drawImage(sp.cv, fr*sp.fw, 0, sp.fw, sp.fh, dx, dy, sp.fw*k, sp.fh*k);
+  } else {
+    // sunk by (1 - rise) of its height. sp.ay is the sheet row the model's z = 0
+    // sits on, so the floor line is `cut` rows above it and everything below that
+    // row is still underground.
+    const cut = (1 - f.rise)*K.h*sp.vsc;
+    const srcH = Math.max(1, Math.round(sp.ay - cut));
+    rcCtx.drawImage(sp.cv, fr*sp.fw, 0, sp.fw, srcH,
+                    dx, ground - srcH*k, sp.fw*k, srcH*k);
+  }
   rcCtx.globalAlpha = 1;
 }

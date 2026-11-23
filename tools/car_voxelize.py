@@ -27,8 +27,20 @@ Usage (recipe in a JSON file, see tools/cars/aspen.json):
 import argparse, json, os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
-import trimesh
 from collections import deque
+
+# trimesh is imported WHERE IT IS USED, not here. It is only needed for STL and
+# glTF parts; the .obj/.fbx/.3ds readers in this directory are numpy-only. Keeping
+# it at module scope meant a turret recipe that touches no trimesh code still died
+# on `import trimesh` when the interpreter had no trimesh - which is every anaconda
+# env here except `chatbot`. RUN THIS SCRIPT WITH `chatbot`'s PYTHON:
+#   ~/anaconda3/envs/chatbot/bin/python -I tools/car_voxelize.py ...
+# The base env has trimesh but a scipy built against numpy 1.x beside numpy 2.2, so
+# the import raises `ValueError: numpy.dtype size changed`; `chatbot` is numpy 2.1.3
+# with a matching scipy 1.15.3 and is the one that works.
+def _trimesh():
+    import trimesh
+    return trimesh
 
 ROLE_PRIORITY = ['lamp', 'tail', 'glass', 'metal', 'tyre', 'dark', 'accent', 'shadowed', 'body']
 
@@ -62,6 +74,34 @@ def load_parts(recipe, base):
     out = []
     for p in recipe['parts']:
         path = os.path.join(base, p['file'])
+        if path.lower().endswith(('.obj', '.fbx')):               # named objects and/or materials -> roles
+            from read_obj import read_obj
+            from read_fbx import read_fbx
+            objs, _ = (read_obj if path.lower().endswith('.obj') else read_fbx)(path)
+            by_obj, by_mat = p.get('objects') or {}, p.get('materials') or {}
+            if isinstance(by_obj, list):                          # a bare list = keep these, take p['role']
+                by_obj = {k: p.get('role') for k in by_obj}
+            wanted = 0
+            for o in objs:
+                # PREFIX match, because an exporter numbers its instances: the two
+                # halves of turret-02's launcher come out as "turret left arm" and
+                # "turret left arm001" and both want the same role.
+                orole = next((r for k, r in by_obj.items() if o['name'].startswith(k)), None)
+                if by_obj and orole is None: continue
+                mats = np.array([m or '' for m in o['mat']])
+                tris = o['verts'][o['faces']].astype(np.float64)
+                groups = ([(orole, np.ones(len(tris), bool), '')] if not by_mat else
+                          [(r, mats == m, ':' + m) for m, r in by_mat.items() if (mats == m).any()])
+                for role, sel, tag in groups:
+                    if role is None or not sel.any(): continue
+                    uv = o['uv'][sel] if (o['uv'] is not None and 'classes' in p) else None
+                    img = p.get('_image') if uv is not None else None
+                    out.append(Part(o['name'] + tag, tris[sel], role, uv, img, p.get('classes')))
+                    wanted += 1
+            if not wanted:
+                raise SystemExit('%s: nothing matched. objects present: %s' % (
+                    p['file'], ', '.join(sorted(o['name'] for o in objs))))
+            continue
         if path.lower().endswith('.3ds'):                         # .3ds: pick objects, map materials -> roles
             from read_3ds import read_3ds
             objs, _ = read_3ds(path)
@@ -75,6 +115,7 @@ def load_parts(recipe, base):
                         out.append(Part(o['name'] + ':' + mname, tris, role))
             continue
         if 'nodes' in p:                                         # glTF scene: pick nodes by name prefix, keep transforms + texture
+            trimesh = _trimesh()
             sc = trimesh.load(path)
             for node in sc.graph.nodes_geometry:
                 if not any(node.startswith(k) for k in p['nodes']): continue
@@ -87,6 +128,7 @@ def load_parts(recipe, base):
                     img = np.asarray(g.visual.material.baseColorTexture.convert('RGB'))
                 out.append(Part(node, tris, p.get('role'), uv, img, p.get('classes')))
             continue
+        trimesh = _trimesh()
         m = trimesh.load(path, force='mesh')
         tris = m.vertices[m.faces].astype(np.float64)            # (n,3,3)
         if 'rotate' in p:                                        # [axis, deg] about the part's own origin
@@ -99,14 +141,19 @@ def load_parts(recipe, base):
 
 
 def to_car_space(parts, recipe):
-    """rotate so the nose is +x and up is +z (a proper rotation, never a mirror), centre, scale to `length`"""
+    """rotate so the nose is +x and up is +z (a proper rotation, never a mirror), centre, scale
+
+    Scale comes from `length` (the nose axis) or `height` (z). A car is a length:
+    you say how long the car is. A TURRET is a height - you say how tall the thing
+    standing in the corridor is - and its barrel length is whatever the model says
+    it is, which is the opposite way round."""
     fwd = np.array(AXIS[recipe.get('nose', '+x')], float)
     up = np.array(AXIS[recipe.get('up', '+z')], float)
     R = np.stack([fwd, np.cross(up, fwd), up])                   # rows: car x, y, z in source coords
     for p in parts: p.tris = p.tris @ R.T
     allv = np.concatenate([p.tris.reshape(-1, 3) for p in parts])
     lo, hi = allv.min(0), allv.max(0)
-    k = recipe['length'] / (hi[0] - lo[0])
+    k = (recipe['height'] / (hi[2] - lo[2])) if recipe.get('height') else (recipe['length'] / (hi[0] - lo[0]))
     shift = np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]])
     for p in parts: p.tris = (p.tris - shift) * k
     return parts, k
@@ -247,14 +294,31 @@ def main():
     ap.add_argument('--res', type=int, default=64, help='voxels along the car length')
     ap.add_argument('-o', '--out', required=True)
     ap.add_argument('--name', default=None)
+    ap.add_argument('--global', dest='glob', default=None,
+                    help='window global to emit into (default VOXCARS, or the recipe\'s "global")')
     a = ap.parse_args()
     recipe = json.load(open(a.recipe))
+    a.glob = a.glob or recipe.get('global') or 'VOXCARS'
     base = os.path.join(os.path.dirname(a.recipe), recipe.get('dir', '.'))
     t0 = time.time()
     parts = load_parts(recipe, base)
     parts, k = to_car_space(parts, recipe)
     print('parts:', ', '.join(f'{p.name}({len(p.tris)})' for p in parts))
-    solid, outside, pri, lo, vox = voxelize(parts, a.res, recipe['length'], recipe.get('smooth', 0))
+    # --res is voxels along the model's LONGEST axis, not along the nose. For a car
+    # those are the same thing, so nothing about the cars changes; for a turret
+    # they are not - turret-02 is a squat tower whose nose axis is its SHORTEST,
+    # and counting 48 along that gave a 51x85x109 grid and a 400 KB file for a
+    # model that wants 48 along its height.
+    ext = np.ptp(np.concatenate([p.tris.reshape(-1, 3) for p in parts]), axis=0)
+    dim = 2 if recipe.get('height') else 0                       # the axis to_car_space scaled
+    dec = float(recipe['height'] if recipe.get('height') else recipe['length'])
+    # When the declared axis IS the longest, use the DECLARED number, not the
+    # measured extent: to_car_space scaled to it, so they agree - but only to
+    # within an ULP, and that is enough to flip a rounding tie in `lo` and give
+    # a car a cosmetically different file. With this, all nine cars rebuild
+    # byte-for-byte.
+    span = dec if int(ext.argmax()) == dim else float(ext.max())
+    solid, outside, pri, lo, vox = voxelize(parts, a.res, span, recipe.get('smooth', 0))
     t1 = time.time()
     faces = greedy_faces(solid, outside, pri, lo, vox)
     t2 = time.time()
@@ -268,7 +332,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, 'w') as f:
         f.write('// generated by tools/car_voxelize.py from %s, res %d - do not edit\n' % (os.path.basename(a.recipe), a.res))
-        f.write('(window.VOXCARS = window.VOXCARS || {})[%s] = %s;\n' % (
+        f.write('(window.%s = window.%s || {})[%s] = %s;\n' % (a.glob, a.glob,
             json.dumps(name + '@' + str(a.res)),
             json.dumps({'res': a.res, 'vox': round(vox, 5), 'lo': [round(float(x), 4) for x in lo], 'roles': roles, 'f': [int(x) for x in flat]}, separators=(',', ':'))))
     print('grid %s  solid %d  faces %d  bbox %s..%s  voxelize %.1fs merge %.1fs  -> %s (%.0f KB)' % (

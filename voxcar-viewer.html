@@ -9,9 +9,10 @@
      bake run through the ASCII filter (right), both spinning about the model's own
      vertical axis. rasterCar / asciiBlit are copied from index.html.
 
-     Takes CARS (tools/car_voxelize.py -> window.VOXCARS) and the SENTRY
-     (tools/sprite_voxelize.py -> window.SPRITEVOX). The two asset formats are
-     identical, so one voxMesh reads both. The sentry needs two things a car does
+     Takes CARS (tools/car_voxelize.py -> window.VOXCARS), the SENTRY
+     (tools/sprite_voxelize.py -> window.SPRITEVOX) and the TURRETS
+     (tools/car_voxelize.py again, tools/turrets/*.json -> window.VOXTURRETS).
+     All three asset formats are identical, so one voxMesh reads them all. The sentry needs two things a car does
      not, and without them this page would flatter it:
        * a LIGHTING LIFT. rasterCar's LIGHT is (-0.42,-0.58,0.70) and its y is
          negative, so a standing figure - which shows the camera its +y faces -
@@ -35,6 +36,15 @@
 <!-- the sentry: same voxelizer output format as the cars, so the same voxMesh reads it -->
 <script src="assets/enemies/sentry-vox.js"></script>
 <script src="assets/enemies/sentry-vox-64.js"></script>
+<!-- THE TURRETS (tools/turrets/*.json -> window.VOXTURRETS). Same format again,
+     from two asset packs with nothing else in common: turret-01 shipped an OBJ
+     with three named objects, turret-02 shipped FBX only, seven parts, six
+     materials and its mirrored halves as separate instances. tools/read_obj.py
+     and tools/read_fbx.py are what flattened that difference out. -->
+<script src="assets/enemies/turret1-48.js"></script>
+<script src="assets/enemies/turret1-64.js"></script>
+<script src="assets/enemies/turret2-48.js"></script>
+<script src="assets/enemies/turret2-64.js"></script>
 <style>
   :root { --bg:#0b0810; --panel:#151020; --ink:#e8e0f0; --dim:#8a7f9c; --line:#2a2238; --hot:#ff7a3c; }
   * { box-sizing:border-box; }
@@ -56,7 +66,7 @@
 </style>
 </head>
 <body>
-<h1>VOXEL MODEL VIEWER &mdash; cars and the sentry</h1>
+<h1>VOXEL MODEL VIEWER &mdash; cars, the sentry and the turrets</h1>
 <div class="bar">
   <label>model <select id="model"></select></label>
   <label>colour <input id="color" type="color" value="#c8452a"></label>
@@ -180,15 +190,29 @@ function posedMesh(mesh, pose){
 }
 
 const MODELS = {};
-const FIGURE = {};        // which entries are figures: posed, lifted, stood on their feet
-for(const k of Object.keys(window.VOXCARS||{}).sort((a,b)=>parseInt(a.split('@')[1])-parseInt(b.split('@')[1]))) MODELS[k+' (voxel)'] = voxMesh(VOXCARS[k]);
+// TWO flags, not one. They used to be the same thing because the sentry was the
+// only non-car: a FIGURE is posed by the walk rig, while STOOD only means "framed
+// standing on the floor and lit with the game's brightness lift". A turret is
+// STOOD but not a FIGURE - it stands on a base like a figure stands on its feet,
+// and it shows the camera the same badly-lit +y faces, but it has no legs to
+// swing and it traverses smoothly, so it keeps the cars' 32 yaws.
+const FIGURE = {};        // posed by FOE_RIG (the sentry)
+const STOOD  = {};        // framed on the floor + lifted (the sentry AND the turrets)
+const byRes = o => Object.keys(o||{}).sort((a,b)=>parseInt(a.split('@')[1])-parseInt(b.split('@')[1]));
+for(const k of byRes(window.VOXCARS)) MODELS[k+' (voxel)'] = voxMesh(VOXCARS[k]);
 MODELS['muscle (game, reference)'] = MUSCLE;
 // the sentry, from SPRITEVOX. Same reader; flagged as a figure so it gets the
 // lift, the walk rig and the game's feet-on-the-floor framing.
-for(const k of Object.keys(window.SPRITEVOX||{}).sort((a,b)=>parseInt(a.split('@')[1])-parseInt(b.split('@')[1]))){
+for(const k of byRes(window.SPRITEVOX)){
   const name = k+' (sentry)';
   MODELS[name] = voxMesh(SPRITEVOX[k]);
-  FIGURE[name] = true;
+  FIGURE[name] = STOOD[name] = true;
+}
+// the turrets, from VOXTURRETS
+for(const k of byRes(window.VOXTURRETS)){
+  const name = k+' (turret)';
+  MODELS[name] = voxMesh(VOXTURRETS[k]);
+  STOOD[name] = true;
 }
 
 // ---------------------------------------------------------------- rasterCar (index.html)
@@ -347,13 +371,13 @@ if([...sel.options].some(o=>o.value.startsWith('aspen@64'))) sel.value=[...sel.o
 // own colour (FOE_COL) and the game's lift rather than a car's orange
 let lastWasFig=null;
 function syncModelUI(){
-  const fig=!!FIGURE[sel.value];
-  $('figbar').style.display = fig ? 'inline-flex' : 'none';
-  if(fig !== lastWasFig){
-    $('color').value = fig ? FOE_COL : '#c8452a';
-    $('lift').value  = fig ? FOE_LIFT : 1;
-    if(fig) $('dist').value = 0.9;        // a sentry is read further off than a car
-    lastWasFig = fig;
+  const fig=!!FIGURE[sel.value], stood=!!STOOD[sel.value];
+  $('figbar').style.display = fig ? 'inline-flex' : 'none';   // pose/walk mean nothing without a rig
+  if(stood !== lastWasFig){
+    $('color').value = stood ? FOE_COL : '#c8452a';
+    $('lift').value  = stood ? FOE_LIFT : 1;
+    if(stood) $('dist').value = 0.9;      // read further off than a car
+    lastWasFig = stood;
   }
   $('pose').max = FOE_RIG.POSES-1;
 }
@@ -410,17 +434,17 @@ for(const c of [topCv, asc]){ let dx=null;
 let bakeInfo='';
 $('bake').onclick=()=>{
   // what the game pays: 32 yaw frames x 2 rows (colour + white flash) per sheet, both cameras
-  const base=MODELS[sel.value], col=$('color').value, fig=!!FIGURE[sel.value];
+  const base=MODELS[sel.value], col=$('color').value, fig=!!FIGURE[sel.value], stood=!!STOOD[sel.value];
   // A car sheet is 32 yaws x 2 rows (colour + white flash). A sentry sheet is
   // FOE_RIG.YAWS x FOE_RIG.POSES, and every pose is a fresh posedMesh - so the
   // rig itself is part of what the bake costs.
   const n = fig ? FOE_RIG.YAWS*FOE_RIG.POSES : 64;
   const yawN = fig ? FOE_RIG.YAWS : 32;
-  const opt = { feet:fig, lift:fig?FOE_LIFT:1 };
+  const opt = { feet:stood, lift:stood?FOE_LIFT:1 };
   const posed = [];
   for(let p=0;p<(fig?FOE_RIG.POSES:1);p++) posed.push(fig?posedMesh(base,p):base);
   const t0=performance.now();
-  for(let f=0;f<n;f++) frameCanvas(posed[f%posed.length], f/yawN*Math.PI*2, col, SGAME, KY, KZ, true, {feet:fig,lift:fig?FOE_LIFT_2D:1});
+  for(let f=0;f<n;f++) frameCanvas(posed[f%posed.length], f/yawN*Math.PI*2, col, SGAME, KY, KZ, true, {feet:stood,lift:stood?FOE_LIFT_2D:1});
   const t1=performance.now();
   const vsc=parseFloat($('vsc').value)||1;        // the FP sheet bakes at vsc
   for(let f=0;f<n;f++) frameCanvas(posed[f%posed.length], f/yawN*Math.PI*2, col, vsc, KY_FPS, KZ_FPS, false, opt);
@@ -437,7 +461,7 @@ function draw(now){
   const dt=Math.min(0.1,(now-last)/1000); last=now;
   if(!paused) yaw += dt*parseFloat($('speed').value)*Math.PI;
   const base=MODELS[sel.value], col=$('color').value;
-  const fig=!!FIGURE[sel.value];
+  const fig=!!FIGURE[sel.value], stood=!!STOOD[sel.value];
   // A figure snaps to FOE_RIG.YAWS (16), not to the cars' 32 - a sentry turns
   // rarely and is nine character rows tall, so the game halves the bake.
   const snapN = fig ? FOE_RIG.YAWS : 32;
@@ -451,9 +475,9 @@ function draw(now){
   const mesh = fig ? posedMesh(base, pose) : base;
   const liftUI = parseFloat($('lift').value);
   // the game uses a different lift per camera; keep that ratio as the slider moves
-  const lift2D = fig ? liftUI*(FOE_LIFT_2D/FOE_LIFT) : 1;
-  const liftFP = fig ? liftUI : 1;
-  const opt2D = { feet:fig, lift:lift2D }, optFP = { feet:fig, lift:liftFP };
+  const lift2D = stood ? liftUI*(FOE_LIFT_2D/FOE_LIFT) : 1;
+  const liftFP = stood ? liftUI : 1;
+  const opt2D = { feet:stood, lift:lift2D }, optFP = { feet:stood, lift:liftFP };
   const t0=performance.now();
 
   // top-down: the game-size frame, then enlarged

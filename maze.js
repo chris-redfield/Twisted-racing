@@ -355,6 +355,34 @@ function dcGenerate(floorIdx, seed){
   return M;
 }
 
+// ---- who and what is standing on a floor ------------------------------------
+// Picks walkable cells that are far enough from the stairwells and from each
+// other. Deterministic off the floor's own seed, so a floor is always populated
+// the same way - the same contract the city has, where nothing is saved.
+// minD is the clearance from everything in `avoid`; `spread` is the clearance
+// from each other, and defaults to minD. They are two numbers because a crowd
+// wants to pack tighter than it wants to stand near the stairs - at 30 sentries
+// a shared figure of 5 ran out of floor and silently placed 16 of them.
+//
+// An `avoid` entry may carry its own `d` to override minD, which is how the alarm
+// keeps its 5 cells off the stairwells while packing in among the sentries that
+// are already standing there.
+function dcPlaces(M, n, minD, rng, avoid, spread){
+  if(spread === undefined) spread = minD;
+  const cells = dcCells(M).filter(([x, y]) => {
+    for(const a of avoid) if(Math.abs(x - a.x) + Math.abs(y - a.y) < (a.d === undefined ? minD : a.d)) return false;
+    return true;
+  });
+  dcShuffle(cells, rng);
+  const out = [];
+  for(const [x, y] of cells){
+    if(out.length >= n) break;
+    let ok = true;
+    for(const p of out) if(Math.abs(x - p.x) + Math.abs(y - p.y) < spread){ ok = false; break; }
+    if(ok) out.push({ x, y });
+  }
+  return out;
+}
 // ---- what the rest of the game asks a floor --------------------------------
 // every walkable cell, as [x, y]
 function dcCells(M){
@@ -485,4 +513,86 @@ function dcSegPush(p, x0, y0, x1, y1, r){
   return true;
 }
 
-if(typeof module !== 'undefined' && module.exports) module.exports = { dcGenerate, dcCells, dcReach, dcRings, dcPushOut };
+// ---- seeing, and hunting ----------------------------------------------------
+// LINE OF SIGHT between two world points, through the maze's walls. A DDA: step
+// cell to cell in the order the boundaries actually come, and check the one
+// boundary each step crosses - so this is a handful of lookups down a long
+// corridor, not a sample march.
+//
+// This is what makes a corner cover. cityClear does the same job for the city,
+// and foeThink/foeGun fall back to "no walls anywhere" off the street grid,
+// which inside a labyrinth means shooting you through four walls.
+function dcClear(M, x0, y0, x1, y1){
+  const C = M.cell, dx = x1 - x0, dy = y1 - y0;
+  const c = dcCellAt(M, x0, y0), e = dcCellAt(M, x1, y1);
+  const sx = dx > 0 ? 1 : -1, sy = dy > 0 ? 1 : -1;
+  // t of the next boundary on each axis, in [0,1] along the segment
+  let tx = dx === 0 ? Infinity : (((dx > 0 ? c.x + 1 : c.x)*C) - x0)/dx;
+  let ty = dy === 0 ? Infinity : (((dy > 0 ? c.y + 1 : c.y)*C) - y0)/dy;
+  const stx = dx === 0 ? Infinity : Math.abs(C/dx);
+  const sty = dy === 0 ? Infinity : Math.abs(C/dy);
+  for(let i = 0; i < 512; i++){
+    if(c.x === e.x && c.y === e.y) return true;
+    if(tx < ty){
+      if(tx > 1) return true;                                   // ran out of segment
+      if(dcWallV(M, sx > 0 ? c.x + 1 : c.x, c.y)) return false;
+      c.x += sx; tx += stx;
+    } else {
+      if(ty > 1) return true;
+      if(dcWallH(M, c.x, sy > 0 ? c.y + 1 : c.y)) return false;
+      c.y += sy; ty += sty;
+    }
+  }
+  return false;
+}
+// THE HUNTERS' FLOW FIELD, the maze's answer to FLOW in index.html: a BFS of
+// step counts filled outward from wherever he is standing. One field serves
+// every sentry on the floor, so thirty of them cost one BFS a cell he moves.
+//
+// Without this a sentry aims straight at him and grinds along the wall in
+// between, which in a labyrinth means it never arrives - it sits in the dead
+// end next door pressing against the partition.
+function dcFlow(M, sx, sy){
+  const d = new Int32Array(M.cols*M.rows).fill(-1);
+  if(!dcOpen(M, sx, sy)) return d;
+  const q = [sx + sy*M.cols];
+  d[q[0]] = 0;
+  for(let head = 0; head < q.length; head++){
+    const k = q[head], x = k % M.cols, y = (k - x)/M.cols;
+    for(const dir of DC_DIRS){
+      const nx = x + dir.dx, ny = y + dir.dy;
+      if(M.grid[y][x].walls[dir.wall] || !dcOpen(M, nx, ny)) continue;
+      const nk = nx + ny*M.cols;
+      if(d[nk] >= 0) continue;
+      d[nk] = d[k] + 1;
+      q.push(nk);
+    }
+  }
+  return d;
+}
+// the next cell CENTRE to walk toward, downhill on the field. null when it is
+// already in his cell (go straight at him), off the grid, or walled off.
+function dcFlowNext(M, field, wx, wy){
+  const c = dcCellAt(M, wx, wy);
+  if(!dcIn(M, c.x, c.y)) return null;
+  const here = field[c.x + c.y*M.cols];
+  if(here <= 0) return null;
+  let best = null, bd = here;
+  for(const dir of DC_DIRS){
+    const nx = c.x + dir.dx, ny = c.y + dir.dy;
+    if(M.grid[c.y][c.x].walls[dir.wall] || !dcOpen(M, nx, ny)) continue;
+    const v = field[nx + ny*M.cols];
+    if(v >= 0 && v < bd){ bd = v; best = { x:nx, y:ny }; }
+  }
+  return best ? dcWorld(M, best.x, best.y) : null;
+}
+// how far he is from a sentry THROUGH THE MAZE, in world units, for a give-up
+// test that does not measure through walls. -1 when there is no path at all.
+function dcFlowDist(M, field, wx, wy){
+  const c = dcCellAt(M, wx, wy);
+  if(!dcIn(M, c.x, c.y)) return -1;
+  const v = field[c.x + c.y*M.cols];
+  return v < 0 ? -1 : v*M.cell;
+}
+
+if(typeof module !== 'undefined' && module.exports) module.exports = { dcGenerate, dcCells, dcReach, dcRings, dcPushOut, dcPlaces, dcClear, dcFlow, dcFlowNext, dcFlowDist };

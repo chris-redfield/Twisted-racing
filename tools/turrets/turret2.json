@@ -1,0 +1,22 @@
+{
+  "name": "turret2",
+  "global": "VOXTURRETS",
+  "source": "assets/enemies/turret-02 - 'Sci-Fi Heavy Missile Defense Turret - PBR Game Ready' FBX, extracted from the shipped .rar. Free asset, author not recorded in the download; see HANDOFF before shipping.",
+  "dir": "../../assets/enemies/turret-02",
+  "nose": "+z",
+  "up": "+y",
+  "height": 26,
+  "parts": [
+    {
+      "file": "Sci-Fi Heavy Missile Defense Turret - PBR Game Ready.fbx",
+      "materials": {
+        "turret base":        "metal",
+        "turret body":        "body",
+        "turret left arm":    "accent",
+        "turret Middle":      "dark",
+        "turret missile left":"tail",
+        "turrent metals":     "metal"
+      }
+    }
+  ]
+}

@@ -208,9 +208,17 @@ head('the no-chokepoint guarantee holds across SEEDS, not just this one');
   ok('no corridor is the only way across, on any floor, on any seed', worst === null,
      worst || `${checked} floors swept`);
 }
+// THE CANARY, and it needs a wide sweep. dcFindBridge spent a whole session
+// silently answering "no bridges" on every floor ever generated (it read
+// M.regions, which is not filled until after the corridor passes) and a
+// single-seed test passed on luck. So this asserts the fixer actually FIRES
+// somewhere - but bridges are rare: with the shipped 2/3/4 regions it is about
+// 6 floors in 90, and an 18-floor sweep found none at all and failed for the
+// wrong reason. 30 seeds a floor is the width that makes it a canary rather
+// than a coin toss.
 ok('and the fixer reports the ones it had to add', E(`(function(){
      let any = 0;
-     for(const fi of [0,1,2]) for(let s=0;s<6;s++) any += dcGenerate(fi, 3000+s*577).fixed;
+     for(const fi of [0,1,2]) for(let s=0;s<30;s++) any += dcGenerate(fi, 3000+s*577).fixed;
      return any; })()`) > 0, 'bridges found and cut a second way across');
 
 head('SIZE and REGIONS are separate knobs, and REGIONS is exact');
@@ -226,8 +234,15 @@ ok('every floor gets EXACTLY the number of sectors it asks for',
    F.map((M, i) => M.name + ' asked ' + DC.FLOORS_CFG[i].regions + ' got ' + M.regions.length).join('  '));
 ok('the PLANT is cut into more than two', F[2].regions.length >= 3,
    F[2].regions.length + ' sectors');
-ok('the smallest floor still has rooms (the port gave it none)',
-   F[0].regions.length >= 3, F[0].regions.length + ' regions on the smallest floor');
+// HIS RULE (2026-11-18): the sectors RAMP, and FOUR belongs to the bottom floor
+// alone. It was 4 / 2 / 4, which made the floor he walks in through as divided
+// as the one the worm lives on - "I wanted only level 3 have 4 regions".
+ok('the sectors ramp: each floor down is cut one more time',
+   F[1].regions.length > F[0].regions.length && F[2].regions.length > F[1].regions.length,
+   F.map(M => M.name + ' ' + M.regions.length).join('  '));
+ok('...and four sectors belongs to the PLANT alone',
+   F[2].regions.length === 4 && F[0].regions.length < 4 && F[1].regions.length < 4);
+ok('every floor still has more than one sector', F.every(M => M.regions.length >= 2));
 ok('an odd number works, which a round-based BSP could never do', E(`(function(){
      const f = DC.FLOORS[2], k = f.regions; f.regions = 3;
      const n = dcGenerate(2).regions.length; f.regions = k; return n; })()`) === 3);
@@ -255,6 +270,61 @@ head('the floor fits the world the walker lives in');
 ok('a cell is wider than the walker', E('DC.CELL') > E('WALK_R')*2);
 ok('and wide enough for a sentry to come down it', E('DC.CELL') > E('FOE.R || 12')*2);
 ok('walls stand taller than eye height', E('DC.WALL_H') > E('WALK_EYE'));
+
+head('THE HEAT (step 6): the timer is a temperature, and it is survivable');
+// These numbers are the BALANCE, and they are measured rather than asserted by
+// feel. If someone changes a floor's size, DC.CELL, WALK_SPD or any HEAT_*, the
+// escape silently becomes a death sentence or a stroll - and this is what says so.
+const legs = JSON.parse(E(`JSON.stringify([0,1,2].map(i => {
+  const M = dcGenerate(i), D = {}, q = [[M.core.x, M.core.y, 0]];
+  D[M.core.x + ',' + M.core.y] = 0;
+  while(q.length){
+    const [x, y, d] = q.shift();
+    for(const dir of DC_DIRS){
+      const nx = x + dir.dx, ny = y + dir.dy, k = nx + ',' + ny;
+      if(M.grid[y][x].walls[dir.wall] || !dcOpen(M, nx, ny) || k in D) continue;
+      D[k] = d + 1; q.push([nx, ny, d + 1]);
+    }
+  }
+  return D[M.start.x + ',' + M.start.y];
+}))`));
+const CELL = E('DC.CELL'), WSPD = E('WALK_SPD');
+const AMB = E('DC.HEAT_AMBIENT'), HMAX = E('DC.HEAT_MAX'), HURT = E('DC.HEAT_HURT');
+const HT = E('DC.HEAT_T'), HLAG = E('DC.HEAT_LAG'), HDPS = E('DC.HEAT_DPS');
+// walk the escape at `mult` times the shortest route and total the hull lost
+function escape(mult){
+  const temp = (f, t) => AMB + (HMAX - AMB)*Math.min(1, Math.max(0, t - f*HLAG)/HT);
+  let t = 0, lost = 0;
+  for(const f of [2, 1, 0]){
+    const secs = legs[f]*mult*CELL/WSPD;
+    for(let s = 0; s < secs; s += 0.1){
+      lost += HDPS*Math.max(0, Math.min(1, (temp(f, t) - HURT)/(HMAX - HURT)))*0.1;
+      t += 0.1;
+    }
+  }
+  return { lost, t };
+}
+const E1 = escape(1), E13 = escape(1.3), E16 = escape(1.6), E20 = escape(2);
+ok('a floor is not hot until the worm is in', E('dcTemp(0)') === AMB);
+ok('the TOP floor cooks first, so climbing runs INTO the heat', E(`(function(){
+     const k = dcq; dcq = { planted:true, heat:150 };
+     const hot = dcTemp(0) > dcTemp(1) && dcTemp(1) > dcTemp(2);
+     dcq = k; return hot; })()`) === true);
+ok('the escape is long - this is the figure the balance hangs on',
+   E1.t > 200, Math.round(E1.t) + ' s of walking on the OPTIMAL route');
+ok('the optimal route is survivable on base hull', E1.lost < E('WALK_HP'),
+   `loses ${E1.lost.toFixed(0)} of ${E('WALK_HP')}`);
+ok('...but not comfortably - it has to cost something', E1.lost > E('WALK_HP')*0.4,
+   E1.lost.toFixed(0) + ' hull');
+ok('wandering 30% costs about double', E13.lost > E1.lost*1.6,
+   `${E1.lost.toFixed(0)} -> ${E13.lost.toFixed(0)}`);
+ok('wandering badly kills him even fully upgraded',
+   E20.lost > E('walkerHpAt(WALK_UP_MAX)'),
+   `2x the route loses ${E20.lost.toFixed(0)}, max hull is ${E('walkerHpAt(WALK_UP_MAX)')}`);
+ok('so knowing the building is worth real hull',
+   E16.lost - E1.lost > 60, `${(E16.lost - E1.lost).toFixed(0)} hull between a good route and a bad one`);
+ok('and it is a DRAIN, not a cliff: no single second is fatal',
+   HDPS < E('WALK_HP')*0.1, HDPS + ' hull/s at the maximum');
 
 console.log(`\n${total - fails}/${total} passed`);
 process.exit(fails ? 1 : 0);

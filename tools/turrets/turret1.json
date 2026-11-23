@@ -1,0 +1,24 @@
+{
+  "name": "turret1",
+  "global": "VOXTURRETS",
+  "source": "assets/enemies/turret-01 - The_Turret_1.obj (Blender 5.0 export). Free asset, author not recorded in the download; see HANDOFF before shipping.",
+  "dir": "../../assets/enemies/turret-01",
+  "nose": "+z",
+  "up": "+y",
+  "height": 18,
+  "_barrel": ["The muzzle is `lamp` (#ffe7a0, the one role that is a fixed colour rather than a shade",
+              "of the body) and NOT `dark`: as `dark` it is #241d2c, which in the first person is a",
+              "black hole against an already dark corridor - you cannot tell where the thing is",
+              "pointing, and on a turret that is the one thing you must be able to tell. The",
+              "alternatives are one word each: `accent` (body x1.32) or `metal` (#585265)."],
+  "parts": [
+    {
+      "file": "The_Turret_1.obj",
+      "objects": {
+        "Turret_Type_1_Base":   "metal",
+        "Turret_Type_1_Body":   "body",
+        "Turret_Type_1_Barrel": "lamp"
+      }
+    }
+  ]
+}

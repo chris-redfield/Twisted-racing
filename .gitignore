@@ -1,1 +1,20 @@
 .shots/
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# DOWNLOADED 3D-MODEL SOURCE THE CARVE PIPELINE NEVER READS
+#
+# 387 MB of it went into the repo with one `git add` (cdd025b) and had to come
+# straight back out; the delete does NOT shrink .git, because the blobs stay in
+# history. This is here so the next asset download cannot repeat it.
+#
+# NOT ignored, because they ARE the pipeline's inputs: car_voxelize.py reads one
+# mesh per recipe and tools/*/*.json names it by filename - .obj .fbx .stl .glb
+# .3ds are all live inputs today. Only the EDITABLE source and the download
+# archives that sit beside them are ignored. Need one anyway: `git add -f <path>`.
+*.blend
+*.blend1
+*.rar
+*.7z
+assets/**/*.zip

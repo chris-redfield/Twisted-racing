@@ -329,6 +329,27 @@ const FOE_RIG = {
   STRIDE:    26,     // world units walked per FULL cycle - this is what stops the
                      // feet skating, so it belongs with WALK_SPD, not with a timer
   WALK_SPD:  30,     // units/s when a sentry is walking (the player walks at 46)
+  WARM:       1,     // sheet CELLS (one pose at one yaw) baked per frame in the
+                     // background, by foeWarm.
+                     //
+                     // MEASURED, and the reason the whole mechanism exists: a
+                     // sentry's sheet is 643 ms and one POSE STRIP is ~110 ms.
+                     // A strip a frame is what this used to fill, so six strips
+                     // landed on six consecutive frames the first time a sentry
+                     // walked into view - half a second of screen at 9 fps. The
+                     // user hit exactly that and called it a freeze (2026-11-23).
+                     //
+                     // A CELL is ~7 ms. Measured over 240 real on-foot frames
+                     // with a sentry walking at the camera (harness baseline
+                     // 12.7 ms/frame), counting frames over 25 ms:
+                     //    WARM=1   worst 38 ms    7/240
+                     //    WARM=2   worst 44 ms   32/240
+                     //    WARM=3   worst 46 ms   31/240
+                     // 1 it is: four times fewer long frames, and the ceiling is
+                     // one background cell plus at most one the draw path pulls
+                     // on demand either way. Filling slower costs nothing that
+                     // can be seen, because a cell missed is one 7 ms frame and
+                     // not a stall. Do not raise this to fill the sheet sooner.
 };
 
 // -----------------------------------------------------------------------------
@@ -375,6 +396,82 @@ const FOE_GUN = {
   MUZZLE_Z: 16,          // where the bolt leaves: the torso (FOE.H is 22). 11 read as the hip
   COL:     '#ff3b8b',    // hot pink: nothing else in the game is this colour
   GLOW:    '#ffc2e0',
+};
+// -----------------------------------------------------------------------------
+// 3c-ii. THE DATACENTER'S TURRETS (foe.js turretThink/turretGun, index.html
+// dcTurrets/dcRelease). Two emplacements, two weapons, and they do not walk.
+// -----------------------------------------------------------------------------
+// A turret is a FOE RECORD with `turret` set, not a kind of its own: that way the
+// bolt collision, the blast splash, foeDamage, the hit flash, the billboard list
+// and the floor's own ownership of its bodies all work on it unchanged. What it
+// does NOT get is the walk rig - a turret has no legs to swing - and foeThink
+// hands it straight to turretThink before any of the pathing runs.
+//
+// THE TELL IS THE WHOLE DESIGN. Neither of these can be out-run (a bolt travels
+// 180 and a walk is 46), so the only answer to a turret is cover, and the only
+// way cover can be an answer is if you get warning. WINDUP is that warning, and
+// it is longer on the dangerous one.
+const TURRET = {
+  RISE:     1.2,    // seconds to come up out of the hatch. It is drawn by CLIPPING
+                    // the sprite to the part that has cleared the floor, so the
+                    // barrel comes up first and there is no second model to carve.
+  TURN:     1.7,    // rad/s it can traverse. Slower than a sentry can turn its
+                    // whole body (FOE_AI.TURN 3.2) - it is a mount, and that
+                    // difference is what makes walking round one worth trying.
+  TRACK_LOST: 0.8,  // seconds it keeps swinging after losing sight of you, so
+                    // ducking behind a corner does not freeze it mid-turn (which
+                    // reads as a bug) but also does not let it follow you blind.
+  BLAST_Z:   10,    // where the wreck goes off, above the floor
+  FADE:    1100,    // the same fog distance the car and sentry billboards use
+  WARM:       1,    // sheet cells of ONE sheet baked per frame in the background
+                    // (foe.js turretWarm; a turret's sheet is one pose, so a cell
+                    // is a yaw). MEASURED: 32 yaws of turret-02 in one go is
+                    // ~400 ms and a visible freeze. At 2 a frame the worst frame was
+                    // still 66 ms; at 1 it is ~33 ms, and both sheets - 64 yaws
+                    // between them, one sheet a frame - are full in 64 frames, which
+                    // is 1.07 s and fits inside the 1.2 s RISE that dcRelease starts
+                    // them under. A turret that becomes visible before its yaw is
+                    // baked still gets that one yaw on demand, so this is a
+                    // smoothing budget and not a correctness one.
+  YAWS:      32,    // directions baked per turret KIND (not per turret: eleven on a
+                    // floor share one sheet). The sentry gets 16 because its sheet is
+                    // also six walk poses deep and it turns rarely; a turret has one
+                    // row and nothing else to spend the bake on, and a traversing
+                    // mount popping between headings is the one artefact it can show.
+  KINDS: {
+    // ---- 1: THE ENERGY GUN. His brief: "faster than the sentries projectile,
+    // and also smaller". FOE_GUN.SPD is 180 and its bolt draws at radius 3.2;
+    // this is 340 and 1.7, so it is nearly twice the speed at half the size.
+    // That combination is deliberately hard to dodge ON PURPOSE and paid for
+    // with the shortest windup-to-damage ratio of anything in the game: it
+    // chips you, where the missile takes a bite.
+    // r / hitR / shotR override FOE.R (6), FOE.HIT_R (8) and FOE.SHOT_R (9), which
+    // are all measured off a sentry about 12 wide. These things are not: the
+    // missile rack's base ring alone is 35 across, and at the sentry's numbers you
+    // could stand inside one and shoot past it.
+    1: { vox:'turret1@64', col:'#8ea0bc', h:19, hp:150,
+         // MEASURED off the carve, by role: the barrel is the one `lamp` part,
+         // and its end cap is the 50 vertices at x = 22.5, y = 0.1, z 10.7..13.5.
+         muzzle:{ fwd:22.5, side:0, z:12.2 },
+         r:10, hitR:12, shotR:12,
+         range:470, windup:0.45, rest:[1.5, 2.5],
+         shot:{ kind:'zap', spd:340, r:1.7, dmgWalk:4, dmgCar:6,
+                col:'#5de4ff', glow:'#e6ffff' } },
+    // ---- 2: THE MISSILE RACK. "it is very dangerous" - so it is. 16 on foot
+    // out of WALK_HP 50 is a third of you in one hit, and the blast means a near
+    // miss still costs. What stops that being unfair is 1.2 s of smoke and noise
+    // before it leaves the rail, and a missile slow enough off the rail to break
+    // line of sight on. It also homes, so cover is the answer and running is not.
+    2: { vox:'turret2@64', col:'#bdb5a6', h:27, hp:240,
+         // the `tail` role IS the missiles, in two clusters: x 12.3..13.4,
+         // |y| 10.5..14.2, z 14.8..19.1. One arm each side, so `side` is a
+         // magnitude and turretGun alternates which arm it comes off.
+         muzzle:{ fwd:12.8, side:12.2, z:16.7 },
+         r:16, hitR:17, shotR:18,
+         range:540, windup:1.2, rest:[3.4, 5.4],
+         shot:{ kind:'missile', spd:150, r:8, dmgWalk:16, dmgCar:34, blast:70,
+                col:'#ffcf6a', glow:'#fff0c0' } },
+  },
 };
 const FOE_AI = {
   CHASE_SPD: 52,    // units/s once provoked. He WALKS at 46 and RUNS at 92, so a
@@ -841,7 +938,39 @@ const QUEST = {
   DATA_BACK_H:  30,
   DATA_BACK_COL:'#3f8f6a',   // ...and a dull service green. The way in.
   DATA_R:       56,          // stand this close to a door, on foot, to read it
-  DATA_GUARDS:  7,           // sentries standing on the plaza, between you and the main door
+  // THE PICKET ON THE SQUARE. Five of them, in formation and facing out, between
+  // you and the main doors - a line of three across the doors with two out front.
+  // They are GUARDS (QUEST.GUARD_* above), so they come for you on sight like the
+  // bunker's: walking onto that square is the mistake, not opening the door.
+  // Five and not seven because he asked for five; RADIO.SCRIPT.WORM and the door's
+  // own line count them out loud, so the number lives in one place.
+  DATA_GUARDS:  5,
+  DATA_GUARD_D1: 58,         // units out from the doors: the line of three
+  DATA_GUARD_D2: 116,        // ...and the two standing further out on the square
+  DATA_GUARD_S:  38,         // lateral spacing. FOE_POP.GAP is the no-overlap figure
+                             // and this is comfortably above it.
+  // TWO TURRET EMPLACEMENTS flanking the main doors, his ask. These are on the
+  // FRONT of the building - the plaza side, the way in that is a mistake - and
+  // NOT at the service door round the back, which is the way he actually goes in.
+  // There is no trap door out here: a street turret is up from the moment the
+  // city spawns it, because the lid is a datacenter floor's trick.
+  DATA_TURRETS:  2,
+  DATA_TURRET_KINDS: [1, 2],  // ONE OF EACH, so both read in the top-down pane
+  DATA_TURRET_D:  64,        // units out from the doors. NOT flush with the wall:
+                             // at 30 they stood against the slab and the
+                             // axonometric pane drew the building over them - 62
+                             // px of one survived and none of the other. Just
+                             // outboard of the line of three (58), which is why
+                             // the guards read from up there and these now do.
+  DATA_TURRET_S:  76,        // lateral, which is 2 x DATA_GUARD_S: wider than the
+                             // picket, at the corners of the entrance. The face is
+                             // DATA_D (280) across, so +/-76 is well inside it.
+  DATA_SEAL_COL:'#4a545c',   // ...and when it is over, both doors go to dead metal:
+                             // the worm welds the building shut behind you, so the
+                             // red main doors and the green service door both read
+                             // as plate. The map marks go grey with them.
+  DATA_CASH:    900,         // what the plant pays. QUEST.CASH (the bunker) is 400:
+                             // three floors and a four-minute escape is worth more.
 };
 // -----------------------------------------------------------------------------
 // 3d. THE DATACENTER (quest 2) - three floors of braided BSP labyrinth
@@ -874,16 +1003,21 @@ const QUEST = {
 // Floor 3 is the biggest, his call - but only somewhat, because it also holds the
 // core room and a climax floor should read as arrival, not as another slog.
 const DC = {
+  // REGIONS RAMP 2 -> 3 -> 4, and that is HIS call (2026-11-18): only the bottom
+  // floor gets four sectors. It used to be 4 / 2 / 4, which made the floor he
+  // walks in through just as divided as the one the worm lives on, so arriving
+  // on the PLANT read as more of the same instead of as the deepest place in the
+  // building. Going down now splits the floor one more time each flight.
   FLOORS: [
-    // 1. OFFICES. Smallest and roomiest: the most splits, so it reads as rooms
-    //    and corridors rather than a maze. Teaches the space. On the way out it
-    //    is the WORST heat - it is the top floor and heat rises.
-    { name:'OFFICES', cols:19, rows:19, regions:4, braid:0.60 },
-    // 2. SERVERS. The racks ARE the walls: the real labyrinth, fewer and bigger
-    //    regions. A maze should peak in the MIDDLE of a three-floor run.
-    { name:'SERVERS', cols:23, rows:23, regions:2, braid:0.40 },
-    // 3. PLANT. Biggest, fewest regions - one big maze, not a suite of rooms -
-    //    and it ends in the core room, where the worm goes in.
+    // 1. OFFICES. Smallest, and now the simplest division: two sectors, so it
+    //    reads as a floor you can hold in your head. It teaches the space - and
+    //    on the way out it is the WORST heat, being the top floor.
+    { name:'OFFICES', cols:19, rows:19, regions:2, braid:0.60 },
+    // 2. SERVERS. The racks ARE the walls: the real labyrinth, and three sectors
+    //    is the step between the floor above and the floor below.
+    { name:'SERVERS', cols:23, rows:23, regions:3, braid:0.40 },
+    // 3. PLANT. Biggest, and the only floor with FOUR sectors - his ask, twice
+    //    now. It ends in the core room, where the worm goes in.
     { name:'PLANT',   cols:27, rows:27, regions:4, braid:0.45 },
   ],
   CEIL_RGB:  [26, 32, 38],// the ceiling slab...
@@ -910,11 +1044,128 @@ const DC = {
   STRIP_COL: '#8fd4c4',   // it runs the length of every corridor, so there is always one
                           // straight line to read the geometry against.
   STAIR_COL: '#e0b73c',   // the stairwell: the one warm thing on a cold floor
+  // ---- THE HEAT (step 6). HANDOFF.md 2026-11-17: the worm reverses the cooling
+  // and the building becomes lethal to HIM by the same mechanism it kills the
+  // servers with - he is a machine, and datacenters are cooled because machines
+  // cannot take heat. There is NO COUNTDOWN ANYWHERE; the timer is a temperature.
+  //
+  // HEAT RISES, AND HE IS CLIMBING. The core is at the bottom and the way out is
+  // at the top, so the top floor cooks FIRST and each floor below it lags. The
+  // escape therefore runs INTO the heat: pressure rises as he nears safety, for
+  // free, out of physics rather than out of a script.
+  HEAT_AMBIENT: 18,       // degrees C, a plant doing its job
+  HEAT_MAX:     50,       // what the worm drives it to (122 F - real hardware
+                          // throttles at 35-40 and starts dying past 45-50)
+  // THESE THREE ARE MEASURED, NOT GUESSED, and they look odd without the figure
+  // they came from. tools/selftest_maze.js walks the shortest core->up-stairs path
+  // on each floor: PLANT 76 cells, SERVERS 64, OFFICES 44 - at WALK_SPD 46 that is
+  // 106 + 89 + 61 = **256 SECONDS of walking** to get out, on the optimal route
+  // with no wrong turns. A four-minute escape cannot carry a steep ramp: anything
+  // that bites at all integrates into hundreds of hull. First attempt (70/20/6)
+  // cost 983 hull on the PERFECT run. So the heat is a DRAIN, not a cliff.
+  HEAT_T:      260,       // seconds for a floor to go ambient -> max once it starts
+  HEAT_LAG:     65,       // ...and how much later each floor BELOW the top starts.
+                          // THE pacing number: raise it and the climb is gentler,
+                          // because the floors he has yet to reach are still cool.
+  HEAT_HURT:    34,       // above this it eats hull...
+  HEAT_DPS:    0.8,       // ...at this much a second AT HEAT_MAX, scaled from 0 at
+                          // HEAT_HURT. Never a flat rate: the first degrees past the
+                          // threshold are a warning, the last are the thing killing him.
+                          // 0.8/s reads tiny and is not: 60 s on a maxed floor is 48
+                          // hull, and his base hull is 50.
+                          // MEASURED COST OF THE ESCAPE, hull lost:
+                          //   optimal route  36   (lives at 50, comfortable at 100)
+                          //   1.3x the path  74   (needs the hull track, or a med-kit)
+                          //   1.6x           120  (dies without pickups)
+                          //   2.0x           201  (dies)
+                          // So route knowledge is worth ~85 hull, which is the whole
+                          // point of making him learn the building on the way down.
+  HEAT_TINT: [150, 58, 40],   // the ceiling and floor bleed toward this as it cooks
+  // NO COLD AISLES - his call, saved for a later datacenter. So the ramp is one
+  // way with no recovery, and since standing still is what refills the sprint
+  // tank (WALK_STAM_STILL) and standing still is now lethal, the climb is mostly
+  // WALKING with sprint saved for emergencies. If the escape ever reads as unfair
+  // rather than desperate, HEAT_LAG and HEAT_DPS are the two numbers to move -
+  // there is no other release valve left in the design.
+  // ---- WHAT LIVES IN HERE, AND WHAT PATCHES YOU UP
+  // Sparser going down than coming up, but NOT sparse: 4 a floor read as an
+  // empty building (his report), so these are 3x what they were. The descent is
+  // still the quieter half - the alarm trebles it again.
+  FOES_BEFORE: 12,        // sentries a floor while the worm is still in his hand
+  FOES_AFTER:  30,        // ...and once it is in and the building knows
+  FOE_MIN_D:    5,        // cells from a STAIRWELL. A sentry waiting on the stairs
+                          // is an ambush you cannot see coming, which is not the
+                          // same thing as difficulty.
+  FOE_SPREAD:   3,        // ...and from each other. Separate from FOE_MIN_D because
+                          // 30 sentries do not FIT at 5 apart: measured, floor 1 has
+                          // 237 walkable cells and placement dried up at 16 of 30.
+                          // 3 fits 30 on every floor with room to spare.
+  // THEY DO NOT WAIT TO BE SHOT. In the city a sentry ignores you until provoked;
+  // in here you are the intruder, so they open up on sight. "On sight" is literal -
+  // dcClear walks the maze walls between the two of you, so a sentry two corridors
+  // away is deaf to you and the corner you just turned is cover.
+  FOE_AGGRO:  420,        // units of line-of-sight before it notices you. FOE_GUN.RANGE
+                          // is 430, so it sees you at just about the range it can
+                          // shoot you - no noticing you from somewhere it cannot act on.
+  FOE_FORGET: 520,        // ...and loses you past this, on the FLOW distance (not the
+                          // straight line): through the maze, not through the wall.
+  // ---- THE TRAP DOORS AND WHAT COMES UP OUT OF THEM (index.html dcTurrets,
+  // dcRelease; foe.js turretThink). The worm's half of the bargain: it said
+  // "I have the turrets" the moment it woke up, and these are them.
+  //
+  // The HATCHES are there from the first step onto a floor, shut, and they are
+  // meant to be noticed and not understood - a round lid in a corridor you have
+  // to walk over, that does nothing, eleven times a floor. Then the worm goes in
+  // and every one of them on every floor opens at once.
+  TURRETS:     11,        // hatches a floor, and so turrets once they are up. Matched
+                          // to FOES_BEFORE (12) rather than FOES_AFTER: he asked for
+                          // "roughly the same number of sentries per floor", and the
+                          // sentries are 12 on the way down. 30 of these ON TOP of 30
+                          // sentries is not a labyrinth, it is a wall. Dial to taste -
+                          // this is THE number to move if the escape is too hard.
+  TURRET_MIN_D: 4,        // cells from a stairwell. Lower than FOE_MIN_D (5) because a
+                          // turret cannot follow you onto the stairs - being near one
+                          // is survivable in a way that being ambushed by a walker is
+                          // not - but not zero: the landing has to be a breath.
+  TURRET_SPREAD: 4,       // ...and from each other. They cannot dodge or re-position,
+                          // so two in one corridor is just one you cannot pass.
+  TURRET_CORE_D: 3,       // ...and from the unit itself, so the plant does not end
+                          // with a turret standing on the thing you came to touch.
+  TURRET_MIX:  0.45,      // share of them that are the MISSILE kind (TURRET.KINDS[2]).
+                          // Under a half on purpose: the missile is the one that can
+                          // take a third of your hull in a shot, and a corridor with
+                          // two of them in it is not a fight, it is a corridor you
+                          // cannot use.
+  HATCH_R:     20,        // world units. A cell is DC.CELL (64) across, so a lid is
+                          // most of the width of a corridor and you walk over it.
+  HATCH_RIM:    3.5,      // units of rim around it, drawn darker - that ring is the
+                          // whole reason a lid reads as a lid and not as a stain.
+  // Kept in FLOOR_RGB's own hue ([20,24,28], a cool blue-grey) and only lifted,
+  // never recoloured: a lid is a plate of the same floor, and a warm or purple
+  // disc would read as an item to pick up rather than a part of the building.
+  HATCH_LID:  [44, 52, 58],   // shut: twice the floor, so it is plainly there
+  HATCH_EDGE: [11, 13, 15],   // the rim, and the seam across the middle
+  HATCH_HOLE: [ 6,  7,  8],   // open: very nearly black, because it is a hole
+  HATCH_SEE:  460,        // world units of floor the hatch test bothers with. Inside
+                          // DC.FOG (560), where the floor has already gone black, and
+                          // the test runs per column per row - see dcBackground.
+  MEDS:         3,        // med-kits a floor. They do NOT come back: the floor
+                          // holds what it holds, so using one is a decision.
+  MED_HEAL:  0.35,        // share of his max hull each one gives back
+  MED_R:       20,        // walk this close to take it
+  MED_COL:  '#f2f2f6',    // a white box with a red cross on it - deliberately
+  MED_CROSS:'#f0503c',    // NOTHING like the car's green square, because the two
+                          // heal different things and he can stand next to both
   PLANT_T:      4.5,      // seconds of HOLDING the key at the unit. The pour's verb
                           // (QUEST.POUR_T is 6): stand still, hold, cannot move. It is
                           // the one thing a labyrinth never asks of you, which is why
                           // it is the mission's boss fight and not a cutscene.
   PLANT_KEY: 'KeyE',      // held, not pressed - same key that works the stairs
+  // the lids on the floor map. Cold grey while they are shut - they are part of
+  // the building - and the sentries' own alarm red once one is standing on them.
+  MAP_HATCH:      '#56626e',
+  MAP_TURRET:     '#f0503c',
+  MAP_TURRET_DEAD:'#3a3040',
   MAP_SIZE:  100,         // the floor map, virtual px (VW is 640). Only cells he has walked past
                           // (dcSee) - the floor IS the puzzle, so the whole plan would
                           // delete it, but blind exploration is not navigation either.
