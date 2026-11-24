@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-24 | [A turret takes four rams, and does not move](#2026-11-24--a-turret-takes-four-rams-and-does-not-move) | built, selftests 60/509/30/60 + a real-loop drive; **his report**; read "the turret was SKATING" |
 | 2026-11-24 | [One round, two cameras: the zap's colour](#2026-11-24--one-round-two-cameras-the-zaps-colour) | built, selftests 60/492/30/60 + screenshot; **his report**; read it before adding ANY new projectile |
 | 2026-11-23 | [Two turrets on the square, and 374 MB of assets deleted](#2026-11-23--two-turrets-on-the-square-and-374-mb-of-assets-deleted) | built, selftests 60/484/30/60 + screenshots; **his ask**; turrets now render in the TOP-DOWN pane; read "spawnFoe pushes, spawnTurret does not" |
 | 2026-11-23 | [His play: the sentry freeze, and the shots now leave the model](#2026-11-23--his-play-the-sentry-freeze-and-the-shots-now-leave-the-model) | built, selftests 60/471/30/60 + screenshots; **his play report**; read "one bake path" and "one field, two meanings" |
@@ -71,6 +72,93 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-24 — A turret takes four rams, and does not move
+
+**His report:** *"right now the car destroys the turrets too easily if he ran them over, just like
+the sentries. I think the sentries are ok the way they are, but the turrets should not be destroyed
+as easily, maybe they CAN be destroyed, but only after the car rams them like 3 or 4 times"*.
+
+Built. `turretRam` in `foe.js`, `TURRET.RAM_LO / RAM_HI / RAM_GAP` in `config.js`, 17 new checks in
+`tools/selftest_foe.js` (509). Ten of the seventeen fail against the old code.
+
+### A COUNT, not a damage number
+
+`foeRam` gave every foe `sp*FOE.RAM` - 0.9 damage per unit/s - which is right for a man standing in
+the road and wrong for an emplacement. At 167 u/s the energy gun (150 hp) died on contact, and the
+bumper was a better weapon than the gun.
+
+A ram on a turret now costs **a fixed share of its own hp**, not a share of your speed:
+
+| ram at | share | energy gun, 150 hp | missile rack, 240 hp |
+|---|---|---|---|
+| `FOE.RAM_MIN` (40 u/s) | `RAM_LO` 0.26 | 4 rams | 4 rams |
+| `CAR_TOP` (232 u/s) | `RAM_HI` 0.34 | 3 rams | 3 rams |
+| boosted, any speed | clamped at `RAM_HI` | 3 rams | 3 rams |
+
+The reason it is a share and not a flat number is that a COUNT is what he asked for, and a count only
+means anything if it does not depend on how fast you happened to be going. The reason it is a share of
+**its own** hp is that the two kinds would otherwise read differently: 240 against 150 is a third
+more rams for no reason the player can see.
+
+Three is the floor, deliberately. `clamp(..., 0, 1)` on the speed term means no amount of boost brings
+it to two: "3 or 4" is the whole range, and the fourth ram is the slow driver's.
+
+### `RAM_GAP` is what makes a count a count
+
+`foeRam` runs every frame. Without a gap, one contact would spend all four rams in a tenth of a
+second and nothing would have changed. `RAM_GAP` 0.45 s, on `f.ramLock`, counted down in `updateFoes`
+beside `hurtFlash` - **not** in `turretThink`, because it is about the bumper and not the brain: a
+turret that cannot see you, or is still rising, still has to finish the ram it just took.
+
+Measured in the real loop (not a direct `foeRam()` call): hit at 232, hp 240 -> 158.4 (exactly one
+`RAM_HI` share), and then **the throttle held down does nothing at all** - the car grinds against it
+at 4 u/s, under `FOE.RAM_MIN`, so you have to back off and come round again. Four rams means four
+rams.
+
+### the turret was SKATING - a bug the fix exposed
+
+`foeRam` threw the FOE clear: `f.x += dx*k`. For a turret that is wrong twice over.
+
+* It is **bolted over a hatch it has to stay on top of** - the same reason `foeSeparate` and
+  `foeStuck` already skip turrets. The old code slid one 2 units off its hole per ram (the test
+  prints `x: 2` against the old code). Nobody ever saw it because the turret died in the same frame;
+  with four rams required you would have watched a missile rack skate across the square.
+* The ring was the SENTRY's: `R = c.rad + FOE.R` = 20, while the missile rack's own footprint is
+  `f.r` 16 -> R 30. A car could reach 20 units from the centre of a base ring 35 across - inside it -
+  before anything happened at all. `turretRam` uses `f.r`, the same field `foeBlock` already uses for
+  the walker.
+
+So the **car** is what gets thrown now, on exactly the constants a barrel throws it on (`blockCollide`'s
+round branch: out to the touching distance, normal velocity reflected at 1.35, 0.86 off the rest).
+That carries properly, because `updateCar` reads `fwd` back out of world velocity every frame -
+which is also why it has to be guarded on `vn < 0`, or the frame after a bounce would suck the car
+back in.
+
+Verified drift over 420 frames of flooring it into one: **0.0000 units**.
+
+### what is NOT in this
+
+* **The car takes no damage from the ram and makes no crash noise.** A barrel gets both, through
+  `blockCollide`'s `impact` return, and this push happens outside `blockCollide`. He did not ask for
+  it, and it is a combat-balance change (ramming is free, and now it is four times slower rather than
+  four times dearer), so it is his call. One line each if he wants it.
+* The gap timer is called **`f.ramLock`, not `f.ramT`** - cars already carry a `c.ramT` (the
+  rear-ender coast, `RAM_COAST`), and `turretRam` is handed a car, so `ramT` would have been one typo
+  away from silently driving the player's cruise control. That is the shape of the `f.side` collision
+  he reported on 2026-11-23; this one was avoided by name rather than found in play.
+* **Sentries are untouched**: *"I think the sentries are ok the way they are"*. Two of the new checks
+  exist only to prove it - one pass under the bumper still kills one, and it is still thrown clear.
+* **No new per-frame cost.** `foeRam` does the same cheap box reject it always did; a turret just
+  takes a different branch, and there are a handful of turrets, not hundreds.
+
+### the harness trap, again (third time)
+
+The first real-loop drive showed the car at speed 200 and never moving. That is the documented clock
+trap: `skipToCity()` before the first `g.tick()` leaves the poisoned `-1.8e9 s` frame in `state ===
+'play'`, `acc` is permanently negative and `step()` never runs again - the sim looks alive and
+simulates nothing. **Tick once on the title first.** `tools/selftest_foe.js` does this on line 25;
+scratch scripts have to do it themselves.
 
 ## 2026-11-24 — One round, two cameras: the zap's colour
 

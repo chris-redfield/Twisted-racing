@@ -2230,6 +2230,108 @@ E(`(function(){ skipToMaze(0); const M = dcq.inside.M, p = dcWorld(M, M.start.x,
      walker.x = p.x; walker.y = p.y; onPress("KeyE"); onFoot = false; })()`)
 ;
 
+head('running one over');
+// A TURRET IS BOLTED DOWN AND ARMOURED, and those are the two things that make
+// being rammed different from a sentry being mown down. His report (2026-11-24):
+// "right now the car destroys the turrets too easily if he ran them over, just
+// like the sentries ... the turrets should not be destroyed as easily, maybe
+// they CAN be destroyed, but only after the car rams them like 3 or 4 times".
+//
+// __ram holds a REAL car record against a REAL turret and counts the hits. The
+// car is replaced on its mark every frame on purpose: that is the worst case for
+// the gap timer, a driver flooring it into the thing and never backing off.
+E(`globalThis.__ram = function(kind, spd, frames){
+     clearFoes();
+     const t = spawnTurret(0, 0, 0, kind);
+     t.hidden = false; t.rise = 1; t.dc = false;
+     foes.push(t);
+     const c = cars[0];
+     c.dead = false; c.angle = 0;
+     const R = (t.r || FOE.R) + (c.rad || 14);
+     let rams = 0;
+     for(let i = 0; i < frames && !t.dead; i++){
+       c.x = -R + 4; c.y = 0; c.vx = spd; c.vy = 0;
+       const hp0 = t.hp;
+       foeRam();
+       if(t.hp < hp0) rams++;
+       if(t.ramLock > 0) t.ramLock = Math.max(0, t.ramLock - 1/60);
+     }
+     return { rams:rams, dead:t.dead, hp:t.hp, x:t.x, y:t.y, ramLock:t.ramLock };
+   }`);
+const ram = (kind, spd, frames) => E(`__ram(${kind}, ${spd}, ${frames})`);
+// 400 frames is 6.7 s, far more than four RAM_GAPs: the count is what the gap
+// and the share decide, not when the loop runs out.
+const slow1 = ram(1, 41, 400), fast1 = ram(1, 232, 400);
+ok('the energy gun takes FOUR rams from a slow car', slow1.rams === 4 && slow1.dead === true,
+   JSON.stringify(slow1));
+ok('...and THREE flat out', fast1.rams === 3 && fast1.dead === true, JSON.stringify(fast1));
+const boost1 = ram(1, 900, 400);
+ok('...and three is the floor: no amount of boost makes it two', boost1.rams === 3,
+   'rams ' + boost1.rams);
+const slow2 = ram(2, 41, 400), fast2 = ram(2, 232, 400);
+ok('the missile rack reads the same, on its own bigger hull',
+   slow2.rams === 4 && fast2.rams === 3 && slow2.dead === true && fast2.dead === true,
+   slow2.rams + ' / ' + fast2.rams);
+// THE OLD BEHAVIOUR, which is the bug he reported: FOE.RAM is 0.9 damage per
+// unit/s, so 167 u/s was already 150 and the energy gun died on contact.
+ok('one contact never kills one, at any speed', ram(1, 900, 1).dead === false &&
+   ram(2, 900, 1).dead === false);
+ok('...and the old speed-damage would have: it is not what is being spent',
+   E('900*FOE.RAM') > E('TURRET.KINDS[2].hp'));
+// and the gap is what makes a count a count
+const lean = ram(1, 232, Math.round(E('TURRET.RAM_GAP')*60) - 4);
+ok('leaning on one for less than RAM_GAP costs exactly one ram', lean.rams === 1,
+   'rams ' + lean.rams);
+ok('a nudge under FOE.RAM_MIN costs nothing at all', ram(1, 30, 400).rams === 0);
+ok('and it never moves: the car is what gets thrown', fast1.x === 0 && fast1.y === 0,
+   fast1.x + ',' + fast1.y);
+// the bounce itself, one frame, with nobody holding the car in place
+E(`globalThis.__bump = function(rise){
+     clearFoes();
+     const t = spawnTurret(0, 0, 0, 2);
+     t.hidden = false; t.rise = rise; t.dc = false;
+     foes.push(t);
+     const c = cars[0]; c.dead = false;
+     const R = (t.r || FOE.R) + (c.rad || 14);
+     c.x = -R + 6; c.y = 0; c.vx = 150; c.vy = 0;
+     foeRam();
+     return { tx:t.x, ty:t.y, d:Math.hypot(c.x - t.x, c.y - t.y), R:R, cvx:c.vx, hp:t.hp };
+   }`);
+const bump = E('__bump(1)');
+ok('a car that drives into one ends up touching it, not inside it',
+   Math.abs(bump.d - bump.R) < 1e-6, bump.d.toFixed(2) + ' vs ' + bump.R);
+ok('...and it is sent back the way it came', bump.cvx < 0, 'vx ' + bump.cvx.toFixed(1));
+ok('...and the ring it bounces off is the TURRET\'s own footprint, not a sentry\'s',
+   bump.R > E('FOE.R') + 14, 'R ' + bump.R);
+// still coming up out of the hatch: there is nothing there yet, which is the
+// rule foeBlock already applies to the walker
+const half = E('__bump(0.5)');
+ok('a turret still rising cannot be rammed', half.hp === E('TURRET.KINDS[2].hp'));
+ok('...and does not bounce the car either', Math.abs(half.d - (half.R - 6)) < 1e-6);
+// the timer is counted down by the FRAME, not by the brain: a turret that cannot
+// see you still has to finish the ram it just took
+ok('updateFoes runs the ram timer down', E(`(function(){
+     const t = foes.find(f => f.turret);
+     t.ramLock = 0.3; t.rise = 1;
+     const b = t.ramLock; updateFoes(1/60);
+     return t.ramLock < b && t.ramLock > 0; })()`) === true);
+// AND THE SENTRIES ARE UNTOUCHED - "I think the sentries are ok the way they are"
+ok('a sentry still dies under the bumper in one pass', E(`(function(){
+     clearFoes();
+     const f = spawnFoe(0, 0, 0);
+     const c = cars[0];
+     c.dead = false; c.x = -((c.rad || 14) + FOE.R) + 4; c.y = 0; c.vx = 120; c.vy = 0;
+     foeRam();
+     return f.dead; })()`) === true);
+ok('...and is still thrown clear by it, where a turret is not', E(`(function(){
+     clearFoes();
+     const f = spawnFoe(0, 0, 0);
+     const c = cars[0];
+     c.dead = false; c.x = -20; c.y = 0; c.vx = 10; c.vy = 0;
+     foeRam();
+     return f.x > 0.5; })()`) === true);
+E('clearFoes()');
+
 head('losing window focus pauses the run');
 E('stage = "run"'); E('startMatch(1)'); frame(2);
 ok('a fresh run is not paused', E('paused') === false && E('state') === 'play');

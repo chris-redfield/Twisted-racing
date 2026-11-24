@@ -423,6 +423,30 @@ const TURRET = {
                     // reads as a bug) but also does not let it follow you blind.
   BLAST_Z:   10,    // where the wreck goes off, above the floor
   FADE:    1100,    // the same fog distance the car and sentry billboards use
+  // ---- BEING RUN OVER. A sentry is a man standing in the road: FOE.RAM is 0.9
+  // damage per unit/s, so anything over ~100 u/s kills one outright, and the
+  // user is happy with that ("the sentries are ok the way they are"). A turret
+  // is an armoured emplacement bolted into the floor, and dying to one pass of
+  // the bumper made it read like a traffic cone. His number: "the turrets
+  // should not be destroyed as easily, maybe they CAN be destroyed, but only
+  // after the car rams them like 3 or 4 times".
+  //
+  // So a ram on a turret costs a FIXED FRACTION OF ITS OWN HP, and not FOE.RAM's
+  // damage-per-unit-of-speed. The reason is that a COUNT is what he asked for,
+  // and a count only means anything if it does not depend on how fast you
+  // happened to be going. It also makes the two kinds read the same, which they
+  // would not on a flat damage number: the energy gun has 150 hp and the missile
+  // rack 240.
+  RAM_LO:   0.26,   // of max hp for a ram at FOE.RAM_MIN (40 u/s): 4 rams
+  RAM_HI:   0.34,   // ...up to this at CAR_TOP (232 u/s): 3 rams. CLAMPED there,
+                    // so no amount of boost ever brings it down to 2 - "3 or 4"
+                    // is the whole range, and the fourth is the slow driver's.
+  RAM_GAP:  0.45,   // seconds before the same turret can be rammed AGAIN, and the
+                    // reason the count is a count. foeRam runs every frame, and a
+                    // turret no longer skates out of reach when you hit it, so
+                    // without this one long contact would spend all four rams in
+                    // a tenth of a second. Long enough to have to back up and
+                    // come round again; short enough not to feel like a cooldown.
   WARM:       1,    // sheet cells of ONE sheet baked per frame in the background
                     // (foe.js turretWarm; a turret's sheet is one pose, so a cell
                     // is a yaw). MEASURED: 32 yaws of turret-02 in one go is

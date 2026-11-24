@@ -555,9 +555,13 @@ function foeRam(){
   if(!foes.length) return;
   for(const c of cars){
     if(c.dead) continue;
-    const sp = Math.hypot(c.vx, c.vy), R = (c.rad || 14) + FOE.R;
+    const sp = Math.hypot(c.vx, c.vy), cr = c.rad || 14, R = cr + FOE.R;
     for(const f of foes){
       if(f.dead) continue;
+      // A TURRET IS NOT A PEDESTRIAN. Everything below this line throws the FOE
+      // clear and kills it on contact, and both are wrong for a thing that is
+      // bolted down and armoured. Its own branch, next function.
+      if(f.turret){ turretRam(f, c, sp, cr); continue; }
       const dx = f.x - c.x, dy = f.y - c.y;
       if(dx > R || dx < -R || dy > R || dy < -R) continue;   // cheap reject first
       const d = Math.hypot(dx, dy);
@@ -568,6 +572,49 @@ function foeRam(){
       if(sp > FOE.RAM_MIN && !f.guard) foeDamage(f, sp*FOE.RAM, c.id);
     }
   }
+}
+// A car that drives into a TURRET. Two things are different, and they are the
+// same two things that make a turret a turret rather than a man:
+//
+//   IT DOES NOT MOVE. A sentry is thrown clear, which is also what kept the old
+//   one-contact kill from reading as a bug - the body left. An emplacement is
+//   bolted over a hatch it has to stay on top of (the same reason foeSeparate
+//   and foeStuck skip them), so the CAR is what gets thrown, on exactly the
+//   constants a barrel throws it on (blockCollide's round branch in index.html:
+//   out to the touching distance, normal velocity reflected at 1.35, 0.86 off
+//   the rest). Driving through one was only ever invisible because the turret
+//   died in the same frame.
+//
+//   IT DOES NOT DIE AT ONCE. TURRET.RAM_* - a fixed share of its own hp per ram,
+//   mildly harder the faster you were going, and one ram per RAM_GAP seconds.
+//
+// Not gated on f.guard: that flag is a bunker sentry braced for a bumper, and a
+// turret's armour is already in the numbers.
+function turretRam(f, c, sp, cr){
+  if(f.rise < 1) return;             // under the floor, or still coming up out of
+                                     // it: there is nothing there to hit yet, and
+                                     // this is foeBlock's rule for the walker
+  const R = (f.r || FOE.R) + cr;     // f.r is the turret's OWN footprint - 16 for
+                                     // the missile rack, whose base ring is 35
+                                     // across. FOE.R (6) let you park inside one.
+  let dx = c.x - f.x, dy = c.y - f.y;
+  if(dx > R || dx < -R || dy > R || dy < -R) return;      // cheap reject first
+  let d = Math.hypot(dx, dy);
+  if(d > R) return;
+  if(d < 1e-4){ dx = 1; dy = 0; d = 1; }
+  const nx = dx/d, ny = dy/d;
+  c.x = f.x + nx*R; c.y = f.y + ny*R;
+  const vn = c.vx*nx + c.vy*ny;
+  if(vn < 0){                        // only when it is still coming AT the turret:
+    c.vx -= nx*vn*1.35;              // the frame after a bounce it is leaving, and
+    c.vy -= ny*vn*1.35;              // reflecting that would suck it back in
+    c.vx *= 0.86; c.vy *= 0.86;
+  }
+  if(sp <= FOE.RAM_MIN || f.ramLock > 0) return;
+  f.ramLock = TURRET.RAM_GAP;
+  const t = clamp((sp - FOE.RAM_MIN)/(CAR_TOP - FOE.RAM_MIN), 0, 1);
+  const K = TURRET.KINDS[f.turret];
+  foeDamage(f, K.hp*(TURRET.RAM_LO + (TURRET.RAM_HI - TURRET.RAM_LO)*t), c.id);
 }
 
 // -------------------------------------------------------------------- the AI
@@ -731,6 +778,14 @@ function updateFoes(dt){
   for(const f of foes){
     if(f.dead) continue;
     if(f.hurtFlash > 0) f.hurtFlash = Math.max(0, f.hurtFlash - dt);
+    // the one-ram-at-a-time timer (turretRam). NOT `ramT`: cars already have a
+    // `c.ramT` (the rear-ender coast, RAM_COAST), and a turret is handed a car in
+    // turretRam - one typo apart. This is the `f.side` collision he reported on
+    // 2026-11-23, avoided by name instead of discovered in play.
+    // Here and not in turretThink
+    // because it is about the BUMPER, not about the brain: a turret that cannot
+    // see you, or is still rising, still has to count down the ram it just took.
+    if(f.ramLock > 0) f.ramLock = Math.max(0, f.ramLock - dt);
     // A MOVER ON DUTY IS NOT SIMULATED. Its position is read out of the clock:
     // one evaluation, no integration, no collision, no separation, no stuck
     // check. This is the whole reason the movers are cheap - see FOE_WALK.
@@ -1341,7 +1396,7 @@ function turretWarm(){
 function spawnTurret(x, y, a, kind){
   const K = TURRET.KINDS[kind] || TURRET.KINDS[1];
   return { x, y, a:a || 0, hp:K.hp, dead:false, hurtFlash:0, vox:null,
-    turret:kind, hidden:true, rise:0, sawT:0,
+    turret:kind, hidden:true, rise:0, sawT:0, ramLock:0,
     // the per-body overrides the shared sentry numbers are read through
     r:K.r, h:K.h, hitR:K.hitR, shotR:K.shotR,
     mad:false, loseT:0, walk:false, phase:0,
