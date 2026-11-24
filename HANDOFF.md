@@ -7,6 +7,7 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 | Date | Title | Kind |
 |---|---|---|
+| 2026-11-24 | [One round, two cameras: the zap's colour](#2026-11-24--one-round-two-cameras-the-zaps-colour) | built, selftests 60/492/30/60 + screenshot; **his report**; read it before adding ANY new projectile |
 | 2026-11-23 | [Two turrets on the square, and 374 MB of assets deleted](#2026-11-23--two-turrets-on-the-square-and-374-mb-of-assets-deleted) | built, selftests 60/484/30/60 + screenshots; **his ask**; turrets now render in the TOP-DOWN pane; read "spawnFoe pushes, spawnTurret does not" |
 | 2026-11-23 | [His play: the sentry freeze, and the shots now leave the model](#2026-11-23--his-play-the-sentry-freeze-and-the-shots-now-leave-the-model) | built, selftests 60/471/30/60 + screenshots; **his play report**; read "one bake path" and "one field, two meanings" |
 | 2026-11-23 | [The turrets go in: trap doors, two weapons, and a bake that was NOT free](#2026-11-23--the-turrets-go-in-trap-doors-two-weapons-and-a-bake-that-was-not-free) | built, selftests 60/444/30/60 (now 466) + screenshots; **his design**; read "the bake was not free" and "the number to watch" |
@@ -70,6 +71,40 @@ entry: a plan gets the full brief, a finished change gets what you need to work 
 
 
 
+
+## 2026-11-24 — One round, two cameras: the zap's colour
+
+*"the color of the projectile of the energy turret does not coincide in the top down versus the
+first person"* - correct, and it was not a palette slip. **`drawShot` had no `zap` branch at all**,
+so a turret's round fell through to the `else` that draws the PLAYER's cannon tracer: an amber
+oblong, `#ffe9a8` with an `rgba(255,180,90,.5)` streak. The raycaster meanwhile drew the cyan ball
+`TURRET.KINDS[1].shot` asks for. Same round, two cameras, two different weapons apparently firing.
+
+The fix is not "make it cyan here too" - it is to stop either pane knowing anything about turrets.
+Both now read **`col`, `glow` and `r` off the shot record**, which is where they already lived:
+
+    } else if(s.kind==='bolt' || s.kind==='zap'){
+      const r = s.r || 3.2;
+      ... ctx.fillStyle = s.col  || FOE_GUN.COL;    // halo
+      ... ctx.fillStyle = s.glow || FOE_GUN.GLOW;   // core
+
+`rcSprites`' own branch has read those three fields since the turrets went in, so this is the
+driving pane catching up with it. A sentry's bolt carries none of them and falls back to `FOE_GUN`,
+unchanged. The sizes are the bolt's old constants divided by its own `r` (7/3.2 = 2.1875,
+3/3.2 = 0.9375), so a bolt still draws at exactly 7*S and 3*S to the pixel while a zap comes out
+genuinely smaller at r 1.7 - which is what he asked for when the gun was designed.
+
+**The point worth carrying:** a projectile should describe itself and no renderer should carry a
+table of kinds. There are two panes and a third drawing path for particles; a new round that sets
+`col`/`glow`/`r` now looks right in all of them without anyone editing a switch.
+
+Verified: `scratchpad/zap-2d-crop.png` shows the cyan zap and the pink sentry bolt side by side
+from above, distinct in colour AND size. The test records every `fillStyle` the canvas is actually
+committed (wrapping `ctx.fill`/`ctx.fillRect`) and asserts the zap paints its own colours and never
+`#ffe9a8` - CHECKED AGAINST THE BUG: with the old `drawShot` restored it fails with
+`#ffe9a8 rgba(255,180,90,.5)`, which is the tracer, in so many words. The first version of that
+test regex-matched `drawShot.toString()`; that says nothing about what lands on the canvas and
+breaks the moment the code is reworded, so it was replaced before it was ever trusted.
 
 ## 2026-11-23 — Two turrets on the square, and 374 MB of assets deleted
 

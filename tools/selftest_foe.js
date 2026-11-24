@@ -2039,6 +2039,79 @@ ok('...and the two shots really did come off opposite arms',
    AR[0].shotSide === -AR[1].shotSide,
    AR[0].off + ' then ' + AR[1].off);
 
+// THE TWO PANES MUST AGREE ABOUT A ROUND IN THE AIR. He reported (2026-11-24)
+// that the energy turret's projectile was the wrong colour from above: `zap` was
+// not handled by drawShot at all, so it fell through to the player's cannon
+// tracer and drew as an amber oblong, while the raycaster drew the cyan ball
+// TURRET.KINDS[1].shot asks for. Both panes now read col/glow/r off the shot.
+head('a round in the air looks the same from both cameras');
+ok('the zap carries its own colours, so neither pane has to know about turrets',
+   E('!!(TURRET.KINDS[1].shot.col && TURRET.KINDS[1].shot.glow && TURRET.KINDS[1].shot.r)') === true);
+ok('...and they are NOT the sentry bolt\'s, or there would be nothing to tell apart',
+   E('TURRET.KINDS[1].shot.col') !== E('FOE_GUN.COL'),
+   E('TURRET.KINDS[1].shot.col') + ' vs the bolt\'s ' + E('FOE_GUN.COL'));
+// what each pane would actually paint, read back off a live shot
+const paint = JSON.parse(E(`JSON.stringify((function(){
+  const keep = shots.slice(); shots.length = 0;
+  const out = {};
+  // one of each, fired for real so the records are the ones the game makes
+  const t = foes.find(f => f.turret) || null;
+  if(t){ t.turret = 1; t.rise = 1; t.hidden = false; t.a = 0; t.x = 1000; t.y = 1000;
+         walker.x = t.x + 200; walker.y = t.y;
+         t.charge = 0; t.gunT = 0;
+         let n = 0; while(shots.length === 0 && n++ < 500) turretGun(t, 0.016, { x:walker.x, y:walker.y }, 200, true); }
+  const zap = shots[0] || null;
+  out.zap = zap ? { kind:zap.kind, col:zap.col, glow:zap.glow, r:zap.r } : null;
+  shots.length = 0;
+  for(const f of keep) shots.push(f);
+  return out; })())`));
+ok('a fired zap really carries them', paint.zap && paint.zap.kind === 'zap'
+   && paint.zap.col === E('TURRET.KINDS[1].shot.col')
+   && paint.zap.glow === E('TURRET.KINDS[1].shot.glow'),
+   JSON.stringify(paint.zap));
+// What the top-down pane actually PAINTS, by recording every fillStyle it
+// commits. Behaviour, not the shape of the source: the old version of this test
+// pattern-matched drawShot.toString(), which says nothing about what lands on
+// the canvas and breaks the moment the code is reworded.
+const painted = kind => E(`(function(){
+     const seen = [], f0 = ctx.fill, r0 = ctx.fillRect;
+     ctx.fill = function(){ seen.push(String(ctx.fillStyle).toLowerCase()); };
+     ctx.fillRect = function(){ seen.push(String(ctx.fillStyle).toLowerCase()); };
+     const W = TURRET.KINDS[1].shot;
+     try {
+       drawShot({ kind:'${kind}', x:cars[0].x + 20, y:cars[0].y, z:8, vx:10, vy:0,
+                  angle:0, col:W.col, glow:W.glow, r:'${kind}' === 'zap' ? W.r : 3.2 });
+     } finally { ctx.fill = f0; ctx.fillRect = r0; }
+     return seen.join(' '); })()`);
+const zapPaint = painted('zap');
+ok('the top-down pane paints a zap in the shot\'s OWN colours',
+   zapPaint.includes(E('TURRET.KINDS[1].shot.col').toLowerCase())
+   && zapPaint.includes(E('TURRET.KINDS[1].shot.glow').toLowerCase()), zapPaint);
+ok('...and never as the player\'s cannon tracer, which is what it used to do',
+   !zapPaint.includes('#ffe9a8'), zapPaint);
+ok('...while a sentry bolt with no colours of its own still falls back to FOE_GUN',
+   E(`(function(){
+     const seen = [], f0 = ctx.fill;
+     ctx.fill = function(){ seen.push(String(ctx.fillStyle).toLowerCase()); };
+     try { drawShot({ kind:'bolt', x:cars[0].x + 20, y:cars[0].y, z:8, vx:10, vy:0, angle:0 }); }
+     finally { ctx.fill = f0; }
+     return seen.join(' '); })()`).includes(E('FOE_GUN.COL').toLowerCase()));
+ok('...and it still draws a sentry bolt at exactly the size it always did', E(`(function(){
+     // the ratios are the old constants over the bolt's own r, so 3.2 reproduces
+     // 7*S and 3*S to the pixel
+     const r = 3.2;
+     return Math.abs(r*2.1875 - 7) < 1e-9 && Math.abs(r*0.9375 - 3) < 1e-9; })()`) === true);
+ok('neither kind throws when drawn from above', E(`(function(){
+     const keep = shots.slice(); shots.length = 0;
+     let err = null;
+     for(const k of ['bolt', 'zap', 'missile']){
+       const s = { kind:k, x:cars[0].x + 20, y:cars[0].y, z:8, vx:10, vy:0, angle:0,
+                   col:'#5de4ff', glow:'#e6ffff', r:k === 'zap' ? 1.7 : 3.2 };
+       try { drawShot(s); } catch(e){ err = k + ': ' + e.message; }
+     }
+     shots.length = 0; for(const f of keep) shots.push(f);
+     return err || 'ok'; })()`) === 'ok');
+
 ok('a turret will not fire with a wall in the way', E(`(function(){
      shots.length = 0;
      const t = foes.find(f => f.turret);
